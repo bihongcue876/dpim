@@ -4,6 +4,7 @@ dpim/*.py[cod]
 dpim/interface/__pycache__/
 dpim/core/__pycache__/
 dpim/tests/__pycache__/
+dpim/controller/__pycache__/
 
 # 虚拟环境
 dpim/.venv/
