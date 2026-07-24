@@ -26,6 +26,10 @@ dpim/htmlcov/
 # 环境变量（含 API Key）
 dpim/.env
 
+# 前端项目
+dpimWebUI/node_modules/
+dpimWebUI/dist/
+
 docs/elder_design
 docs
 
