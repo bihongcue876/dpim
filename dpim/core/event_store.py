@@ -98,6 +98,44 @@ class EventStore:
         row = await cursor.fetchone()
         return row["created_at"] if row else None
 
+    async def latest_event_id(self) -> str | None:
+        cursor = await self.db.conn.execute(
+            "SELECT event_id FROM events ORDER BY created_at DESC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        return row["event_id"] if row else None
+
+    async def list_events(
+        self,
+        status: str | None = None,
+        event_type: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """分页查询事件列表，返回 (items, total)。"""
+        conditions: list[str] = []
+        params: list[str] = []
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        if event_type:
+            conditions.append("event_type = ?")
+            params.append(event_type)
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+        cursor = await self.db.conn.execute(
+            f"SELECT COUNT(*) as cnt FROM events {where}", params
+        )
+        total = (await cursor.fetchone())["cnt"]
+
+        cursor = await self.db.conn.execute(
+            f"SELECT * FROM events {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        )
+        rows = await cursor.fetchall()
+        items = [dict(r) for r in rows]
+        return items, total
+
     async def insert_event(self, raw_content: str, event_type: str = "auto") -> tuple[str, str]:
         """写入事件 → 建 FTS 索引 → 标记 indexed，一条调用完成完整写入。
 

@@ -171,3 +171,85 @@ class HealthResponse(BaseModel):
     layers: dict
     last_event_at: str = ""
     version: str = "0.1.0"
+
+
+# ── dpim-webui 新增模型 ────────────────────
+
+class StateHashResponse(BaseModel):
+    hash: str
+    changed_at: str
+
+
+class EventListItem(BaseModel):
+    event_id: str
+    created_at: str
+    raw_content: str
+    event_type: str
+    status: str
+
+
+class EventListResponse(BaseModel):
+    items: list[EventListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class NodeListItem(BaseModel):
+    node_id: str
+    title: str
+    node_type: str
+    confidence: float
+
+
+class NodeListResponse(BaseModel):
+    items: list[NodeListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class EdgeInfo(BaseModel):
+    source: str
+    target: str
+    relation: str
+    evidence_event_id: str
+
+
+class NodeDetailResponse(BaseModel):
+    node_id: str
+    title: str
+    content: str
+    node_type: str
+    source_refs: list
+    confidence: float
+    metadata: dict
+    edges: list[EdgeInfo]
+
+
+class SettingsResponse(BaseModel):
+    memory_db_path: str
+    graph_json_path: str
+    llm_base_url: str
+    llm_api_key: str
+    llm_model_name: str
+    llm_timeout: int
+    max_graph_hops: int
+    rrf_k: int
+    jaccard_threshold: float
+    health_check_interval: int
+    compensate_batch_size: int
+    log_level: str
+
+
+class SettingsUpdateRequest(BaseModel):
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    llm_model_name: str | None = None
+    llm_timeout: int | None = None
+    max_graph_hops: int | None = None
+    rrf_k: int | None = None
+    jaccard_threshold: float | None = None
+    health_check_interval: int | None = None
+    compensate_batch_size: int | None = None
+    log_level: str | None = None

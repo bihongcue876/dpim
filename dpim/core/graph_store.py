@@ -159,6 +159,33 @@ class GraphStore:
                 counts[t] = counts.get(t, 0) + 1
         return counts
 
+    def list_nodes(self, node_type: str | None = None) -> list[dict]:
+        """返回节点列表，可选按 node_type 筛选。"""
+        result: list[dict] = []
+        for _, ndata in self.graph.nodes(data="data"):
+            if ndata is None:
+                continue
+            if node_type and ndata.node_type.value != node_type:
+                continue
+            result.append(ndata.to_dict() if hasattr(ndata, "to_dict") else vars(ndata))
+        return result
+
+    def list_edges(self, node_id: str | None = None) -> list[dict]:
+        """返回边列表，可选按节点 ID 筛选（含出边和入边）。"""
+        result: list[dict] = []
+        for s, t, edata in self.graph.edges(data="data"):
+            if edata is None:
+                continue
+            if node_id and node_id not in (s, t):
+                continue
+            result.append({
+                "source": s,
+                "target": t,
+                "relation": edata.relation,
+                "evidence_event_id": edata.evidence_event_id,
+            })
+        return result
+
     async def upsert_node_fts(self, node_id: str, title: str, content: str):
         await self.db.conn.execute(
             "DELETE FROM node_fts WHERE node_id = ?", (node_id,)
