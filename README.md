@@ -82,6 +82,36 @@ API 服务启动后访问 http://localhost:8000/docs 查看 OpenAPI 文档。
 
 ---
 
+## WebUI 启动
+
+```bash
+# 进入前端项目目录
+cd dpimWebUI
+
+# 安装依赖（首次）
+pnpm install
+
+# 开发模式（热更新，代理后端 localhost:8000）
+pnpm dev
+
+# 生产构建
+pnpm build
+
+# 类型检查（无需构建即可验证代码）
+pnpm typecheck
+
+# 单元测试
+pnpm test
+
+# 访问地址
+# 开发：http://localhost:5173
+# 生产：dist/ 目录由后端 FastAPI 托管
+```
+
+前端通过 Vite 代理（vite.config.ts 配置）访问后端 API，开发时无需配置跨域。
+
+---
+
 ## 设计描述
 
 系统采用四层架构：
@@ -97,8 +127,9 @@ API 服务启动后访问 http://localhost:8000/docs 查看 OpenAPI 文档。
 
 ## 其他说明
 
-- 技术栈：Python 3.14 + asyncio + FastAPI + SQLite(FTS5) + NetworkX + openai SDK + instructor + Typer
-- 包管理：uv，已锁定 64 个依赖
-- 测试：pytest + pytest-asyncio，108 用例全部通过
-- 代码质量：ruff + mypy
+- 后端技术栈：Python 3.14 + asyncio + FastAPI + SQLite(FTS5) + NetworkX + openai SDK + instructor + Typer
+- 前端技术栈：Vue 3 + TypeScript + Vite + Naive UI + D3.js
+- 包管理：后端 uv（64 依赖） / 前端 pnpm
+- 测试：pytest 108 用例 + vitest 13 用例，全部通过
+- 代码质量：ruff + mypy（后端）/ vue-tsc（前端）
 - 存储文件：data/memory.db（SQLite）和 data/graph.json（JSON），位于 dpim/data/
