@@ -1,6 +1,9 @@
 # Python 字节码与缓存
 dpim/__pycache__/
 dpim/*.py[cod]
+dpim/interface/__pycache__/
+dpim/core/__pycache__/
+dpim/tests/__pycache__/
 
 # 虚拟环境
 dpim/.venv/
@@ -24,3 +27,5 @@ dpim/.env
 
 docs/elder_design
 docs
+
+
