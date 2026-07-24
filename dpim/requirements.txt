@@ -1,0 +1,12 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.0
+instructor>=1.0
+openai>=1.30
+networkx>=3.2
+typer>=0.12
+python-dotenv>=1.0
+pytest>=8.0
+pytest-asyncio>=0.23
+ruff>=0.4
+mypy>=1.9
