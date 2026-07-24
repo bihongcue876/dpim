@@ -1,24 +1,36 @@
 """FastAPI 应用，8 个 REST 端点"""
 
+import hashlib
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 
 from controller.compensator import Compensator
 from controller.orchestrator import Orchestrator
+from core.config import settings
 from core.database import Database
 from core.event_store import EventStore
 from core.graph_store import GraphStore
 from core.models import (
     DeleteNodeRequest,
+    EdgeInfo,
+    EventListItem,
+    EventListResponse,
     FeedbackRequest,
     HealthResponse,
     IngestRequest,
     IngestResponse,
     ModifyEventStatusRequest,
     ModifyNodeRequest,
+    NodeDetailResponse,
+    NodeListItem,
+    NodeListResponse,
     SearchRequest,
     SearchResponse,
+    SettingsResponse,
+    SettingsUpdateRequest,
+    StateHashResponse,
 )
 from core.search import search as hybrid_search
 from core.state import ai_state
@@ -162,6 +174,109 @@ async def feedback(body: FeedbackRequest):
         node.confidence = max(0.1, min(1.0, node.confidence + delta))
         gs.graph.nodes[body.result_id]["data"] = node
     return _ok(message="Feedback recorded")
+
+
+# ── dpim-webui 新增端点 ────────────────────
+
+@app.get("/state-hash", response_model=StateHashResponse)
+async def state_hash():
+    es, gs = _stores()
+    latest = await es.latest_event_id()
+    total_nodes = gs.total_nodes()
+    now = datetime.now(timezone.utc).isoformat()
+    raw = f"{latest or 'none'}:{total_nodes}:{now}"
+    h = hashlib.md5(raw.encode()).hexdigest()
+    return StateHashResponse(hash=h, changed_at=now)
+
+
+@app.get("/events", response_model=EventListResponse)
+async def list_events(
+    status: str | None = None,
+    type: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+):
+    es, gs = _stores()
+    items, total = await es.list_events(
+        status=status, event_type=type, limit=min(limit, 100), offset=offset,
+    )
+    return EventListResponse(
+        items=[EventListItem(**e) for e in items],
+        total=total, limit=limit, offset=offset,
+    )
+
+
+@app.get("/events/{event_id}")
+async def get_event(event_id: str):
+    es, gs = _stores()
+    event = await es.get(event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return event
+
+
+@app.get("/nodes", response_model=NodeListResponse)
+async def list_nodes(
+    type: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+):
+    es, gs = _stores()
+    all_nodes = gs.list_nodes(node_type=type)
+    total = len(all_nodes)
+    sliced = all_nodes[offset:offset + limit]
+    return NodeListResponse(
+        items=[NodeListItem(**n) for n in sliced],
+        total=total, limit=limit, offset=offset,
+    )
+
+
+@app.get("/nodes/{node_id}", response_model=NodeDetailResponse)
+async def get_node(node_id: str):
+    es, gs = _stores()
+    node = gs.get_node(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found")
+    edges = gs.list_edges(node_id=node_id)
+    return NodeDetailResponse(
+        node_id=node.node_id,
+        title=node.title,
+        content=node.content,
+        node_type=node.node_type.value,
+        source_refs=[
+            {"event_id": sr.event_id, "valid": sr.valid, "hash": sr.hash}
+            for sr in node.source_refs
+        ],
+        confidence=node.confidence,
+        metadata=node.metadata.model_dump() if hasattr(node.metadata, "model_dump") else dict(node.metadata),
+        edges=[EdgeInfo(**e) for e in edges],
+    )
+
+
+@app.get("/settings", response_model=SettingsResponse)
+async def get_settings():
+    return SettingsResponse(
+        memory_db_path=settings.memory_db_path,
+        graph_json_path=settings.graph_json_path,
+        llm_base_url=settings.llm_base_url,
+        llm_api_key=settings.llm_api_key,
+        llm_model_name=settings.llm_model_name,
+        llm_timeout=settings.llm_timeout,
+        max_graph_hops=settings.max_graph_hops,
+        rrf_k=settings.rrf_k,
+        jaccard_threshold=settings.jaccard_threshold,
+        health_check_interval=settings.health_check_interval,
+        compensate_batch_size=settings.compensate_batch_size,
+        log_level=settings.log_level,
+    )
+
+
+@app.put("/settings")
+async def update_settings(body: SettingsUpdateRequest):
+    for field, value in body.model_dump(exclude_none=True).items():
+        if hasattr(settings, field):
+            setattr(settings, field, value)
+    return _ok(message="Settings updated (runtime only, not persisted to .env)")
 
 
 @app.get("/health", response_model=HealthResponse)
