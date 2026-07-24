@@ -17,14 +17,16 @@ DPIM 是一个双区智能贮存系统，同时承担两个角色：
 
 ## 功能体现
 
-- 事件写入与 FTS5 全文索引，支持 interaction / data / source 三种类型
+- 事件写入与 FTS5 全文索引，支持 interaction / data / source 三种类型，原子写入接口（insert_event）
 - 事件状态机：raw → indexed → linked（终态），failed / skipped 异常路径
-- 知识图谱节点与边的人工增删改查，JSON 文件持久化
+- 知识图谱节点与边的人工增删改查，JSON 文件持久化（防抖自动保存，5 次修改阈值）
 - 混合检索：FTS5 召回 → 2 跳图扩散 → RRF 融合排序（无 Agent 默认仅 FTS5）
 - 事件源证锚定：每条图节点必含 source_refs 与 evidence_quote，杜绝幻觉
 - 删除保护：system 和 data 类型节点失去所有源证时禁止删除
 - 降级与补偿：LLM 不可用时自动降级，恢复后批量补偿积压事件
-- FastAPI 接口层，8 个 REST 端点
+- 线程安全的 AI 可用性状态管理（AIState 单例封装）
+- 启动时配置校验：LLM 地址格式 + API Key 空值警告
+- FastAPI 接口层，8 个 REST 端点（统一成功响应信封）
 - Typer CLI 管理，9 个命令
 
 ---
