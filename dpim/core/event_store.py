@@ -98,6 +98,17 @@ class EventStore:
         row = await cursor.fetchone()
         return row["created_at"] if row else None
 
+    async def insert_event(self, raw_content: str, event_type: str = "auto") -> tuple[str, str]:
+        """写入事件 → 建 FTS 索引 → 标记 indexed，一条调用完成完整写入。
+
+        外部无需再手动调用 insert_fts 和 update_status。
+        返回 (event_id, "indexed")。
+        """
+        eid, _ = await self.insert(raw_content, event_type)
+        await self.insert_fts(eid, raw_content)
+        await self.update_status(eid, "indexed")
+        return eid, "indexed"
+
     async def insert_fts(self, event_id: str, raw_content: str):
         await self.db.conn.execute(
             "INSERT INTO events_fts (event_id, raw_content) VALUES (?, ?)",

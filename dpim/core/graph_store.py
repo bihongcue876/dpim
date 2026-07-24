@@ -13,12 +13,14 @@ from core.models import GraphEdge, GraphNode
 
 
 class GraphStore:
-    def __init__(self, db: Database, json_path: str | None = None):
+    def __init__(self, db: Database, json_path: str | None = None) -> None:
         self.db = db
         self.json_path = json_path or settings.graph_json_path
         self.graph = nx.DiGraph()
         self.event_to_nodes: dict[str, list[str]] = {}
         self._dirty = False
+        self._dirty_count = 0
+        self._auto_save_threshold = 5
 
     async def load(self):
         path = Path(self.json_path)
@@ -56,6 +58,12 @@ class GraphStore:
             os.unlink(tmp)
             raise
         self._dirty = False
+        self._dirty_count = 0
+
+    def _mark_dirty(self) -> None:
+        """标记脏位并触发防抖式自动保存阈值计数。"""
+        self._dirty = True
+        self._dirty_count += 1
 
     def _rebuild_reverse_index(self):
         self.event_to_nodes.clear()
@@ -67,11 +75,20 @@ class GraphStore:
                     self.event_to_nodes[sr.event_id] = []
                 self.event_to_nodes[sr.event_id].append(nid)
 
+    async def flush(self) -> None:
+        """防抖式自动持久化：累计修改达到阈值后写入磁盘。
+
+        调用方可定期或在安全点调用此方法，
+        防抖逻辑保证批量操作时不会频繁 IO。
+        """
+        if self._dirty_count >= self._auto_save_threshold:
+            await self.save()
+
     def add_node(self, node: GraphNode):
         self.graph.add_node(node.node_id, data=node)
         for sr in node.source_refs:
             self.event_to_nodes.setdefault(sr.event_id, []).append(node.node_id)
-        self._dirty = True
+        self._mark_dirty()
 
     def remove_node(self, node_id: str) -> bool:
         ndata = self.graph.nodes.get(node_id, {}).get("data")
@@ -82,23 +99,34 @@ class GraphStore:
             if node_id in nodes:
                 nodes.remove(node_id)
         self.graph.remove_node(node_id)
-        self._dirty = True
+        self._mark_dirty()
         return True
-
-    def get_node(self, node_id: str) -> GraphNode | None:
-        ndata = self.graph.nodes.get(node_id, {}).get("data")
-        return ndata
 
     def add_edge(self, edge: GraphEdge):
         self.graph.add_edge(edge.source, edge.target, data=edge)
-        self._dirty = True
+        self._mark_dirty()
 
     def remove_edge(self, source: str, target: str) -> bool:
         if self.graph.has_edge(source, target):
             self.graph.remove_edge(source, target)
-            self._dirty = True
+            self._mark_dirty()
             return True
         return False
+
+    def invalidate_source_ref(self, event_id: str, new_valid: bool = False):
+        for nid in self.event_to_nodes.get(event_id, []):
+            ndata = self.graph.nodes.get(nid, {}).get("data")
+            if ndata is None:
+                continue
+            for sr in ndata.source_refs:
+                if sr.event_id == event_id:
+                    sr.valid = new_valid
+            self.graph.nodes[nid]["data"] = ndata
+        self._mark_dirty()
+
+    def get_node(self, node_id: str) -> GraphNode | None:
+        ndata = self.graph.nodes.get(node_id, {}).get("data")
+        return ndata
 
     def get_edge(self, source: str, target: str) -> GraphEdge | None:
         edata = self.graph.edges.get((source, target), {}).get("data")
@@ -119,17 +147,6 @@ class GraphStore:
 
     def get_nodes_for_event(self, event_id: str) -> list[str]:
         return self.event_to_nodes.get(event_id, [])
-
-    def invalidate_source_ref(self, event_id: str, new_valid: bool = False):
-        for nid in self.event_to_nodes.get(event_id, []):
-            ndata = self.graph.nodes.get(nid, {}).get("data")
-            if ndata is None:
-                continue
-            for sr in ndata.source_refs:
-                if sr.event_id == event_id:
-                    sr.valid = new_valid
-            self.graph.nodes[nid]["data"] = ndata
-        self._dirty = True
 
     def total_nodes(self) -> int:
         return self.graph.number_of_nodes()

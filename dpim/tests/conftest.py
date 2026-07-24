@@ -14,6 +14,19 @@ async def db():
 
 
 @pytest.fixture
+async def real_db(tmp_path):
+    """使用真实文件路径的数据库 fixture，用于验证 WAL 模式等文件级行为。
+
+    默认不启用，CI 中通过 `pytest -m real_fs` 运行。
+    """
+    db_path = str(tmp_path / "test_memory.db")
+    database = Database(db_path)
+    await database.connect()
+    yield database
+    await database.close()
+
+
+@pytest.fixture
 async def event_store(db):
     return EventStore(db)
 

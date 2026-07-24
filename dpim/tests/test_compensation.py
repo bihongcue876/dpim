@@ -4,7 +4,7 @@ import pytest
 
 from controller.compensator import Compensator
 from controller.orchestrator import Orchestrator
-from core import state as _state
+from core.state import ai_state
 
 
 class TestCompensationControlledVariables:
@@ -13,7 +13,7 @@ class TestCompensationControlledVariables:
     @pytest.mark.asyncio
     async def test_compensate_batch_split(self, db, event_store, graph_store):
         """对照：25 个 raw 事件，batch_size=20，应分 2 批处理"""
-        _state.ai_available = False
+        ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
         orchestrator.start()
         compensator = Compensator(event_store, graph_store, orchestrator.enqueue)
@@ -55,13 +55,11 @@ class TestCompensationControlledVariables:
     @pytest.mark.asyncio
     async def test_degraded_flag_shared_with_api(self):
         """对照：compensator 修改 state → api 读到同一值"""
-        from core import state as _state
-        assert _state.ai_available is False
-        _state.ai_available = True
-        assert _state.ai_available is True
+        assert ai_state.available is False
+        ai_state.available = True
+        assert ai_state.available is True
         # Verify compensator sees the same state
-        from controller.compensator import Compensator
         c = Compensator(None, None, None)  # type: ignore
         assert c.is_degraded() is False
-        _state.ai_available = False
+        ai_state.available = False
         assert c.is_degraded() is True

@@ -6,7 +6,6 @@ from fastapi import FastAPI, HTTPException
 
 from controller.compensator import Compensator
 from controller.orchestrator import Orchestrator
-from core import state as _state
 from core.database import Database
 from core.event_store import EventStore
 from core.graph_store import GraphStore
@@ -22,6 +21,13 @@ from core.models import (
     SearchResponse,
 )
 from core.search import search as hybrid_search
+from core.state import ai_state
+
+
+def _ok(**extra: str) -> dict[str, str]:
+    """统一成功响应信封：所有简单端点返回 status=ok + message + 可选字段。"""
+    return {"status": "ok", "message": "ok", **extra}
+
 
 db: Database | None = None
 event_store: EventStore | None = None
@@ -49,6 +55,7 @@ async def lifespan(app: FastAPI):
         await orchestrator.stop()
     if graph_store and graph_store.dirty:
         await graph_store.save()
+        await graph_store.flush()
     if db:
         await db.close()
 
@@ -65,11 +72,7 @@ def _stores():
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(body: IngestRequest):
     es, gs = _stores()
-    eid, status = await es.insert(body.content, body.event_type)
-    await es.insert_fts(eid, body.content)
-    if status == "raw":
-        await es.update_status(eid, "indexed")
-        status = "indexed"
+    eid, status = await es.insert_event(body.content, body.event_type)
     return IngestResponse(event_id=eid, status=status, message="Event ingested")
 
 
@@ -85,7 +88,7 @@ async def delete_event(event_id: str):
             detail=f"Cannot delete event: node {result['node_id']} ({result['node_type']})"
                    " would lose all source references",
         )
-    return {"status": "ok", "message": "Event deleted"}
+    return _ok(message="Event deleted")
 
 
 @app.delete("/nodes/{node_id}")
@@ -102,7 +105,7 @@ async def delete_node(node_id: str, body: DeleteNodeRequest = DeleteNodeRequest(
         )
     gs.remove_node(node_id)
     await gs.delete_node_fts(node_id)
-    return {"status": "ok", "message": "Node deleted"}
+    return _ok(message="Node deleted")
 
 
 @app.put("/nodes/{node_id}")
@@ -119,7 +122,7 @@ async def modify_node(node_id: str, body: ModifyNodeRequest):
     await gs.upsert_node_fts(node_id, node.title, node.content)
     if gs.dirty:
         await gs.save()
-    return {"status": "ok", "node_id": node_id, "message": "Node updated"}
+    return _ok(node_id=node_id, message="Node updated")
 
 
 @app.put("/events/{event_id}/status")
@@ -138,13 +141,13 @@ async def modify_event_status(event_id: str, body: ModifyEventStatusRequest):
             detail=f"Status transition {current} -> {new} not allowed",
         )
     await es.update_status(event_id, new)
-    return {"status": "ok", "event_id": event_id, "new_status": new, "message": "Status updated"}
+    return _ok(event_id=event_id, new_status=new, message="Status updated")
 
 
 @app.post("/query", response_model=SearchResponse)
 async def query(body: SearchRequest):
     es, gs = _stores()
-    return await hybrid_search(body, es, gs, degraded=not _state.ai_available)
+    return await hybrid_search(body, es, gs, degraded=not ai_state.available)
 
 
 @app.post("/feedback")
@@ -154,11 +157,11 @@ async def feedback(body: FeedbackRequest):
     node = gs.get_node(body.result_id)
     if node:
         if node.node_type.value in ("system", "data"):
-            return {"status": "ok", "message": "System/data nodes not affected by feedback"}
+            return _ok(message="System/data nodes not affected by feedback")
         delta = 0.01 if body.accepted else -0.02
         node.confidence = max(0.1, min(1.0, node.confidence + delta))
         gs.graph.nodes[body.result_id]["data"] = node
-    return {"status": "ok", "message": "Feedback recorded"}
+    return _ok(message="Feedback recorded")
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -170,8 +173,8 @@ async def health():
     node_counts = gs.node_counts_by_type()
     last = await es.last_event_at()
     return HealthResponse(
-        status="ok" if _state.ai_available else "degraded",
-        ai_available=_state.ai_available,
+        status="ok" if ai_state.available else "degraded",
+        ai_available=ai_state.available,
         layers={
             "event_line": {
                 "total_events": total_events,
