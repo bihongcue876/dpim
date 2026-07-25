@@ -11,14 +11,18 @@ from core.database import Database
 from core.event_store import EventStore
 from core.graph_store import GraphStore
 from core.models import (
+    CreateEdgeRequest,
+    CreateNodeRequest,
     DeleteNodeRequest,
     EdgeInfo,
     EventListItem,
     EventListResponse,
     FeedbackRequest,
+    GraphEdge,
     HealthResponse,
     IngestRequest,
     IngestResponse,
+    ModifyEventRequest,
     ModifyEventStatusRequest,
     ModifyNodeRequest,
     NodeDetailResponse,
@@ -157,6 +161,87 @@ async def modify_event_status(event_id: str, body: ModifyEventStatusRequest):
     await es.update_status(event_id, new)
     refresh_key()
     return _ok(event_id=event_id, new_status=new, message="Status updated")
+
+
+@app.put("/events/{event_id}")
+async def modify_event(event_id: str, body: ModifyEventRequest):
+    es, gs = _stores()
+    ok = await es.update_content(event_id, body.content)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Event not found")
+    refresh_key()
+    return _ok(event_id=event_id, message="Event content updated")
+
+
+@app.post("/edges")
+async def create_edge(body: CreateEdgeRequest):
+    es, gs = _stores()
+    # 检查两端节点存在
+    src = gs.get_node(body.source)
+    if src is None:
+        raise HTTPException(status_code=404, detail="Source node not found")
+    tgt = gs.get_node(body.target)
+    if tgt is None:
+        raise HTTPException(status_code=404, detail="Target node not found")
+    gs.add_edge(GraphEdge(
+        source=body.source,
+        target=body.target,
+        relation=body.relation,
+        evidence_event_id=body.evidence_event_id or "",
+    ))
+    await gs.flush()
+    refresh_key()
+    return _ok(message="Edge created")
+
+
+@app.delete("/edges")
+async def delete_edge(source: str, target: str):
+    es, gs = _stores()
+    ok = gs.remove_edge(source, target)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Edge not found")
+    await gs.flush()
+    refresh_key()
+    return _ok(message="Edge deleted")
+
+
+@app.post("/nodes")
+async def create_node(body: CreateNodeRequest):
+    import uuid
+    from core.models import GraphNode, SourceRef, NodeMetadata
+    es, gs = _stores()
+    node_id = uuid.uuid4().hex[:16]
+
+    source_refs = []
+    if body.source_event_id:
+        source_refs.append(SourceRef(
+            event_id=body.source_event_id,
+            valid=True,
+            hash="",
+        ))
+
+    node = GraphNode(
+        node_id=node_id,
+        title=body.title,
+        content=body.content or body.title,
+        node_type=body.node_type,
+        source_refs=source_refs,
+        confidence=0.7,
+        metadata=NodeMetadata(evidence_quote=body.content or body.title, tags=[]),
+    )
+    gs.add_node(node)
+    await gs.flush()
+    refresh_key()
+    return {"status": "ok", "node_id": node_id, "message": "Node created"}
+
+
+@app.delete("/graph")
+async def clear_graph():
+    es, gs = _stores()
+    gs.clear_all()
+    await gs.flush()
+    refresh_key()
+    return _ok(message="Graph cleared")
 
 
 @app.post("/query", response_model=SearchResponse)

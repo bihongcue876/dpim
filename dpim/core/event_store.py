@@ -155,13 +155,40 @@ class EventStore:
         await self.db.conn.commit()
 
     async def search_fts(self, query: str, limit: int = 100) -> list[dict]:
+        """FTS5 搜索，中文不命中时自动降级为 LIKE 查询"""
         cursor = await self.db.conn.execute(
             "SELECT e.*, rank FROM events_fts f JOIN events e ON f.event_id = e.event_id "
             "WHERE events_fts MATCH ? ORDER BY rank LIMIT ?",
             (query, limit),
         )
         rows = await cursor.fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+        # FTS5 不命中（如中文），降级为 LIKE
+        like_cursor = await self.db.conn.execute(
+            "SELECT e.*, 0.0 AS rank FROM events e "
+            "WHERE e.raw_content LIKE ? LIMIT ?",
+            (f"%{query}%", limit),
+        )
+        rows = await like_cursor.fetchall()
         return [dict(r) for r in rows]
+
+    async def update_content(self, event_id: str, new_content: str) -> bool:
+        """更新事件内容，同步更新 FTS 索引。返回是否存在该事件。"""
+        event = await self.get(event_id)
+        if event is None:
+            return False
+        c_hash = _content_hash(new_content)
+        await self.db.conn.execute(
+            "UPDATE events SET raw_content = ?, content_hash = ? WHERE event_id = ?",
+            (new_content, c_hash, event_id),
+        )
+        await self.db.conn.execute(
+            "UPDATE events_fts SET raw_content = ? WHERE event_id = ?",
+            (new_content, event_id),
+        )
+        await self.db.conn.commit()
+        return True
 
     async def delete_with_protection(
         self, event_id: str, graph_store,

@@ -113,6 +113,12 @@ class GraphStore:
             return True
         return False
 
+    def clear_all(self):
+        """清空所有节点和边"""
+        self.graph.clear()
+        self.event_to_nodes.clear()
+        self._mark_dirty()
+
     def invalidate_source_ref(self, event_id: str, new_valid: bool = False):
         for nid in self.event_to_nodes.get(event_id, []):
             ndata = self.graph.nodes.get(nid, {}).get("data")
@@ -207,7 +213,25 @@ class GraphStore:
             (query, limit),
         )
         rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+        if rows:
+            return [dict(r) for r in rows]
+        # FTS5 不命中（如中文），遍历内存图数据做 LIKE 匹配
+        results: list[dict] = []
+        for nid, ndata in self.graph.nodes(data=True):
+            data = ndata.get("data")
+            if data is None:
+                continue
+            if query.lower() in (getattr(data, "title", "") or "").lower() or \
+               query.lower() in (getattr(data, "content", "") or "").lower():
+                results.append({
+                    "node_id": nid,
+                    "title": getattr(data, "title", ""),
+                    "content": getattr(data, "content", ""),
+                    "rank": 0.0,
+                })
+                if len(results) >= limit:
+                    break
+        return results
 
     @property
     def dirty(self) -> bool:

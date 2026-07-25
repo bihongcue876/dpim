@@ -135,6 +135,24 @@ class ModifyEventStatusRequest(BaseModel):
     status: EventStatus
 
 
+class ModifyEventRequest(BaseModel):
+    content: str
+
+
+class CreateEdgeRequest(BaseModel):
+    source: str
+    target: str
+    relation: str
+    evidence_event_id: str = ""
+
+
+class CreateNodeRequest(BaseModel):
+    title: str = Field(max_length=60)
+    content: str = ""
+    node_type: NodeType = NodeType.data
+    source_event_id: str = ""
+
+
 class SearchRequest(BaseModel):
     query: str
     source_filter: str = "all"
