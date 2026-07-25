@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.2
+> 版本：1.3
 > 日期：2026-07-25
-> 范围：原型阶段 + dpim-webui + 状态校验密钥
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订
 
 ---
 
@@ -16,7 +16,7 @@ DPIM（Double-Place Intelligence Memory）是一个独立于大模型上下文�
 
 #### 2.1 事件 (Event)
 
-事件是系统的最小存储单元，所有信息以事件形式写入信息线层。事件一旦写入，其 raw_content 不可变。
+事件是系统的最小存储单元，所有信息以事件形式写入信息线层。事件写入后默认不可变，但可通过 `PUT /events/{event_id}` 端点手动修订其 raw_content（同步更新 FTS5 索引，自动刷新状态校验密钥）。
 
 **字段定义：**
 
@@ -382,6 +382,9 @@ content
 | DELETE | /nodes/{node_id} | 删除节点 |
 | PUT | /nodes/{node_id} | 修改节点内容 |
 | PUT | /events/{event_id}/status | 修改事件状态 |
+| PUT | /events/{event_id} | 修改事件内容（更新 raw_content + FTS5） |
+| POST | /edges | 创建关联边（source, target, relation, evidence_event_id） |
+| DELETE | /edges | 删除关联边（query: source, target） |
 | POST | /query | 检索 |
 | POST | /feedback | 检索反馈 |
 | GET | /health | 健康检查 |
@@ -432,6 +435,16 @@ content
 ```
 
 **配置更新请求：** 接受完整的配置键值对 JSON，只下发需要修改的字段即可。
+
+**事件内容修改请求（PUT /events/{event_id}）：**
+
+```json
+{
+  "content": "更新后的事件内容"
+}
+```
+
+响应：`{"status": "ok", "message": "Event content updated", "event_id": "..."}`
 
 ---
 

@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.2 (原型阶段 + dpim-webui + 状态校验密钥)
+// 版本 1.3 (原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -209,6 +209,17 @@ export interface ModifyEventStatusResponse {
   status: 'ok';
   event_id: string;
   new_status: EventStatus;
+  message: string;
+}
+
+// ---- 修改事件内容 ----
+export interface ModifyEventRequest {
+  content: string;
+}
+
+export interface ModifyEventResponse {
+  status: 'ok';
+  event_id: string;
   message: string;
 }
 
