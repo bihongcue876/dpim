@@ -4,6 +4,7 @@ dpim/*.py[cod]
 dpim/interface/__pycache__/
 dpim/core/__pycache__/
 dpim/tests/__pycache__/
+dpim/controller/__pycache__/
 
 # 虚拟环境
 dpim/.venv/
@@ -25,7 +26,13 @@ dpim/htmlcov/
 # 环境变量（含 API Key）
 dpim/.env
 
-docs/elder_design
-docs
+# 运行期存储文件（SQLite + JSON 图谱）
+dpim/data/
+
+# 前端项目
+dpimWebUI/node_modules/
+dpimWebUI/dist/
+
+docs/
 
 

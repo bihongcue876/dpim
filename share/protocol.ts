@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.0 (原型阶段)
+// 版本 1.3 (原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -212,6 +212,17 @@ export interface ModifyEventStatusResponse {
   message: string;
 }
 
+// ---- 修改事件内容 ----
+export interface ModifyEventRequest {
+  content: string;
+}
+
+export interface ModifyEventResponse {
+  status: 'ok';
+  event_id: string;
+  message: string;
+}
+
 // ---- 检索 ----
 export interface SearchRequest {
   query: string;
@@ -283,7 +294,85 @@ export interface ApiError {
   };
 }
 
-// ==================== 配置项（类型参考） ====================
+// ==================== 状态校验密钥 ====================
+
+/** 状态校验密钥响应 (GET /state-hash)
+ *  后端返回 UUID 字符串作为数据版本标识。
+ *  前端在写操作提交前比对，一致则允许提交，不一致则拒绝并提示刷新。
+ */
+export interface StateHashResponse {
+  hash: string;            // UUID 状态校验密钥
+  changed_at: string;      // 最近变更时间 (ISO8601)
+}
+
+// ==================== 分页列表（dpim-webui）====================
+
+/** 通用分页结构 */
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** 事件列表摘要项 (GET /events) */
+export interface EventListItem {
+  event_id: string;
+  created_at: string;
+  raw_content: string;     // 截断显示
+  event_type: EventType;
+  status: EventStatus;
+}
+
+/** 事件详情 (GET /events/{event_id}) */
+export interface EventDetail extends Event {}
+
+/** 节点列表摘要项 (GET /nodes) */
+export interface NodeListItem {
+  node_id: string;
+  title: string;
+  node_type: NodeType;
+  confidence: number;
+}
+
+/** 节点详情 (GET /nodes/{node_id}) */
+export interface NodeDetail extends GraphNode {
+  edges: GraphEdge[];      // 该节点参与的所有边（出边 + 入边）
+}
+
+// ==================== 配置（dpim-webui）====================
+
+/** 配置项响应 (GET /settings) */
+export interface SettingsResponse {
+  memory_db_path: string;
+  graph_json_path: string;
+  llm_base_url: string;
+  llm_api_key: string;
+  llm_model_name: string;
+  llm_timeout: number;
+  max_graph_hops: number;
+  rrf_k: number;
+  jaccard_threshold: number;
+  health_check_interval: number;
+  compensate_batch_size: number;
+  log_level: string;
+}
+
+/** 配置更新请求 (PUT /settings) 只下发需要修改的字段即可 */
+export interface SettingsRequest {
+  llm_base_url?: string;
+  llm_api_key?: string;
+  llm_model_name?: string;
+  llm_timeout?: number;
+  max_graph_hops?: number;
+  rrf_k?: number;
+  jaccard_threshold?: number;
+  health_check_interval?: number;
+  compensate_batch_size?: number;
+  log_level?: string;
+}
+
+// ==================== 配置项（类型参考）====================
 export interface DPIMConfig {
   MEMORY_DB_PATH: string;
   GRAPH_JSON_PATH: string;

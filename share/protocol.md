@@ -1,14 +1,8 @@
-明白了，你需要的是放在 `share/` 目录下的正式 Spec 规约文件，用于定义整个系统的数据结构、接口契约和工作流规范。我重新编写。
+# DPIM Spec 规约
 
----
-
-# protocol.md
-
-## DPIM Spec 规约
-
-> 版本：1.0
-> 日期：2026-07-24
-> 范围：原型阶段
+> 版本：1.3
+> 日期：2026-07-25
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订
 
 ---
 
@@ -22,7 +16,7 @@ DPIM（Double-Place Intelligence Memory）是一个独立于大模型上下文�
 
 #### 2.1 事件 (Event)
 
-事件是系统的最小存储单元，所有信息以事件形式写入信息线层。事件一旦写入，其 raw_content 不可变。
+事件是系统的最小存储单元，所有信息以事件形式写入信息线层。事件写入后默认不可变，但可通过 `PUT /events/{event_id}` 端点手动修订其 raw_content（同步更新 FTS5 索引，自动刷新状态校验密钥）。
 
 **字段定义：**
 
@@ -112,11 +106,33 @@ raw → indexed → linked
 
 ---
 
-### 三、Agent 体系
+### 三、状态校验密钥
+
+系统使用一个不透明的状态校验密钥（UUID）作为前后端数据一致性的凭证。它不是内容的哈希值，不暴露任何数据结构信息，也不用于加密。它的唯一作用是回答："前端持有的这份数据，和后端当前的数据，是不是同一份？"
+
+**后端规则：**
+
+- `GET /state-hash` 返回当前 UUID 及最近变更时间
+- 任何写操作（ingest、delete、modify、status change）完成后自动刷新 UUID
+- AI 可用性切换时也刷新 UUID
+- 系统启动时生成初始 UUID
+
+**前端流程：**
+
+1. 页面加载时调 `GET /state-hash` 获取 UUID，存入页面内存
+2. 用户执行写操作（保存配置、删除事件、创建节点等）时，提交前再次调 `GET /state-hash` 比对
+3. 密钥一致 → 允许提交 → 提交成功后重新获取 UUID 作为新基准
+4. 密钥不一致 → 拒绝提交，刷新页面数据但保留用户编辑内容，提示用户重新确认
+
+**不受限操作：** 查看详情、检索查询、搜索反馈（有用/无用）不校验密钥，始终可用。
+
+---
+
+### 四、Agent 体系
 
 系统包含两个功能 Agent 和一个内嵌于总控的元认知裁判。所有 Agent 无状态，每次调用从存储拉取数据。
 
-#### 3.1 信息处理 Agent
+#### 4.1 信息处理 Agent
 
 **职责**：解析 raw_content，自动分类提取。
 
@@ -132,7 +148,7 @@ raw → indexed → linked
 | data | string[] | 事实陈述、引用来源 |
 | source | string | 原始内容保留（若需作为证据），否则为空字符串 |
 
-#### 3.2 图构建 Agent
+#### 4.2 图构建 Agent
 
 **职责**：将 interaction 和 data 片段转化为知识节点和边。
 
@@ -167,7 +183,7 @@ raw → indexed → linked
 | relation | string | 是 | 关系短语 |
 | evidence_event_id | string | 是 | 来源事件 ID |
 
-#### 3.3 元认知裁判
+#### 4.3 元认知裁判
 
 **职责**：审查图构建 Agent 输出，决定通过或驳回。
 
@@ -198,9 +214,9 @@ raw → indexed → linked
 
 ---
 
-### 四、工作流规范
+### 五、工作流规范
 
-#### 4.1 增加 (Ingest)
+#### 5.1 增加 (Ingest)
 
 **流程**：
 
@@ -218,7 +234,7 @@ raw → indexed → linked
 - LLM 调用失败重试一次，再失败标记 failed
 - 元认知驳回标记 failed
 
-#### 4.2 删除 (Delete)
+#### 5.2 删除 (Delete)
 
 **删除事件**：
 
@@ -235,7 +251,7 @@ raw → indexed → linked
 2. 若有且 force=false，返回警告
 3. 若 force=true，删除节点、关联边、FTS5 条目
 
-#### 4.3 修改 (Modify)
+#### 5.3 修改 (Modify)
 
 **修改节点**：
 - 更新 content，重置 confidence 为 0.7
@@ -245,7 +261,7 @@ raw → indexed → linked
 - 允许：failed → indexed，skipped ↔ indexed
 - 不允许：linked → indexed（图已构建）
 
-#### 4.4 降级与补偿
+#### 5.4 降级与补偿
 
 **降级触发**：LLM 连续 3 次失败。
 
@@ -260,7 +276,7 @@ raw → indexed → linked
 
 ---
 
-### 五、检索规范
+### 六、检索规范
 
 **流程**：
 
@@ -284,9 +300,9 @@ raw → indexed → linked
 
 ---
 
-### 六、存储规范
+### 七、存储规范
 
-#### 6.1 信息线层 (SQLite)
+#### 7.1 信息线层 (SQLite)
 
 **events 表**：
 
@@ -309,7 +325,7 @@ event_id UNINDEXED
 raw_content
 ```
 
-#### 6.2 信息图层 (JSON 文件)
+#### 7.2 信息图层 (JSON 文件)
 
 文件路径：`./data/graph.json`
 
@@ -349,13 +365,15 @@ title
 content
 ```
 
-#### 6.3 反向索引 (内存)
+#### 7.3 反向索引 (内存)
 
 `event_id → [node_id]` 映射，启动时从 graph.json 的 source_refs 重建。
 
 ---
 
-### 七、API 端点
+### 八、API 端点
+
+#### 已有接口
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -364,15 +382,73 @@ content
 | DELETE | /nodes/{node_id} | 删除节点 |
 | PUT | /nodes/{node_id} | 修改节点内容 |
 | PUT | /events/{event_id}/status | 修改事件状态 |
+| PUT | /events/{event_id} | 修改事件内容（更新 raw_content + FTS5） |
+| POST | /edges | 创建关联边（source, target, relation, evidence_event_id） |
+| DELETE | /edges | 删除关联边（query: source, target） |
 | POST | /query | 检索 |
 | POST | /feedback | 检索反馈 |
 | GET | /health | 健康检查 |
 
 查询同步返回，写操作异步返回确认。
 
+#### 新增接口（dpim-webui）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /state-hash | 获取当前存储状态哈希 |
+| GET | /events | 分页事件列表 |
+| GET | /events/{event_id} | 事件详情 |
+| GET | /nodes | 分页节点列表 |
+| GET | /nodes/{node_id} | 节点详情（含关联边） |
+| GET | /settings | 获取所有配置项 |
+| PUT | /settings | 批量更新配置项 |
+
+**分页约定（适用于 GET /events 和 GET /nodes）：**
+
+| 查询参数 | 类型 | 默认值 | 说明 |
+|----------|------|--------|------|
+| limit | int | 20 | 每页条数，最大 100 |
+| offset | int | 0 | 偏移量 |
+
+额外参数：
+- `GET /events`：`status`（事件状态筛选），`type`（事件类型筛选）
+- `GET /nodes`：`type`（节点类型筛选）
+
+**分页响应结构：**
+
+```json
+{
+  "items": [...],
+  "total": 86,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+**状态哈希响应：**
+
+```json
+{
+  "hash": "a1b2c3d4e5f6...",
+  "changed_at": "2026-07-24T12:00:00Z"
+}
+```
+
+**配置更新请求：** 接受完整的配置键值对 JSON，只下发需要修改的字段即可。
+
+**事件内容修改请求（PUT /events/{event_id}）：**
+
+```json
+{
+  "content": "更新后的事件内容"
+}
+```
+
+响应：`{"status": "ok", "message": "Event content updated", "event_id": "..."}`
+
 ---
 
-### 八、配置项
+### 九、配置项
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -391,7 +467,7 @@ content
 
 ---
 
-### 九、原型范围
+### 十、原型范围
 
 **本期实现**：
 - 事件存取、FTS5 索引、物理删除
@@ -402,6 +478,7 @@ content
 - 降级与补偿
 - FastAPI 接口层
 - Typer CLI
+- dpim-webui 前端
 
 **本期暂缓**：
 - 压缩功能（compressed 状态预留）

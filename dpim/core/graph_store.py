@@ -13,12 +13,14 @@ from core.models import GraphEdge, GraphNode
 
 
 class GraphStore:
-    def __init__(self, db: Database, json_path: str | None = None):
+    def __init__(self, db: Database, json_path: str | None = None) -> None:
         self.db = db
         self.json_path = json_path or settings.graph_json_path
         self.graph = nx.DiGraph()
         self.event_to_nodes: dict[str, list[str]] = {}
         self._dirty = False
+        self._dirty_count = 0
+        self._auto_save_threshold = 5
 
     async def load(self):
         path = Path(self.json_path)
@@ -56,6 +58,12 @@ class GraphStore:
             os.unlink(tmp)
             raise
         self._dirty = False
+        self._dirty_count = 0
+
+    def _mark_dirty(self) -> None:
+        """标记脏位并触发防抖式自动保存阈值计数。"""
+        self._dirty = True
+        self._dirty_count += 1
 
     def _rebuild_reverse_index(self):
         self.event_to_nodes.clear()
@@ -67,11 +75,20 @@ class GraphStore:
                     self.event_to_nodes[sr.event_id] = []
                 self.event_to_nodes[sr.event_id].append(nid)
 
+    async def flush(self) -> None:
+        """防抖式自动持久化：累计修改达到阈值后写入磁盘。
+
+        调用方可定期或在安全点调用此方法，
+        防抖逻辑保证批量操作时不会频繁 IO。
+        """
+        if self._dirty_count >= self._auto_save_threshold:
+            await self.save()
+
     def add_node(self, node: GraphNode):
         self.graph.add_node(node.node_id, data=node)
         for sr in node.source_refs:
             self.event_to_nodes.setdefault(sr.event_id, []).append(node.node_id)
-        self._dirty = True
+        self._mark_dirty()
 
     def remove_node(self, node_id: str) -> bool:
         ndata = self.graph.nodes.get(node_id, {}).get("data")
@@ -82,23 +99,40 @@ class GraphStore:
             if node_id in nodes:
                 nodes.remove(node_id)
         self.graph.remove_node(node_id)
-        self._dirty = True
+        self._mark_dirty()
         return True
-
-    def get_node(self, node_id: str) -> GraphNode | None:
-        ndata = self.graph.nodes.get(node_id, {}).get("data")
-        return ndata
 
     def add_edge(self, edge: GraphEdge):
         self.graph.add_edge(edge.source, edge.target, data=edge)
-        self._dirty = True
+        self._mark_dirty()
 
     def remove_edge(self, source: str, target: str) -> bool:
         if self.graph.has_edge(source, target):
             self.graph.remove_edge(source, target)
-            self._dirty = True
+            self._mark_dirty()
             return True
         return False
+
+    def clear_all(self):
+        """清空所有节点和边"""
+        self.graph.clear()
+        self.event_to_nodes.clear()
+        self._mark_dirty()
+
+    def invalidate_source_ref(self, event_id: str, new_valid: bool = False):
+        for nid in self.event_to_nodes.get(event_id, []):
+            ndata = self.graph.nodes.get(nid, {}).get("data")
+            if ndata is None:
+                continue
+            for sr in ndata.source_refs:
+                if sr.event_id == event_id:
+                    sr.valid = new_valid
+            self.graph.nodes[nid]["data"] = ndata
+        self._mark_dirty()
+
+    def get_node(self, node_id: str) -> GraphNode | None:
+        ndata = self.graph.nodes.get(node_id, {}).get("data")
+        return ndata
 
     def get_edge(self, source: str, target: str) -> GraphEdge | None:
         edata = self.graph.edges.get((source, target), {}).get("data")
@@ -120,17 +154,6 @@ class GraphStore:
     def get_nodes_for_event(self, event_id: str) -> list[str]:
         return self.event_to_nodes.get(event_id, [])
 
-    def invalidate_source_ref(self, event_id: str, new_valid: bool = False):
-        for nid in self.event_to_nodes.get(event_id, []):
-            ndata = self.graph.nodes.get(nid, {}).get("data")
-            if ndata is None:
-                continue
-            for sr in ndata.source_refs:
-                if sr.event_id == event_id:
-                    sr.valid = new_valid
-            self.graph.nodes[nid]["data"] = ndata
-        self._dirty = True
-
     def total_nodes(self) -> int:
         return self.graph.number_of_nodes()
 
@@ -141,6 +164,33 @@ class GraphStore:
                 t = ndata.node_type.value
                 counts[t] = counts.get(t, 0) + 1
         return counts
+
+    def list_nodes(self, node_type: str | None = None) -> list[dict]:
+        """返回节点列表，可选按 node_type 筛选。"""
+        result: list[dict] = []
+        for _, ndata in self.graph.nodes(data="data"):
+            if ndata is None:
+                continue
+            if node_type and ndata.node_type.value != node_type:
+                continue
+            result.append(ndata.to_dict() if hasattr(ndata, "to_dict") else vars(ndata))
+        return result
+
+    def list_edges(self, node_id: str | None = None) -> list[dict]:
+        """返回边列表，可选按节点 ID 筛选（含出边和入边）。"""
+        result: list[dict] = []
+        for s, t, edata in self.graph.edges(data="data"):
+            if edata is None:
+                continue
+            if node_id and node_id not in (s, t):
+                continue
+            result.append({
+                "source": s,
+                "target": t,
+                "relation": edata.relation,
+                "evidence_event_id": edata.evidence_event_id,
+            })
+        return result
 
     async def upsert_node_fts(self, node_id: str, title: str, content: str):
         await self.db.conn.execute(
@@ -163,7 +213,25 @@ class GraphStore:
             (query, limit),
         )
         rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+        if rows:
+            return [dict(r) for r in rows]
+        # FTS5 不命中（如中文），遍历内存图数据做 LIKE 匹配
+        results: list[dict] = []
+        for nid, ndata in self.graph.nodes(data=True):
+            data = ndata.get("data")
+            if data is None:
+                continue
+            if query.lower() in (getattr(data, "title", "") or "").lower() or \
+               query.lower() in (getattr(data, "content", "") or "").lower():
+                results.append({
+                    "node_id": nid,
+                    "title": getattr(data, "title", ""),
+                    "content": getattr(data, "content", ""),
+                    "rank": 0.0,
+                })
+                if len(results) >= limit:
+                    break
+        return results
 
     @property
     def dirty(self) -> bool:

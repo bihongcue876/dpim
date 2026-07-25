@@ -17,14 +17,16 @@ DPIM 是一个双区智能贮存系统，同时承担两个角色：
 
 ## 功能体现
 
-- 事件写入与 FTS5 全文索引，支持 interaction / data / source 三种类型
+- 事件写入与 FTS5 全文索引，支持 interaction / data / source 三种类型，原子写入接口（insert_event）
 - 事件状态机：raw → indexed → linked（终态），failed / skipped 异常路径
-- 知识图谱节点与边的人工增删改查，JSON 文件持久化
+- 知识图谱节点与边的人工增删改查，JSON 文件持久化（防抖自动保存，5 次修改阈值）
 - 混合检索：FTS5 召回 → 2 跳图扩散 → RRF 融合排序（无 Agent 默认仅 FTS5）
 - 事件源证锚定：每条图节点必含 source_refs 与 evidence_quote，杜绝幻觉
 - 删除保护：system 和 data 类型节点失去所有源证时禁止删除
 - 降级与补偿：LLM 不可用时自动降级，恢复后批量补偿积压事件
-- FastAPI 接口层，8 个 REST 端点
+- 线程安全的 AI 可用性状态管理（AIState 单例封装）
+- 启动时配置校验：LLM 地址格式 + API Key 空值警告
+- FastAPI 接口层，8 个 REST 端点（统一成功响应信封）
 - Typer CLI 管理，9 个命令
 
 ---
@@ -60,23 +62,56 @@ DPIM 是一个双区智能贮存系统，同时承担两个角色：
 # 进入项目目录
 cd dpim
 
+# 同步环境（首次）
+uv sync
+
 # 启动 API 服务
-python main.py serve
+uv run python main.py serve
 
 # 写入事件
-python main.py ingest "用户询问了 Python 异步编程"
+uv run python main.py ingest "用户询问了 Python 异步编程"
 
 # 检索
-python main.py query "Python 异步"
+uv run python main.py query "Python 异步"
 
 # 查看系统状态
-python main.py status
+uv run python main.py status
 
 # 查看存储文件路径
-python main.py storage-path
+uv run python main.py storage-path
 ```
 
 API 服务启动后访问 http://localhost:8000/docs 查看 OpenAPI 文档。
+
+---
+
+## WebUI 启动
+
+```bash
+# 进入前端项目目录
+cd dpimWebUI
+
+# 安装依赖（首次）
+pnpm install
+
+# 开发模式（热更新，代理后端 localhost:8000）
+pnpm dev
+
+# 生产构建
+pnpm build
+
+# 类型检查（无需构建即可验证代码）
+pnpm typecheck
+
+# 单元测试
+pnpm test
+
+# 访问地址
+# 开发：http://localhost:5173
+# 生产：dist/ 目录由后端 FastAPI 托管
+```
+
+前端通过 Vite 代理（vite.config.ts 配置）访问后端 API，开发时无需配置跨域。
 
 ---
 
@@ -95,8 +130,9 @@ API 服务启动后访问 http://localhost:8000/docs 查看 OpenAPI 文档。
 
 ## 其他说明
 
-- 技术栈：Python 3.14 + asyncio + FastAPI + SQLite(FTS5) + NetworkX + openai SDK + instructor + Typer
-- 包管理：uv，已锁定 64 个依赖
-- 测试：pytest + pytest-asyncio，108 用例全部通过
-- 代码质量：ruff + mypy
+- 后端技术栈：Python 3.14 + asyncio + FastAPI + SQLite(FTS5) + NetworkX + openai SDK + instructor + Typer
+- 前端技术栈：Vue 3 + TypeScript + Vite + Naive UI + D3.js
+- 包管理：后端 uv（64 依赖） / 前端 pnpm
+- 测试：pytest 113 用例 + vitest 13 用例，全部通过
+- 代码质量：ruff + mypy（后端）/ vue-tsc（前端）
 - 存储文件：data/memory.db（SQLite）和 data/graph.json（JSON），位于 dpim/data/

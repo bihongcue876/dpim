@@ -99,6 +99,7 @@ class Orchestrator:
             return
         self.graph_store.remove_node(node_id)
         await self.graph_store.delete_node_fts(node_id)
+        await self.graph_store.flush()
         logger.info("Node %s deleted", node_id)
 
     async def _handle_modify_node(self, payload: dict):
@@ -111,6 +112,7 @@ class Orchestrator:
         node.confidence = 0.7
         self.graph_store.graph.nodes[node_id]["data"] = node
         await self.graph_store.upsert_node_fts(node_id, node.title, node.content)
+        await self.graph_store.flush()
 
     async def _handle_modify_edge(self, payload: dict):
         from core.models import GraphEdge
@@ -127,6 +129,7 @@ class Orchestrator:
             self.graph_store.add_edge(edge)
         elif action == "remove":
             self.graph_store.remove_edge(source, target)
+        await self.graph_store.flush()
 
     async def _handle_modify_event_status(self, payload: dict):
         event_id = payload["event_id"]

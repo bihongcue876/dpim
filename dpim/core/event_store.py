@@ -98,6 +98,55 @@ class EventStore:
         row = await cursor.fetchone()
         return row["created_at"] if row else None
 
+    async def latest_event_id(self) -> str | None:
+        cursor = await self.db.conn.execute(
+            "SELECT event_id FROM events ORDER BY created_at DESC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        return row["event_id"] if row else None
+
+    async def list_events(
+        self,
+        status: str | None = None,
+        event_type: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """分页查询事件列表，返回 (items, total)。"""
+        conditions: list[str] = []
+        params: list[str] = []
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        if event_type:
+            conditions.append("event_type = ?")
+            params.append(event_type)
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+        cursor = await self.db.conn.execute(
+            f"SELECT COUNT(*) as cnt FROM events {where}", params
+        )
+        total = (await cursor.fetchone())["cnt"]
+
+        cursor = await self.db.conn.execute(
+            f"SELECT * FROM events {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        )
+        rows = await cursor.fetchall()
+        items = [dict(r) for r in rows]
+        return items, total
+
+    async def insert_event(self, raw_content: str, event_type: str = "auto") -> tuple[str, str]:
+        """写入事件 → 建 FTS 索引 → 标记 indexed，一条调用完成完整写入。
+
+        外部无需再手动调用 insert_fts 和 update_status。
+        返回 (event_id, "indexed")。
+        """
+        eid, _ = await self.insert(raw_content, event_type)
+        await self.insert_fts(eid, raw_content)
+        await self.update_status(eid, "indexed")
+        return eid, "indexed"
+
     async def insert_fts(self, event_id: str, raw_content: str):
         await self.db.conn.execute(
             "INSERT INTO events_fts (event_id, raw_content) VALUES (?, ?)",
@@ -106,13 +155,40 @@ class EventStore:
         await self.db.conn.commit()
 
     async def search_fts(self, query: str, limit: int = 100) -> list[dict]:
+        """FTS5 搜索，中文不命中时自动降级为 LIKE 查询"""
         cursor = await self.db.conn.execute(
             "SELECT e.*, rank FROM events_fts f JOIN events e ON f.event_id = e.event_id "
             "WHERE events_fts MATCH ? ORDER BY rank LIMIT ?",
             (query, limit),
         )
         rows = await cursor.fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+        # FTS5 不命中（如中文），降级为 LIKE
+        like_cursor = await self.db.conn.execute(
+            "SELECT e.*, 0.0 AS rank FROM events e "
+            "WHERE e.raw_content LIKE ? LIMIT ?",
+            (f"%{query}%", limit),
+        )
+        rows = await like_cursor.fetchall()
         return [dict(r) for r in rows]
+
+    async def update_content(self, event_id: str, new_content: str) -> bool:
+        """更新事件内容，同步更新 FTS 索引。返回是否存在该事件。"""
+        event = await self.get(event_id)
+        if event is None:
+            return False
+        c_hash = _content_hash(new_content)
+        await self.db.conn.execute(
+            "UPDATE events SET raw_content = ?, content_hash = ? WHERE event_id = ?",
+            (new_content, c_hash, event_id),
+        )
+        await self.db.conn.execute(
+            "UPDATE events_fts SET raw_content = ? WHERE event_id = ?",
+            (new_content, event_id),
+        )
+        await self.db.conn.commit()
+        return True
 
     async def delete_with_protection(
         self, event_id: str, graph_store,

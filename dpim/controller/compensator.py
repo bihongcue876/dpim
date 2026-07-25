@@ -3,12 +3,12 @@
 import asyncio
 import logging
 
-from core import state as _state
 from core.config import settings
 from core.event_store import EventStore
 from core.graph_store import GraphStore
 from core.llm import create_client
 from core.models import QueueMessage
+from core.state import ai_state, refresh_key
 
 logger = logging.getLogger(__name__)
 
@@ -52,18 +52,20 @@ class Compensator:
                 timeout=settings.llm_timeout,
             )
             self._failure_count = 0
-            if not _state.ai_available:
-                _state.ai_available = True
+            if not ai_state.available:
+                ai_state.available = True
+                refresh_key()
                 logger.info("LLM recovered, starting compensation")
                 await self._trigger_compensate()
         except Exception:
             self._failure_count += 1
             logger.warning("LLM health check failed (%d/3)", self._failure_count)
             if self._failure_count >= 3:
-                _state.ai_available = False
+                ai_state.available = False
+                refresh_key()
 
     def is_degraded(self) -> bool:
-        return not _state.ai_available
+        return not ai_state.available
 
     async def _trigger_compensate(self):
         msg = QueueMessage(

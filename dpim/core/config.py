@@ -1,14 +1,19 @@
 """应用配置，环境变量驱动（支持 .env 文件）"""
 
+import logging
+import warnings
 from os import getenv
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 
 class Settings:
-    def __init__(self):
+    def __init__(self) -> None:
         self.memory_db_path = getenv("DPIM_MEMORY_DB_PATH", "./data/memory.db")
         self.graph_json_path = getenv("DPIM_GRAPH_JSON_PATH", "./data/graph.json")
         self.llm_base_url = getenv("DPIM_LLM_BASE_URL", "http://localhost:11434/v1")
@@ -21,6 +26,22 @@ class Settings:
         self.health_check_interval = int(getenv("DPIM_HEALTH_CHECK_INTERVAL", "60"))
         self.compensate_batch_size = int(getenv("DPIM_COMPENSATE_BATCH_SIZE", "20"))
         self.log_level = getenv("DPIM_LOG_LEVEL", "INFO")
+        self._validate()
+
+    def _validate(self) -> None:
+        """启动时校验关键配置项，尽早暴露问题。"""
+        parsed = urlparse(self.llm_base_url)
+        if not parsed.scheme or not parsed.netloc:
+            warnings.warn(
+                f"DPIM_LLM_BASE_URL='{self.llm_base_url}' 格式无效，"
+                "应为 http://host:port/v1 格式",
+                stacklevel=2,
+            )
+        if not self.llm_api_key:
+            logger.warning(
+                "DPIM_LLM_API_KEY 为空。Ollama 本地部署无需此值，"
+                "远程服务（OpenAI 等）需设置 API Key"
+            )
 
 
 settings = Settings()
