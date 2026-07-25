@@ -133,6 +133,6 @@ pnpm test
 - 后端技术栈：Python 3.14 + asyncio + FastAPI + SQLite(FTS5) + NetworkX + openai SDK + instructor + Typer
 - 前端技术栈：Vue 3 + TypeScript + Vite + Naive UI + D3.js
 - 包管理：后端 uv（64 依赖） / 前端 pnpm
-- 测试：pytest 108 用例 + vitest 14 用例，全部通过
+- 测试：pytest 113 用例 + vitest 13 用例，全部通过
 - 代码质量：ruff + mypy（后端）/ vue-tsc（前端）
 - 存储文件：data/memory.db（SQLite）和 data/graph.json（JSON），位于 dpim/data/
