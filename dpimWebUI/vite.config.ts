@@ -20,6 +20,8 @@ export default defineConfig({
       '/query': { target: 'http://localhost:8000', changeOrigin: true },
       '/feedback': { target: 'http://localhost:8000', changeOrigin: true },
       '/settings': { target: 'http://localhost:8000', changeOrigin: true },
+      '/edges': { target: 'http://localhost:8000', changeOrigin: true },
+      '/graph': { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
   test: {
