@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.1 (原型阶段 + dpim-webui)
+// 版本 1.2 (原型阶段 + dpim-webui + 状态校验密钥)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -283,12 +283,15 @@ export interface ApiError {
   };
 }
 
-// ==================== 一致性哈希锁 ====================
+// ==================== 状态校验密钥 ====================
 
-/** 状态哈希响应 (GET /state-hash) */
+/** 状态校验密钥响应 (GET /state-hash)
+ *  后端返回 UUID 字符串作为数据版本标识。
+ *  前端在写操作提交前比对，一致则允许提交，不一致则拒绝并提示刷新。
+ */
 export interface StateHashResponse {
-  hash: string;            // 当前状态的 MD5 摘要
-  changed_at: string;      // 最近一次状态变更时间 (ISO8601)
+  hash: string;            // UUID 状态校验密钥
+  changed_at: string;      // 最近变更时间 (ISO8601)
 }
 
 // ==================== 分页列表（dpim-webui）====================
