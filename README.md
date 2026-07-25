@@ -62,20 +62,23 @@ DPIM 是一个双区智能贮存系统，同时承担两个角色：
 # 进入项目目录
 cd dpim
 
+# 同步环境（首次）
+uv sync
+
 # 启动 API 服务
-python main.py serve
+uv run python main.py serve
 
 # 写入事件
-python main.py ingest "用户询问了 Python 异步编程"
+uv run python main.py ingest "用户询问了 Python 异步编程"
 
 # 检索
-python main.py query "Python 异步"
+uv run python main.py query "Python 异步"
 
 # 查看系统状态
-python main.py status
+uv run python main.py status
 
 # 查看存储文件路径
-python main.py storage-path
+uv run python main.py storage-path
 ```
 
 API 服务启动后访问 http://localhost:8000/docs 查看 OpenAPI 文档。
