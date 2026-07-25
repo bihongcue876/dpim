@@ -6,12 +6,14 @@
         <n-select v-model:value="filterType" :options="typeOpts" placeholder="类型" clearable size="tiny" style="width:90px" @update:value="load" />
         <n-select v-model:value="filterStatus" :options="statusOpts" placeholder="状态" clearable size="tiny" style="width:90px" @update:value="load" />
         <n-button size="tiny" @click="showNewModal = true">新建事件</n-button>
+        <n-button v-if="selectedIds.size > 0" size="tiny" type="error" @click="onDeleteSelected">删除选中（{{ selectedIds.size }}）</n-button>
       </div>
       <div class="event-table-wrap">
         <div v-for="ev in items" :key="ev.event_id"
           class="event-row"
           :class="{ active: ev.event_id === selectedId }"
           @click="onSelectRow(ev.event_id)">
+          <n-checkbox size="tiny" :checked="selectedIds.has(ev.event_id)" @click.stop @update:checked="toggleSelect(ev.event_id)" style="margin-right:2px" />
           <span class="ev-time">{{ ev.created_at.slice(5,16) }}</span>
           <n-tag size="tiny" :bordered="false" :type="tagType(ev.event_type)">{{ ev.event_type }}</n-tag>
           <span class="ev-content">{{ ev.raw_content.slice(0,50) }}{{ ev.raw_content.length > 50 ? '…' : '' }}</span>
@@ -32,12 +34,22 @@
             <n-description-item label="状态">{{ detail.status }}</n-description-item>
             <n-description-item label="时间">{{ detail.created_at }}</n-description-item>
             <n-description-item label="内容">
-              <div class="raw-content">{{ detail.raw_content }}</div>
+              <template v-if="editing">
+                <n-input v-model:value="editContent" type="textarea" :rows="4" />
+              </template>
+              <div v-else class="raw-content">{{ detail.raw_content }}</div>
             </n-description-item>
           </n-description>
           <div class="detail-actions">
-            <n-button size="small" type="error" @click="onDelete(detail.event_id)">删除事件</n-button>
-            <n-button size="small" :disabled="detail.event_type === 'source'" @click="onGenerate">生成知识</n-button>
+            <template v-if="editing">
+              <n-button size="small" @click="cancelEdit">取消</n-button>
+              <n-button size="small" type="primary" @click="saveEdit" :loading="saving">保存</n-button>
+            </template>
+            <template v-else>
+              <n-button size="small" @click="startEdit">编辑事件</n-button>
+              <n-button size="small" type="error" @click="onDelete(detail.event_id)">删除事件</n-button>
+              <n-button size="small" :disabled="detail.event_type === 'source'" @click="onGenerate">生成知识</n-button>
+            </template>
           </div>
         </div>
       </template>
@@ -57,8 +69,11 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { createDiscreteApi } from 'naive-ui'
 import type { EventListItem } from '@/api/client'
 import * as api from '@/api/client'
+
+const { message } = createDiscreteApi(['message'])
 
 const props = defineProps<{
   validate: () => Promise<boolean>
@@ -77,6 +92,17 @@ const filterStatus = ref<string | undefined>()
 const showNewModal = ref(false)
 const newContent = ref('')
 const newType = ref('auto')
+const editing = ref(false)
+const editContent = ref('')
+const saving = ref(false)
+const selectedIds = ref(new Set<string>())
+
+function toggleSelect(id: string) {
+  const s = selectedIds.value
+  if (s.has(id)) s.delete(id); else s.add(id)
+  // trigger reactivity by replacing the Set
+  selectedIds.value = new Set(s)
+}
 
 const typeOpts = [
   { label: '全部', value: undefined },
@@ -110,9 +136,47 @@ function onPage(p: number) { load(p) }
 
 async function onSelectRow(eventId: string) {
   selectedId.value = eventId
+  editing.value = false
   try {
     detail.value = await api.getEvent(eventId)
   } catch { /* ignore */ }
+}
+
+function startEdit() {
+  if (!detail.value) return
+  editContent.value = String(detail.value.raw_content ?? '')
+  editing.value = true
+}
+
+function cancelEdit() {
+  editing.value = false
+  editContent.value = ''
+}
+
+async function saveEdit() {
+  if (!detail.value || !editContent.value.trim()) return
+  const ok = await props.validate()
+  if (!ok) {
+    // key 过期：刷新数据但保留编辑内容，让用户重试
+    const savedEdit = editContent.value
+    await onSelectRow(detail.value.event_id as string)
+    editContent.value = savedEdit
+    editing.value = true
+    message.warning('数据已被其他人修改，已更新最新内容，请复查后重新保存')
+    return
+  }
+  saving.value = true
+  try {
+    await api.putEvent(detail.value.event_id as string, editContent.value)
+    await props.onCommitted()
+    editing.value = false
+    editContent.value = ''
+    message.success('事件内容已更新')
+    await onSelectRow(detail.value.event_id as string)
+  } catch (e: any) {
+    message.error('保存失败: ' + (e.message || '未知错误'))
+  }
+  finally { saving.value = false }
 }
 
 onMounted(load)
@@ -124,20 +188,56 @@ function onGenerate() {
 async function onDelete(eventId: string) {
   const ok = await props.validate()
   if (!ok) {
+    message.warning('数据已变更，已刷新列表，请重新点击删除')
     await load()
     return
   }
   try {
     await api.deleteEvent(eventId)
     await props.onCommitted()
+    message.success('事件已删除')
+    selectedId.value = null
+    detail.value = null
     await load()
-  } catch (e: any) { /* ignore */ }
+  } catch (e: any) {
+    message.error('删除失败: ' + (e.message || '未知错误'))
+  }
+}
+
+async function onDeleteSelected() {
+  const ids = Array.from(selectedIds.value)
+  if (ids.length === 0) return
+  const ok = await props.validate()
+  if (!ok) {
+    message.warning('数据已变更，已刷新，请重新选择')
+    selectedIds.value = new Set()
+    await load()
+    return
+  }
+  if (!window.confirm(`确认删除选中的 ${ids.length} 条事件？`)) return
+  let fail = 0
+  for (const id of ids) {
+    try {
+      await api.deleteEvent(id)
+    } catch { fail++ }
+  }
+  await props.onCommitted()
+  selectedIds.value = new Set()
+  if (fail === 0) {
+    message.success(`${ids.length} 条事件已删除`)
+  } else {
+    message.warning(`删除完成：${ids.length - fail} 成功，${fail} 失败`)
+  }
+  selectedId.value = null
+  detail.value = null
+  await load()
 }
 
 async function doCreate() {
   if (!newContent.value.trim()) return
   try {
     await api.ingest(newContent.value, newType.value === 'auto' ? undefined : newType.value)
+    await props.onCommitted()
     showNewModal.value = false
     newContent.value = ''
     newType.value = 'auto'

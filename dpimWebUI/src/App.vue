@@ -91,4 +91,10 @@ html, body, #app { margin: 0; padding: 0; height: 100%; overflow: hidden; }
 .app-tabs .n-tab-pane { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 .n-tabs { background: inherit !important; }
 .n-tab-pane { background: inherit !important; }
+
+/* 暗色滚动条 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
 </style>

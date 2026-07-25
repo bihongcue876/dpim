@@ -2,15 +2,15 @@
   <div class="config-tab">
     <div class="config-table">
       <div class="config-header">
-        <span class="ch-name">参数名</span>
-        <span class="ch-current">现有值</span>
+        <span class="ch-name">配置项名</span>
+        <span class="ch-current">现有参数</span>
         <span class="ch-edit">修改</span>
       </div>
       <div v-for="field in fields" :key="field.key" class="config-row">
         <span class="cf-name">{{ field.label }}</span>
         <span class="cf-current" :title="String(original[field.key] ?? '')">{{ original[field.key] ?? '—' }}</span>
         <div class="cf-edit">
-          <n-input v-if="field.type === 'text'" v-model:value="edits[field.key]" size="small" :placeholder="String(original[field.key] ?? '')" />
+          <n-input v-if="field.type === 'text'" v-model:value="edits[field.key]" size="small" :placeholder="field.key === 'backend_url' ? 'http://localhost:8000' : String(original[field.key] ?? '')" />
           <n-input v-else-if="field.type === 'password'" v-model:value="edits[field.key]" type="password" size="small" placeholder="••••••" />
           <n-input-number v-else-if="field.type === 'number'" v-model:value="edits[field.key]" size="small" style="width:100%" :min="field.min ?? 0" :max="field.max ?? 9999" />
           <n-select v-else-if="field.type === 'select'" v-model:value="edits[field.key]" :options="field.options" size="small" />
@@ -56,26 +56,30 @@ interface ConfigField {
 }
 
 const fields: ConfigField[] = [
-  { key: 'memory_db_path', label: 'MEMORY_DB_PATH', type: 'text' },
-  { key: 'graph_json_path', label: 'GRAPH_JSON_PATH', type: 'text' },
-  { key: 'llm_base_url', label: 'LLM_BASE_URL', type: 'text' },
-  { key: 'llm_api_key', label: 'LLM_API_KEY', type: 'password' },
-  { key: 'llm_model_name', label: 'LLM_MODEL_NAME', type: 'text' },
-  { key: 'llm_timeout', label: 'LLM_TIMEOUT', type: 'number', min: 5, max: 300 },
-  { key: 'max_graph_hops', label: 'MAX_GRAPH_HOPS', type: 'number', min: 1, max: 5 },
-  { key: 'rrf_k', label: 'RRF_K', type: 'number', min: 1, max: 200 },
-  { key: 'jaccard_threshold', label: 'JACCARD_THRESHOLD', type: 'number', min: 0, max: 1 },
-  { key: 'health_check_interval', label: 'HEALTH_CHECK_INTERVAL', type: 'number', min: 10, max: 600 },
-  { key: 'compensate_batch_size', label: 'COMPENSATE_BATCH_SIZE', type: 'number', min: 5, max: 100 },
-  { key: 'log_level', label: 'LOG_LEVEL', type: 'select', options: [
+  { key: 'memory_db_path', label: '记忆库路径', type: 'text' },
+  { key: 'graph_json_path', label: '图谱文件路径', type: 'text' },
+  { key: 'llm_base_url', label: 'LLM 地址', type: 'text' },
+  { key: 'llm_api_key', label: 'LLM API 密钥', type: 'password' },
+  { key: 'llm_model_name', label: 'LLM 模型名称', type: 'text' },
+  { key: 'llm_timeout', label: 'LLM 超时（秒）', type: 'number', min: 5, max: 300 },
+  { key: 'max_graph_hops', label: '图谱最大跳数', type: 'number', min: 1, max: 5 },
+  { key: 'rrf_k', label: 'RRF 参数 K', type: 'number', min: 1, max: 200 },
+  { key: 'jaccard_threshold', label: '杰卡德阈值', type: 'number', min: 0, max: 1 },
+  { key: 'health_check_interval', label: '健康检查间隔（秒）', type: 'number', min: 10, max: 600 },
+  { key: 'compensate_batch_size', label: '补偿批处理大小', type: 'number', min: 5, max: 100 },
+  { key: 'log_level', label: '日志级别', type: 'select', options: [
     { label: 'DEBUG', value: 'DEBUG' }, { label: 'INFO', value: 'INFO' },
     { label: 'WARNING', value: 'WARNING' }, { label: 'ERROR', value: 'ERROR' },
   ]},
+  { key: 'backend_url', label: '后端地址', type: 'text' },
 ]
 
 async function load() {
   try {
     original.value = { ...(await api.getSettings()) }
+    // 读取前端本地配置（后端地址）
+    const savedUrl = localStorage.getItem('dpim_backend_url') || 'http://localhost:8000'
+    ;(original.value as any).backend_url = savedUrl
     // 用现有值初始化编辑框，以便用户看到在哪里修改
     for (const f of fields) {
       edits[f.key] = original.value[f.key as keyof SettingsResponse] ?? ''
@@ -102,6 +106,15 @@ async function onSubmit() {
   try {
     const changed: Record<string, any> = {}
     for (const f of fields) {
+      if (f.key === 'backend_url') {
+        // 前端本地配置，不提交到后端 API
+        const newUrl = String(edits[f.key] ?? '').trim()
+        const oldUrl = localStorage.getItem('dpim_backend_url') || 'http://localhost:8000'
+        if (newUrl !== oldUrl) {
+          localStorage.setItem('dpim_backend_url', newUrl)
+        }
+        continue
+      }
       if (String(edits[f.key]) !== String(original.value[f.key as keyof SettingsResponse])) {
         changed[f.key] = edits[f.key]
       }
@@ -126,13 +139,19 @@ async function onSubmit() {
 .config-tab { height: 100%; display: flex; flex-direction: column; padding: 12px 24px; }
 .config-table { flex: 1; overflow-y: auto; }
 .config-header, .config-row {
-  display: flex; align-items: center; gap: 8px; padding: 6px 0;
+  display: flex; align-items: center; gap: 8px; padding: 4px 0;
   border-bottom: 1px solid var(--n-border-color);
   font-size: 13px;
 }
 .config-header { font-weight: 600; position: sticky; top: 0; background: var(--n-color); z-index: 1; }
-.ch-name, .cf-name { width: 200px; flex-shrink: 0; }
-.ch-current, .cf-current { width: 240px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 12px; }
-.ch-edit, .cf-edit { flex: 1; }
+.ch-name, .cf-name { flex: 0 0 160px; }
+.ch-current, .cf-current { flex: 0 1 320px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-family: 'Consolas', 'Cascadia Code', 'Fira Code', monospace; color: #999; }
+.cf-edit :deep(input),
+.cf-edit :deep(textarea),
+.cf-edit :deep(.n-base-selection-input__input),
+.cf-edit :deep(.n-select-menu-item) {
+  font-family: 'Consolas', 'Cascadia Code', 'Fira Code', monospace;
+}
+.ch-edit, .cf-edit { flex: 1 1 200px; min-width: 120px; }
 .config-bottom { flex-shrink: 0; padding: 12px 0; }
 </style>
