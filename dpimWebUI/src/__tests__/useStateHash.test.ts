@@ -5,57 +5,47 @@ vi.mock('@/api/client', () => ({
 }))
 
 import { getStateHash } from '@/api/client'
-import { useStateHash } from '@/composables/useStateHash'
+import { useStateKey } from '@/composables/useStateKey'
 
-describe('useStateHash', () => {
+describe('useStateKey', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('starts locked with loading status', () => {
-    const { isLocked, hashStatus } = useStateHash()
-    expect(isLocked.value).toBe(true)
-    expect(hashStatus.value).toBe('loading')
+  it('init fetches and stores key', async () => {
+    vi.mocked(getStateHash).mockResolvedValue({ hash: 'abc', changed_at: '2026-07-24T12:00:00Z' })
+    const { pageKey, keyStatus, init } = useStateKey()
+    expect(pageKey.value).toBe('')
+    expect(keyStatus.value).toBe('unknown')
+    await init()
+    expect(pageKey.value).toBe('abc')
   })
 
-  it('refresh locks on first call (fresh hash)', async () => {
-    vi.mocked(getStateHash).mockResolvedValue({
-      hash: 'abc',
-      changed_at: '2026-07-24T12:00:00Z',
-    })
-    const { isLocked, hashStatus, refresh } = useStateHash()
-    await refresh()
-    expect(getStateHash).toHaveBeenCalledTimes(1)
-    expect(isLocked.value).toBe(true)
-    expect(hashStatus.value).toBe('locked')
+  it('validate returns true when keys match', async () => {
+    vi.mocked(getStateHash).mockResolvedValue({ hash: 'same', changed_at: '' })
+    const { init, validate } = useStateKey()
+    await init()
+    vi.mocked(getStateHash).mockResolvedValue({ hash: 'same', changed_at: '' })
+    expect(await validate()).toBe(true)
   })
 
-  it('refresh unlocks when hash matches', async () => {
-    vi.mocked(getStateHash).mockResolvedValue({
-      hash: 'same',
-      changed_at: '2026-07-24T12:00:00Z',
-    })
-    const { isLocked, hashStatus, refresh } = useStateHash()
-    await refresh()
-    await refresh()  // same hash → unlock
-    expect(isLocked.value).toBe(false)
-    expect(hashStatus.value).toBe('unlocked')
+  it('validate returns false when keys differ, updates pageKey', async () => {
+    vi.mocked(getStateHash).mockResolvedValue({ hash: 'old', changed_at: '' })
+    const { init, validate, pageKey } = useStateKey()
+    await init()
+    expect(pageKey.value).toBe('old')
+    vi.mocked(getStateHash).mockResolvedValue({ hash: 'new', changed_at: '' })
+    expect(await validate()).toBe(false)
+    expect(pageKey.value).toBe('new')
   })
 
-  it('refresh stays locked when hash changes', async () => {
-    vi.mocked(getStateHash)
-      .mockResolvedValueOnce({ hash: 'abc', changed_at: '2026-07-24T12:00:00Z' })
-      .mockResolvedValueOnce({ hash: 'def', changed_at: '2026-07-24T12:01:00Z' })
-    const { isLocked, refresh } = useStateHash()
-    await refresh()
-    await refresh()
-    expect(isLocked.value).toBe(true)
-  })
-
-  it('unlock() sets locked false', () => {
-    const { isLocked, hashStatus, unlock } = useStateHash()
-    unlock()
-    expect(isLocked.value).toBe(false)
-    expect(hashStatus.value).toBe('unlocked')
+  it('onCommitted refreshes pageKey', async () => {
+    vi.mocked(getStateHash).mockResolvedValue({ hash: 'first', changed_at: '' })
+    const { init, onCommitted, pageKey } = useStateKey()
+    await init()
+    expect(pageKey.value).toBe('first')
+    vi.mocked(getStateHash).mockResolvedValue({ hash: 'second', changed_at: '' })
+    await onCommitted()
+    expect(pageKey.value).toBe('second')
   })
 })

@@ -4,34 +4,30 @@ import TopBar from '@/components/TopBar.vue'
 
 describe('TopBar', () => {
   it('renders title', () => {
-    const wrapper = mount(TopBar, { props: { hashStatus: 'locked' } })
-    expect(wrapper.text()).toContain('DPIM Web UI')
+    const wrapper = mount(TopBar, { props: { keyStatus: 'unknown', loading: false } })
+    expect(wrapper.text()).toContain('DPIM 控制台')
   })
 
-  it('shows 已锁定 tag when locked', () => {
-    const wrapper = mount(TopBar, { props: { hashStatus: 'locked' } })
-    expect(wrapper.text()).toContain('已锁定')
-    expect(wrapper.text()).toContain('点"更新"后再操作')
+  it('shows unknown badge by default', () => {
+    const wrapper = mount(TopBar, { props: { keyStatus: 'unknown', loading: false } })
+    expect(wrapper.text()).toContain('待校验')
   })
 
-  it('shows 已解锁 tag when unlocked', () => {
-    const wrapper = mount(TopBar, { props: { hashStatus: 'unlocked' } })
-    expect(wrapper.text()).toContain('已解锁')
-    expect(wrapper.text()).not.toContain('点"更新"后再操作')
+  it('shows synced badge', () => {
+    const wrapper = mount(TopBar, { props: { keyStatus: 'synced', loading: false } })
+    expect(wrapper.text()).toContain('已同步')
   })
 
-  it('shows 校验中 tag during loading', () => {
-    const wrapper = mount(TopBar, { props: { hashStatus: 'loading' } })
-    expect(wrapper.text()).toContain('校验中')
+  it('shows stale badge', () => {
+    const wrapper = mount(TopBar, { props: { keyStatus: 'stale', loading: false } })
+    expect(wrapper.text()).toContain('数据已变更')
   })
 
-  it('emits refresh-hash on update button click', async () => {
-    const wrapper = mount(TopBar, { props: { hashStatus: 'locked' } })
-    // Naive UI n-button renders as a native button with .n-button class
+  it('emits refresh-key on button click', async () => {
+    const wrapper = mount(TopBar, { props: { keyStatus: 'unknown', loading: false } })
     const btn = wrapper.find('button')
     expect(btn.exists()).toBe(true)
     await btn.trigger('click')
-    expect(wrapper.emitted('refresh-hash')).toBeTruthy()
-    expect(wrapper.emitted('refresh-hash')!.length).toBe(1)
+    expect(wrapper.emitted('refresh-key')).toBeTruthy()
   })
 })
