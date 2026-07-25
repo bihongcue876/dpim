@@ -17,15 +17,14 @@ describe('ConfigTab', () => {
   const validateOk = vi.fn().mockResolvedValue(true)
   const onCommitted = vi.fn().mockResolvedValue(undefined)
 
-  it('renders all 12 config fields', async () => {
+  it('renders all 13 config fields', async () => {
     const wrapper = mount(ConfigTab, {
       props: { health: null, validate: validateOk, onCommitted },
     })
     await new Promise(r => setTimeout(r, 50))
-    expect(wrapper.text()).toContain('MEMORY_DB_PATH')
-    expect(wrapper.text()).toContain('LLM_BASE_URL')
-    expect(wrapper.text()).toContain('LLM_API_KEY')
-    expect(wrapper.text()).toContain('LOG_LEVEL')
+    expect(wrapper.text()).toContain('记忆库路径')
+    expect(wrapper.text()).toContain('日志级别')
+    expect(wrapper.text()).toContain('后端地址')
   })
 
   it('shows submit button at bottom', async () => {

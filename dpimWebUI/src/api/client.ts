@@ -1,7 +1,9 @@
-const BASE = ''
+function base(): string {
+  return localStorage.getItem('dpim_backend_url') || ''
+}
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(BASE + url, {
+  const res = await fetch(base() + url, {
     headers: { 'Content-Type': 'application/json', ...init?.headers },
     ...init,
   })
@@ -130,6 +132,37 @@ export async function putEventStatus(eventId: string, status: string): Promise<v
     method: 'PUT',
     body: JSON.stringify({ status }),
   })
+}
+
+export async function putEvent(eventId: string, content: string): Promise<void> {
+  await req(`/events/${eventId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ content }),
+  })
+}
+
+export async function createEdge(source: string, target: string, relation: string, evidenceEventId = ''): Promise<void> {
+  await req('/edges', {
+    method: 'POST',
+    body: JSON.stringify({ source, target, relation, evidence_event_id: evidenceEventId }),
+  })
+}
+
+export async function deleteEdge(source: string, target: string): Promise<void> {
+  await req(`/edges?source=${encodeURIComponent(source)}&target=${encodeURIComponent(target)}`, {
+    method: 'DELETE',
+  })
+}
+
+export async function createNode(title: string, content = '', sourceEventId = ''): Promise<{ node_id: string }> {
+  return req('/nodes', {
+    method: 'POST',
+    body: JSON.stringify({ title, content, source_event_id: sourceEventId }),
+  })
+}
+
+export async function clearGraph(): Promise<void> {
+  await req('/graph', { method: 'DELETE' })
 }
 
 export async function listNodes(params: {
