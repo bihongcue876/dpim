@@ -1,8 +1,6 @@
-"""FastAPI 应用，8 个 REST 端点"""
+"""FastAPI 应用，15 个 REST 端点"""
 
-import hashlib
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 
@@ -33,7 +31,7 @@ from core.models import (
     StateHashResponse,
 )
 from core.search import search as hybrid_search
-from core.state import ai_state
+from core.state import ai_state, get_key, refresh_key
 
 
 def _ok(**extra: str) -> dict[str, str]:
@@ -85,6 +83,7 @@ def _stores():
 async def ingest(body: IngestRequest):
     es, gs = _stores()
     eid, status = await es.insert_event(body.content, body.event_type)
+    refresh_key()
     return IngestResponse(event_id=eid, status=status, message="Event ingested")
 
 
@@ -100,6 +99,7 @@ async def delete_event(event_id: str):
             detail=f"Cannot delete event: node {result['node_id']} ({result['node_type']})"
                    " would lose all source references",
         )
+    refresh_key()
     return _ok(message="Event deleted")
 
 
@@ -117,6 +117,7 @@ async def delete_node(node_id: str, body: DeleteNodeRequest = DeleteNodeRequest(
         )
     gs.remove_node(node_id)
     await gs.delete_node_fts(node_id)
+    refresh_key()
     return _ok(message="Node deleted")
 
 
@@ -134,6 +135,7 @@ async def modify_node(node_id: str, body: ModifyNodeRequest):
     await gs.upsert_node_fts(node_id, node.title, node.content)
     if gs.dirty:
         await gs.save()
+    refresh_key()
     return _ok(node_id=node_id, message="Node updated")
 
 
@@ -153,6 +155,7 @@ async def modify_event_status(event_id: str, body: ModifyEventStatusRequest):
             detail=f"Status transition {current} -> {new} not allowed",
         )
     await es.update_status(event_id, new)
+    refresh_key()
     return _ok(event_id=event_id, new_status=new, message="Status updated")
 
 
@@ -181,12 +184,8 @@ async def feedback(body: FeedbackRequest):
 @app.get("/state-hash", response_model=StateHashResponse)
 async def state_hash():
     es, gs = _stores()
-    latest = await es.latest_event_id()
-    total_nodes = gs.total_nodes()
-    now = datetime.now(timezone.utc).isoformat()
-    raw = f"{latest or 'none'}:{total_nodes}:{now}"
-    h = hashlib.md5(raw.encode()).hexdigest()
-    return StateHashResponse(hash=h, changed_at=now)
+    changed_at = await es.last_event_at()
+    return StateHashResponse(hash=get_key(), changed_at=changed_at or "")
 
 
 @app.get("/events", response_model=EventListResponse)
@@ -276,6 +275,7 @@ async def update_settings(body: SettingsUpdateRequest):
     for field, value in body.model_dump(exclude_none=True).items():
         if hasattr(settings, field):
             setattr(settings, field, value)
+    refresh_key()
     return _ok(message="Settings updated (runtime only, not persisted to .env)")
 
 
