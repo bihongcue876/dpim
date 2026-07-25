@@ -59,9 +59,11 @@
         <n-empty v-if="!nodeLoading && nodeItems.length === 0" description="暂无节点" style="padding:40px 0" />
       </n-tab-pane>
       <n-tab-pane name="search" tab="检索">
-        <n-input v-model:value="localSearchQuery" placeholder="输入关键词" size="small" clearable style="margin-bottom:6px" />
-        <n-select v-model:value="localSearchFilter" :options="searchFilterOptions" placeholder="类型" clearable size="small" style="margin-bottom:6px" />
-        <n-button size="small" @click="doSearch" :disabled="!localSearchQuery.trim()" style="margin-bottom:8px">搜索</n-button>
+        <div class="search-row">
+          <n-input v-model:value="localSearchQuery" placeholder="输入关键词" size="small" clearable />
+          <n-select v-model:value="localSearchFilter" :options="searchFilterOptions" placeholder="类型" clearable size="small" style="width:100px" />
+          <n-button size="small" @click="doSearch" :disabled="!localSearchQuery.trim()">搜索</n-button>
+        </div>
         <n-data-table
           :columns="searchColumns"
           :data="searchResults"
@@ -172,4 +174,5 @@ const searchColumns: DataTableColumn[] = [
 
 <style scoped>
 .left-panel { height: 100%; padding: 8px; overflow-y: auto; }
+.search-row { display: flex; gap: 4px; margin-bottom: 8px; }
 </style>

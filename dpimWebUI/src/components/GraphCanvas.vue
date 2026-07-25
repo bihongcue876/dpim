@@ -26,6 +26,8 @@ let svg: d3.Selection<SVGSVGElement, unknown, null, undefined> | null = null
 let simulation: d3.Simulation<SimNode, SimLink> | null = null
 let g: d3.Selection<SVGGElement, unknown, null, undefined> | null = null
 let zoom: d3.ZoomBehavior<SVGSVGElement, unknown> | null = null
+let resizeObserver: ResizeObserver | null = null
+let resizeTimer: ReturnType<typeof setTimeout>
 
 interface SimNode extends d3.SimulationNodeDatum {
   id: string
@@ -39,6 +41,7 @@ interface SimLink extends d3.SimulationLinkDatum<SimNode> {
 }
 
 function destroy() {
+  if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null }
   if (simulation) { simulation.stop(); simulation = null }
   if (svg) { svg.remove(); svg = null }
   g = null
@@ -160,12 +163,6 @@ function refresh() {
   render()
 }
 
-let resizeTimer: ReturnType<typeof setTimeout>
-function onResize() {
-  clearTimeout(resizeTimer)
-  resizeTimer = setTimeout(() => refresh(), 200)
-}
-
 function onDoubleClick() {
   if (svg && zoom) {
     svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity)
@@ -180,12 +177,22 @@ watch(() => props.highlightNodeId, () => {
   }
 })
 
-onMounted(() => {
+onMounted(async () => {
+  // Wait for DOM to settle before measuring container size
+  await new Promise(r => requestAnimationFrame(r))
   refresh()
-  window.addEventListener('resize', onResize)
+  // ResizeObserver: fires when container resizes (panel collapse/expand, window resize)
+  if (containerRef.value) {
+    const ro = new ResizeObserver(() => {
+      clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => refresh(), 150)
+    })
+    ro.observe(containerRef.value)
+    resizeObserver = ro
+  }
 })
 onUnmounted(() => {
-  window.removeEventListener('resize', onResize)
+  if (resizeObserver && containerRef.value) resizeObserver.unobserve(containerRef.value)
   destroy()
 })
 </script>

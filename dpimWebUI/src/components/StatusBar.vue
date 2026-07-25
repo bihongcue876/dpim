@@ -1,29 +1,31 @@
 <template>
-  <n-layout-footer class="status-bar">
-    <span>连接状态: <n-tag :type="connected ? 'success' : 'error'" size="tiny">{{ connected ? '已连接' : '断开' }}</n-tag></span>
-    <span>AI 状态: <n-tag :type="aiAvailable ? 'success' : 'warning'" size="tiny">{{ aiAvailable ? '可用' : '降级' }}</n-tag></span>
-    <span>事件: {{ totalEvents }}</span>
-    <span>节点: {{ totalNodes }}</span>
-  </n-layout-footer>
+  <div class="statusbar">
+    <span class="sb-item">
+      连接: <n-tag size="tiny" :type="connected ? 'success' : 'error'" :bordered="false">{{ connected ? '已连接' : '断开' }}</n-tag>
+    </span>
+    <span class="sb-item">
+      AI: <n-tag size="tiny" :type="health?.ai_available ? 'success' : 'warning'" :bordered="false">{{ health?.ai_available ? '可用' : '降级' }}</n-tag>
+    </span>
+    <span class="sb-item">事件: {{ health?.layers?.event_line?.total_events ?? '—' }}</span>
+    <span class="sb-item">节点: {{ health?.layers?.knowledge_graph?.total_nodes ?? '—' }}</span>
+  </div>
 </template>
 
 <script setup lang="ts">
+import type { HealthResponse } from '@/api/client'
+
 defineProps<{
+  health: HealthResponse | null
   connected: boolean
-  aiAvailable: boolean
-  totalEvents: number
-  totalNodes: number
 }>()
 </script>
 
 <style scoped>
-.status-bar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  height: 28px;
-  padding: 0 12px;
-  font-size: 12px;
+.statusbar {
+  display: flex; align-items: center; gap: 16px;
+  height: 28px; padding: 0 16px; font-size: 12px;
   border-top: 1px solid var(--n-border-color);
+  flex-shrink: 0;
 }
+.sb-item { display: flex; align-items: center; gap: 4px; }
 </style>

@@ -1,34 +1,49 @@
 <template>
-  <n-layout-header class="top-bar">
-    <div class="top-bar-left">
-      <n-tag :type="hashStatus === 'unlocked' ? 'success' : hashStatus === 'loading' ? 'warning' : 'default'">
-        {{ hashStatus === 'unlocked' ? '已解锁' : hashStatus === 'loading' ? '校验中' : '已锁定' }}
-      </n-tag>
-      <span v-if="hashStatus === 'locked'" class="hash-hint">数据可能已变更，请点"更新"后再操作</span>
+  <div class="topbar">
+    <div class="topbar-left">
+      <span class="topbar-title">DPIM 控制台</span>
+      <span class="key-badge" :class="keyStatus">{{ badgeText }}</span>
     </div>
-    <div class="top-bar-title">DPIM Web UI</div>
-    <div class="top-bar-right">
-      <n-button size="small" @click="$emit('refresh-hash')" :loading="hashStatus === 'loading'">更新</n-button>
+    <div class="topbar-right">
+      <n-button size="small" :loading="loading" @click="$emit('refresh-key')">
+        {{ loading ? '获取中' : '获取最新状态' }}
+      </n-button>
     </div>
-  </n-layout-header>
+  </div>
 </template>
 
 <script setup lang="ts">
-defineProps<{ hashStatus: string }>()
-defineEmits<{ 'refresh-hash': [] }>()
+import { computed } from 'vue'
+
+const props = defineProps<{
+  keyStatus: 'unknown' | 'synced' | 'stale'
+  loading: boolean
+}>()
+
+defineEmits<{ 'refresh-key': [] }>()
+
+const badgeText = computed(() => {
+  if (props.keyStatus === 'unknown') return '待校验'
+  if (props.keyStatus === 'synced') return '已同步'
+  return '数据已变更'
+})
+const badgeClass = computed(() => props.keyStatus)
 </script>
 
 <style scoped>
-.top-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 40px;
-  padding: 0 12px;
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 56px; padding: 0 16px;
   border-bottom: 1px solid var(--n-border-color);
+  flex-shrink: 0;
 }
-.top-bar-left { display: flex; align-items: center; gap: 8px; }
-.top-bar-title { font-weight: 600; font-size: 15px; }
-.top-bar-right { display: flex; align-items: center; gap: 8px; }
-.hash-hint { font-size: 12px; color: var(--n-text-color-3); }
+.topbar-left { display: flex; align-items: center; gap: 10px; }
+.topbar-title { font-size: 18px; font-weight: 600; letter-spacing: 1px; }
+.key-badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+}
+.key-badge.unknown { background: #faad1433; color: #faad14; }
+.key-badge.synced { background: #52c41a33; color: #52c41a; }
+.key-badge.stale { background: #f5222d33; color: #f5222d; }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
 </style>

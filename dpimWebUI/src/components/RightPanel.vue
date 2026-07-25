@@ -37,6 +37,28 @@
       </n-form>
       <n-button size="small" type="primary" :disabled="locked" @click="$emit('save-settings', localSettings)">保存配置</n-button>
       <n-alert v-if="savedHint" type="info" closable style="margin-top:8px;font-size:12px">{{ savedHint }}</n-alert>
+
+      <n-divider />
+
+      <h4>创建节点</h4>
+      <n-form size="small" label-placement="top">
+        <n-form-item label="标题">
+          <n-input v-model:value="newNodeTitle" placeholder="节点标题（必填）" />
+        </n-form-item>
+        <n-form-item label="内容">
+          <n-input v-model:value="newNodeContent" type="textarea" placeholder="节点内容" />
+        </n-form-item>
+        <n-form-item label="类型">
+          <n-select v-model:value="newNodeType" :options="[
+            { label: 'interaction', value: 'interaction' },
+            { label: 'data', value: 'data' },
+          ]" />
+        </n-form-item>
+        <n-form-item label="源证事件 ID（可选）">
+          <n-input v-model:value="newNodeEventId" placeholder="关联的事件 ID" />
+        </n-form-item>
+      </n-form>
+      <n-button size="small" type="primary" :disabled="locked || !newNodeTitle.trim()" @click="doCreateNode">创建</n-button>
     </template>
 
     <!-- 事件详情视图 -->
@@ -100,15 +122,38 @@ const props = defineProps<{
   savedHint: string
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   'delete-event': [id: string]
   'retry-event': [id: string]
   'save-node': [payload: { node_id: string; content: string }]
   'delete-node': [id: string]
   'save-settings': [settings: SettingsResponse]
+  'create-node': [payload: { title: string; content: string; node_type: string; event_id: string }]
 }>()
 
+// Node editing
 const editContent = ref('')
+
+// New node form
+const newNodeTitle = ref('')
+const newNodeContent = ref('')
+const newNodeType = ref('interaction')
+const newNodeEventId = ref('')
+
+function doCreateNode() {
+  emit('create-node', {
+    title: newNodeTitle.value,
+    content: newNodeContent.value,
+    node_type: newNodeType.value,
+    event_id: newNodeEventId.value,
+  })
+  newNodeTitle.value = ''
+  newNodeContent.value = ''
+  newNodeType.value = 'interaction'
+  newNodeEventId.value = ''
+}
+
+// Settings
 const localSettings = ref<SettingsResponse>({
   memory_db_path: '', graph_json_path: '', llm_base_url: '', llm_api_key: '',
   llm_model_name: '', llm_timeout: 30, max_graph_hops: 2, rrf_k: 60,
