@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.3
-> 日期：2026-07-25
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订
+> 版本：1.4
+> 日期：2026-07-27
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤
 
 ---
 
@@ -294,7 +294,7 @@ raw → indexed → linked
 | snippet | string | 匹配片段，前 200 字符 |
 | score | number | RRF 得分 |
 | source_events | string[] | 源事件 ID 列表 |
-| source_type | enum | interaction / data / source |
+| source_type | enum | interaction / data / source / system |
 | confidence | number | 节点置信度均值 |
 | degraded | boolean | 是否降级结果 |
 

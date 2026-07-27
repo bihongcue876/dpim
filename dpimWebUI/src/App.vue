@@ -1,5 +1,6 @@
 <template>
   <n-config-provider :theme="darkTheme" :locale="zhCN" :date-locale="dateZhCN">
+    <n-dialog-provider>
     <n-message-provider>
       <n-layout class="app-root">
         <TopBar :key-status="keyStatus" :loading="keyLoading" @refresh-key="onRefreshKey" />
@@ -26,6 +27,7 @@
         </n-tabs>
       </n-layout>
     </n-message-provider>
+    </n-dialog-provider>
   </n-config-provider>
 </template>
 
@@ -76,21 +78,31 @@ onMounted(async () => {
   await init()
   loadHealth()
   healthTimer = setInterval(loadHealth, 30000)
+
+  // 监听跨 Tab 导航事件（搜索→图谱）
+  window.addEventListener('dpim:focus-node', ((e: CustomEvent) => {
+    activeTab.value = 'graph'
+  }) as EventListener)
 })
-onUnmounted(() => clearInterval(healthTimer))
+onUnmounted(() => {
+  clearInterval(healthTimer)
+  window.removeEventListener('dpim:focus-node', (() => {}) as EventListener)
+})
 </script>
 
 <style>
 html, body, #app { margin: 0; padding: 0; height: 100%; overflow: hidden; }
 .app-root { height: 100vh; display: flex; flex-direction: column; background: var(--n-color); }
+/* 用 calc 给 tabs 设确定高度，子元素 height:100% 就能正确解析 */
 .app-tabs {
-  flex: 1; display: flex; flex-direction: column; overflow: hidden;
+  height: calc(100vh - 84px);
+  display: flex; flex-direction: column; overflow: hidden;
   padding: 0;
 }
 .app-tabs > .n-tabs-nav { flex-shrink: 0; padding: 0 16px; }
-.app-tabs .n-tab-pane { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+/* tab-pane 用 flex 撑满剩余空间 */
+.app-tabs .n-tab-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .n-tabs { background: inherit !important; }
-.n-tab-pane { background: inherit !important; }
 
 /* 暗色滚动条 */
 ::-webkit-scrollbar { width: 6px; height: 6px; }

@@ -1,12 +1,12 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.3 (原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订)
+// 版本 1.4 (SearchTab 多维搜索 + system 源过滤补充)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
 export type EventType = 'interaction' | 'data' | 'source';
 export type EventStatus = 'raw' | 'indexed' | 'linked' | 'failed' | 'skipped';
 export type NodeType = 'system' | 'interaction' | 'data';
-export type SourceFilter = 'all' | 'interaction' | 'data';
+export type SourceFilter = 'all' | 'interaction' | 'data' | 'system';
 
 // ==================== 数据模型 ====================
 
@@ -238,7 +238,7 @@ export interface SearchResult {
   snippet: string;
   score: number;
   source_events: string[];
-  source_type: EventType | 'source'; // 可能来自 source 事件
+  source_type: EventType | 'system'; // 可能值: interaction, data, source, system
   confidence: number;
   degraded: boolean;
 }
