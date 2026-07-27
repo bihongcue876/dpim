@@ -26,8 +26,8 @@ DPIM 是一个双区智能贮存系统，同时承担两个角色：
 - 降级与补偿：LLM 不可用时自动降级，恢复后批量补偿积压事件
 - 线程安全的 AI 可用性状态管理（AIState 单例封装）
 - 启动时配置校验：LLM 地址格式 + API Key 空值警告
-- FastAPI 接口层，8 个 REST 端点（统一成功响应信封）
-- Typer CLI 管理，9 个命令
+- FastAPI REST 接口层，23 个端点
+- 命令行管理：内置 Typer CLI + 独立 dpim-cli（推荐，支持 Shell/管道/JSON 输出）
 
 ---
 
@@ -130,6 +130,68 @@ dpim-webui 提供四个标签页管理 DPIM 系统的全部功能：
 
 ---
 
+## CLI 工具
+
+dpim-cli 是通过 HTTP API 管理 DPIM 系统的命令行工具，与 dpim-webui 平级。安装后提供 `dpim` 命令，支持单次命令模式和交互式 Shell 模式。
+
+### 安装
+
+```bash
+# 进入 CLI 项目目录
+cd dpim-cli
+
+# 安装依赖并注册 dpim 命令
+pip install -e .
+```
+
+### 快速使用
+
+```bash
+# 查看系统状态
+dpim status
+
+# 写入事件
+dpim ingest "用户询问了 Python 异步编程" --type interaction
+
+# 检索
+dpim search "Python 异步" --type all --hops 2
+
+# 查看事件列表 / 节点列表
+dpim events --limit 10
+dpim nodes
+
+# 进入交互式 Shell
+dpim shell
+```
+
+### 命令一览
+
+| 类别 | 命令 | 说明 |
+|------|------|------|
+| 系统 | `status` | 查看系统健康状态 |
+|  | `state-key` | 显示状态校验密钥 |
+| 事件 | `ingest <内容>` | 写入事件 [--type auto\|interaction\|data\|source] |
+|  | `events` | 分页事件列表 [--type] [--status] [--limit] |
+|  | `event <id>` | 查看事件详情 |
+|  | `event edit/retry/skip/unskip/delete <id>` | 事件操作 |
+| 节点 | `nodes` | 分页节点列表 [--type] [--limit] |
+|  | `node <id>` | 查看节点详情 |
+|  | `node --title <标题> --content <内容>` | 创建节点 |
+|  | `node edit/delete <id>` | 节点操作 |
+| 边 | `edge create/delete` | 边操作 [--source] [--target] [--relation] |
+| 检索 | `search <关键词>` | 混合检索 [--type] [--hops] [--limit] |
+|  | `feedback <id>` | 反馈 --accept \| --reject |
+| 配置 | `config` / `config set <k> <v>` | 配置管理 |
+| 图谱 | `graph clear` | 清空图谱 |
+
+### 输出格式
+
+支持 `--format table|json|yaml` 全局选项切换输出格式。
+
+详细说明和所有命令参见 [dpim-cli/README.md](dpim-cli/README.md)。
+
+---
+
 ## 设计描述
 
 系统采用四层架构：
@@ -147,7 +209,8 @@ dpim-webui 提供四个标签页管理 DPIM 系统的全部功能：
 
 - 后端技术栈：Python 3.14 + asyncio + FastAPI + SQLite(FTS5) + NetworkX + openai SDK + instructor + Typer
 - 前端技术栈：Vue 3 + TypeScript + Vite + Naive UI + D3.js
-- 包管理：后端 uv（64 依赖） / 前端 pnpm
+- CLI 技术栈：Python + httpx + prompt-toolkit + tabulate + PyYAML
+- 包管理：后端 uv（64 依赖）/ 前端 pnpm / CLI pip
 - 测试：pytest 113 用例 + vitest 13 用例，全部通过
 - 代码质量：ruff + mypy（后端）/ vue-tsc（前端）
 - 存储文件：data/memory.db（SQLite）和 data/graph.json（JSON），位于 dpim/data/
