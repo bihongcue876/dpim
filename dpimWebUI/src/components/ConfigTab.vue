@@ -8,9 +8,14 @@
       </div>
       <div v-for="field in fields" :key="field.key" class="config-row">
         <span class="cf-name">{{ field.label }}</span>
-        <span class="cf-current" :title="String(original[field.key] ?? '')">{{ original[field.key] ?? '—' }}</span>
+        <span class="cf-current" :title="field.key === 'backend_url' ? backendUrl : String(original[field.key] ?? '')">{{ field.key === 'backend_url' ? backendUrl : (original[field.key] ?? '—') }}</span>
         <div class="cf-edit">
-          <n-input v-if="field.type === 'text'" v-model:value="edits[field.key]" size="small" :placeholder="field.key === 'backend_url' ? 'http://localhost:8000' : String(original[field.key] ?? '')" />
+          <template v-if="field.key === 'backend_url'">
+            <n-input v-model:value="backendUrl" size="small" placeholder="http://localhost:8000" />
+          </template>
+          <template v-else-if="field.type === 'text'">
+            <n-input v-model:value="edits[field.key]" size="small" :placeholder="String(original[field.key] ?? '')" />
+          </template>
           <n-input v-else-if="field.type === 'password'" v-model:value="edits[field.key]" type="password" size="small" placeholder="••••••" />
           <n-input-number v-else-if="field.type === 'number'" v-model:value="edits[field.key]" size="small" style="width:100%" :min="field.min ?? 0" :max="field.max ?? 9999" />
           <n-select v-else-if="field.type === 'select'" v-model:value="edits[field.key]" :options="field.options" size="small" />
@@ -42,6 +47,7 @@ const original = ref<SettingsResponse>({
   jaccard_threshold: 0.85, health_check_interval: 60, compensate_batch_size: 20, log_level: 'INFO',
 })
 const edits = reactive<Record<string, any>>({})
+const backendUrl = ref('http://localhost:8000')
 const submitting = ref(false)
 const staleHint = ref('')
 const savedHint = ref('')
@@ -78,10 +84,10 @@ async function load() {
   try {
     original.value = { ...(await api.getSettings()) }
     // 读取前端本地配置（后端地址）
-    const savedUrl = localStorage.getItem('dpim_backend_url') || 'http://localhost:8000'
-    ;(original.value as any).backend_url = savedUrl
+    backendUrl.value = localStorage.getItem('dpim_backend_url') || 'http://localhost:8000'
     // 用现有值初始化编辑框，以便用户看到在哪里修改
     for (const f of fields) {
+      if (f.key === 'backend_url') continue
       edits[f.key] = original.value[f.key as keyof SettingsResponse] ?? ''
     }
   } catch { /* ignore */ }
@@ -108,10 +114,11 @@ async function onSubmit() {
     for (const f of fields) {
       if (f.key === 'backend_url') {
         // 前端本地配置，不提交到后端 API
-        const newUrl = String(edits[f.key] ?? '').trim()
+        const newUrl = backendUrl.value.trim()
         const oldUrl = localStorage.getItem('dpim_backend_url') || 'http://localhost:8000'
         if (newUrl !== oldUrl) {
           localStorage.setItem('dpim_backend_url', newUrl)
+          savedHint.value = '后端地址已更新，下次请求将使用新地址'
         }
         continue
       }
