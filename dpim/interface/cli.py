@@ -12,6 +12,8 @@ from core.graph_store import GraphStore
 from core.models import SearchRequest
 from core.search import search as hybrid_search
 
+
+
 cli = typer.Typer()
 
 
@@ -36,11 +38,7 @@ def ingest(content: str, event_type: str = "auto"):
     """写入一条原始事件"""
     async def _run():
         db, es, gs = await _stores()
-        eid, status = await es.insert(content, event_type)
-        await es.insert_fts(eid, content)
-        if status == "raw":
-            await es.update_status(eid, "indexed")
-            status = "indexed"
+        eid, status = await es.insert_event(content, event_type)
         await db.close()
         typer.echo(f"Event {eid} ingested, status={status}")
     asyncio.run(_run())

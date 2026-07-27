@@ -173,7 +173,7 @@ class GraphStore:
                 continue
             if node_type and ndata.node_type.value != node_type:
                 continue
-            result.append(ndata.to_dict() if hasattr(ndata, "to_dict") else vars(ndata))
+            result.append(ndata.model_dump())
         return result
 
     def list_edges(self, node_id: str | None = None) -> list[dict]:
@@ -221,12 +221,12 @@ class GraphStore:
             data = ndata.get("data")
             if data is None:
                 continue
-            if query.lower() in (getattr(data, "title", "") or "").lower() or \
-               query.lower() in (getattr(data, "content", "") or "").lower():
+            if query.lower() in (data.title or "").lower() or \
+               query.lower() in (data.content or "").lower():
                 results.append({
                     "node_id": nid,
-                    "title": getattr(data, "title", ""),
-                    "content": getattr(data, "content", ""),
+                    "title": data.title,
+                    "content": data.content,
                     "rank": 0.0,
                 })
                 if len(results) >= limit:

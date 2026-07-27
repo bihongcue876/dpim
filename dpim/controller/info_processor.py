@@ -1,6 +1,5 @@
 """信息处理 Agent：将 raw_content 分类提取为 interaction/data/source 片段"""
 
-from core.llm import create_instructed_client
 from core.models import InformationFragment
 
 # Agent system prompt — 由用户补充
@@ -14,5 +13,4 @@ async def process(
 
     提示词待用户补充后启用完整逻辑，当前返回空片段占位。
     """
-    _ = create_instructed_client()
     return InformationFragment()

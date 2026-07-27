@@ -69,7 +69,6 @@ async def lifespan(app: FastAPI):
         await orchestrator.stop()
     if graph_store and graph_store.dirty:
         await graph_store.save()
-        await graph_store.flush()
     if db:
         await db.close()
 
@@ -232,7 +231,7 @@ async def create_node(body: CreateNodeRequest):
     gs.add_node(node)
     await gs.flush()
     refresh_key()
-    return {"status": "ok", "node_id": node_id, "message": "Node created"}
+    return _ok(node_id=node_id, message="Node created")
 
 
 @app.delete("/graph")

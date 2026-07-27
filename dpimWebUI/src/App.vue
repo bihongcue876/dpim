@@ -51,6 +51,11 @@ const { keyStatus, init, validate, onCommitted } = useStateKey()
 const keyLoading = ref(false)
 const activeTab = ref('config')
 
+// 跨 Tab 导航事件处理函数（搜索→图谱）
+const onFocusNode = ((_e: CustomEvent) => {
+  activeTab.value = 'graph'
+}) as EventListener
+
 async function onRefreshKey() {
   keyLoading.value = true
   try {
@@ -78,15 +83,11 @@ onMounted(async () => {
   await init()
   loadHealth()
   healthTimer = setInterval(loadHealth, 30000)
-
-  // 监听跨 Tab 导航事件（搜索→图谱）
-  window.addEventListener('dpim:focus-node', ((e: CustomEvent) => {
-    activeTab.value = 'graph'
-  }) as EventListener)
+  window.addEventListener('dpim:focus-node', onFocusNode)
 })
 onUnmounted(() => {
   clearInterval(healthTimer)
-  window.removeEventListener('dpim:focus-node', (() => {}) as EventListener)
+  window.removeEventListener('dpim:focus-node', onFocusNode)
 })
 </script>
 

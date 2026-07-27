@@ -26,14 +26,6 @@ class AIState:
         with self._lock:
             self._available = value
 
-    def set_available(self, value: bool) -> None:
-        """线程安全地设置 AI 可用性状态。"""
-        self.available = value
-
-    def get_available(self) -> bool:
-        """线程安全地获取 AI 可用性状态。"""
-        return self.available
-
 
 # 模块级单例
 ai_state = AIState()
