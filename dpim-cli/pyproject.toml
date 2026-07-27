@@ -1,0 +1,21 @@
+[project]
+name = "dpim-cli"
+version = "0.1.0"
+description = "DPIM 命令行交互工具 — 通过 HTTP API 管理双区智能内存"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27.0",
+    "prompt-toolkit>=3.0.0",
+    "tabulate>=0.9.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+dpim = "dpim_cli.main:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
