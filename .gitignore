@@ -33,6 +33,18 @@ dpim/data/
 dpimWebUI/node_modules/
 dpimWebUI/dist/
 
+# CLI 工具
+dpim-cli/src/__pycache__/
+dpim-cli/src/*.py[cod]
+dpim-cli/src/.ruff_cache/
+dpim-cli/src/.mypy_cache/
+dpim-cli/src/.pytest_cache/
+dpim-cli/src/build/
+dpim-cli/src/dist/
+dpim-cli/src/dpim_cli.egg-info
+dpim-cli/src/.coverage
+dpim-cli/src/htmlcov/
+
 docs/
 
 
