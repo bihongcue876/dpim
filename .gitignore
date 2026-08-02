@@ -1,10 +1,6 @@
-# Python 字节码与缓存
-dpim/__pycache__/
-dpim/*.py[cod]
-dpim/interface/__pycache__/
-dpim/core/__pycache__/
-dpim/tests/__pycache__/
-dpim/controller/__pycache__/
+# Python 字节码与缓存（递归覆盖所有子目录，含 controller/tools 等）
+**/__pycache__/
+*.py[cod]
 
 # 虚拟环境
 dpim/.venv/
@@ -32,6 +28,13 @@ dpim/data/
 # 前端项目
 dpimWebUI/node_modules/
 dpimWebUI/dist/
+
+# 根目录游离的 npm 残留（真实前端项目在 dpimWebUI/）
+/package.json
+/package-lock.json
+
+# TypeScript 增量构建缓存
+dpimWebUI/*.tsbuildinfo
 
 # CLI 工具
 dpimCLI/**/__pycache__/
