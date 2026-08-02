@@ -21,6 +21,10 @@ DPIM 是一个双区智能贮存系统，同时承担两个角色：
 - 事件状态机：raw → indexed → linked（终态），failed / skipped 异常路径
 - 知识图谱节点与边的人工增删改查，JSON 文件持久化（防抖自动保存，5 次修改阈值）
 - 混合检索：FTS5 召回 → 2 跳图扩散 → RRF 融合排序（无 Agent 默认仅 FTS5）
+- **Agent 管线（方案A，硬编码编排）**：Cr/In/Gr/Meta 四 Agent，ingest 并行拆分与查图、
+  Gr 修正循环（仅重试 Gr）、Meta 硬关卡审核；检索意图分析 + Meta 复核
+- **BYOK 多模型网关**：多 provider 注册（DeepSeek/Ollama/OpenRouter…），按角色路由模型，
+  一次调用打包完整上下文（chat_structured）
 - 事件源证锚定：每条图节点必含 source_refs 与 evidence_quote，杜绝幻觉
 - 删除保护：system 和 data 类型节点失去所有源证时禁止删除
 - 降级与补偿：LLM 不可用时自动降级，恢复后批量补偿积压事件
@@ -117,7 +121,7 @@ pnpm test
 
 ## WebUI 界面说明
 
-dpim-webui 提供四个标签页管理 DPIM 系统的全部功能：
+dpim-webui 提供五个标签页管理 DPIM 系统的全部功能：
 
 | 标签页 | 功能 |
 |--------|------|
@@ -125,8 +129,9 @@ dpim-webui 提供四个标签页管理 DPIM 系统的全部功能：
 | **信息列表** | 事件分页展示、类型/状态筛选、行内编辑、删除确认、新建事件、失败重试 |
 | **信息图** | D3.js 力导向知识图谱，节点按类型着色（data=浅蓝/interaction=绿/system=蓝），边带箭头标记，双向边弯曲错开；点击节点查看/编辑详情面板，面板可向下收起释放画布空间 |
 | **检索** | 三维度搜索：综合检索（分组展示◆事件原文/■知识节点/▲系统事件）/ 事件原文 / 知识节点；高级可折叠筛选面板（来源类型、图扩散跳数、最低置信度、结果数量）；翻页功能（服务端 offset 分页） |
+| **信息传入** | 人工写入事件（内容 + 类型 auto/interaction/data/source）+ AI 状态监控（就绪/未连接，30s 轮询）+ 处理历史（localStorage 10 条，5s 轮询状态，60s 超时） |
 
-核心交互：检索结果可跳转到信息图定位节点；所有写操作受状态校验密钥保护。组件库：Naive UI（暗色模式）。
+核心交互：检索结果可跳转到信息图定位节点；信息传入历史可跳转到信息列表定位事件；所有写操作受状态校验密钥保护。组件库：Naive UI（暗色模式）。
 
 ---
 
@@ -198,7 +203,7 @@ dpim shell
 
 - 信息线层：SQLite + FTS5，不可变事件日志，完全独立于 AI
 - 信息图层：NetworkX + JSON，知识图谱节点与边
-- 中控层：asyncio.Queue 调度 + 可选 Agent 管线
+- 中控层：asyncio.Queue 调度 + 可选 Agent 管线（Cr/In/Gr/Meta 四角色，提示词在 `dpim/prompts/`）
 - 接口层：FastAPI + Typer，对外统一 API 和 CLI
 
 详细设计参见 docs/ 目录下的设计文档。
