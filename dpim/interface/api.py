@@ -1,6 +1,8 @@
 """FastAPI 应用，15 个 REST 端点"""
 
+import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 
@@ -28,6 +30,7 @@ from core.models import (
     NodeDetailResponse,
     NodeListItem,
     NodeListResponse,
+    QueueMessage,
     SearchRequest,
     SearchResponse,
     SettingsResponse,
@@ -36,6 +39,8 @@ from core.models import (
 )
 from core.search import search as hybrid_search
 from core.state import ai_state, get_key, refresh_key
+
+logger = logging.getLogger(__name__)
 
 
 def _ok(**extra: str) -> dict[str, str]:
@@ -87,6 +92,15 @@ async def ingest(body: IngestRequest):
     es, gs = _stores()
     eid, status = await es.insert_event(body.content, body.event_type)
     refresh_key()
+    # Agent 管线启用时，入队让管线即时处理（异步，不阻塞写入返回）
+    if settings.agent_mode == "pipeline" and ai_state.available and orchestrator:
+        await orchestrator.enqueue(
+            QueueMessage(
+                type="ingest",
+                payload={"event_id": eid},
+                timestamp=datetime.now(timezone.utc).timestamp(),
+            )
+        )
     return IngestResponse(event_id=eid, status=status, message="Event ingested")
 
 
@@ -207,7 +221,8 @@ async def delete_edge(source: str, target: str):
 @app.post("/nodes")
 async def create_node(body: CreateNodeRequest):
     import uuid
-    from core.models import GraphNode, SourceRef, NodeMetadata
+
+    from core.models import GraphNode, NodeMetadata, SourceRef
     es, gs = _stores()
     node_id = uuid.uuid4().hex[:16]
 
@@ -246,6 +261,11 @@ async def clear_graph():
 @app.post("/query", response_model=SearchResponse)
 async def query(body: SearchRequest):
     es, gs = _stores()
+    if settings.agent_mode == "pipeline" and ai_state.available and orchestrator:
+        try:
+            return await orchestrator.run_query(body)
+        except Exception:
+            logger.exception("Query agent pipeline failed, fallback to hybrid search")
     return await hybrid_search(body, es, gs, degraded=not ai_state.available)
 
 
@@ -331,7 +351,11 @@ async def get_node(node_id: str):
             for sr in node.source_refs
         ],
         confidence=node.confidence,
-        metadata=node.metadata.model_dump() if hasattr(node.metadata, "model_dump") else dict(node.metadata),
+        metadata=(
+            node.metadata.model_dump()
+            if hasattr(node.metadata, "model_dump")
+            else dict(node.metadata)
+        ),
         edges=[EdgeInfo(**e) for e in edges],
     )
 
@@ -345,6 +369,14 @@ async def get_settings():
         llm_api_key=settings.llm_api_key,
         llm_model_name=settings.llm_model_name,
         llm_timeout=settings.llm_timeout,
+        available_providers=["primary", *settings.providers.keys()],
+        active_provider=settings.active_provider,
+        agent_mode=settings.agent_mode,
+        agent_max_retries=settings.agent_max_retries,
+        agent_cr_model=settings.agent_cr_model,
+        agent_in_model=settings.agent_in_model,
+        agent_gr_model=settings.agent_gr_model,
+        agent_meta_model=settings.agent_meta_model,
         max_graph_hops=settings.max_graph_hops,
         rrf_k=settings.rrf_k,
         jaccard_threshold=settings.jaccard_threshold,
