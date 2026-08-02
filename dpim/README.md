@@ -18,7 +18,17 @@
 
 ### 2. Agent 模式为可选增强
 
-信息处理 Agent、图构建 Agent、元认知裁判**仅在提示词配置后**才会参与工作流。未配置时系统不受影响，事件停留在 `indexed` 状态等待处理。
+管线模式（`DPIM_AGENT_MODE=pipeline`）启用后，四个 Agent 参与工作流：
+
+| Agent | 文件 | 职责 |
+|-------|------|------|
+| 中央控制 Cr | `prompts/core.md` | 检索意图分析 |
+| 信息管理 In | `prompts/infomater.md` | 内容分拣标注（原文子串） |
+| 图对接 Gr | `prompts/grapher.md` | 存图计划生成 |
+| 元认知 Meta | `prompts/metacognition.md` | 存图审核 + 检索复核（硬关卡） |
+
+**提示词正文待使用者填写**（`dpim/prompts/*.md` 现为结构骨架）。未配置时系统不受影响，
+事件停留在 `indexed` 状态等待补偿；AI 恢复后自动批量处理积压事件。
 
 ### 3. 核心存储独立于 AI
 
@@ -44,6 +54,21 @@ DPIM_LLM_BASE_URL=https://api.openai.com/v1 \
 DPIM_LLM_API_KEY=sk-xxx \
 DPIM_LLM_MODEL_NAME=gpt-4o-mini \
 python main.py serve
+```
+
+**BYOK 多模型网关**（支持 DeepSeek / Ollama / OpenRouter 等任意 OpenAI 兼容 API，按角色路由模型）：
+
+```bash
+# 注册多个 provider（JSON dict）
+DPIM_PROVIDERS='{"deepseek": {"base_url": "https://api.deepseek.com/v1", "api_key": "sk-x", "model": "deepseek-chat"}, "ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3:8b"}}'
+# 选择活动 provider（默认 primary = DPIM_LLM_*）
+DPIM_ACTIVE_PROVIDER=deepseek
+# 按角色覆盖模型（Cr/Meta 用强模型，In/Gr 用轻模型）
+DPIM_AGENT_CR_MODEL=deepseek-reasoner
+DPIM_AGENT_IN_MODEL=deepseek-chat
+# 管线开关
+DPIM_AGENT_MODE=pipeline
+DPIM_AGENT_MAX_RETRIES=2
 ```
 
 详见 `dpim/.env` 模板。
