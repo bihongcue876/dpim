@@ -1,1 +1,0 @@
-{"root":["./src/main.ts","./src/vite-env.d.ts","./src/api/client.ts","./src/composables/usestatehash.ts","./src/app.vue","./src/components/graphcanvas.vue","./src/components/leftpanel.vue","./src/components/rightpanel.vue","./src/components/statusbar.vue","./src/components/topbar.vue"],"version":"5.8.3"}
