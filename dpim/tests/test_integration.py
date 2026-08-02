@@ -266,3 +266,65 @@ class TestFeedbackEndpoint:
         assert resp.status_code == 200
         node = api.graph_store.get_node("fb_node")
         assert node.confidence == 0.51  # 0.5 + 0.01
+
+
+class TestSettingsEndpoint:
+    """GET/PUT /settings — 含 BYOK 多模型网关配置项"""
+
+    BYOK_FIELDS = [
+        "available_providers",
+        "active_provider",
+        "agent_mode",
+        "agent_max_retries",
+        "agent_cr_model",
+        "agent_in_model",
+        "agent_gr_model",
+        "agent_meta_model",
+    ]
+
+    def test_get_settings_contains_byok_fields(self, test_app):
+        resp = test_app.get("/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        for field in self.BYOK_FIELDS:
+            assert field in data, f"缺少配置项 {field}"
+
+    def test_get_settings_available_providers_default(self, test_app):
+        resp = test_app.get("/settings")
+        data = resp.json()
+        assert data["available_providers"] == ["primary"]
+
+    def test_put_settings_updates_agent_mode(self, test_app):
+        from core.config import settings as s
+
+        old_mode = s.agent_mode
+        old_active = s.active_provider
+        try:
+            resp = test_app.put("/settings", json={
+                "agent_mode": "pipeline",
+                "active_provider": "deepseek",
+                "agent_cr_model": "deepseek-reasoner",
+            })
+            assert resp.status_code == 200
+            assert s.agent_mode == "pipeline"
+            assert s.active_provider == "deepseek"
+            assert s.role_model("cr") == "deepseek-reasoner"
+            # GET 反映运行时更新
+            data = test_app.get("/settings").json()
+            assert data["agent_mode"] == "pipeline"
+            assert data["active_provider"] == "deepseek"
+        finally:
+            s.agent_mode = old_mode
+            s.active_provider = old_active
+            s.agent_cr_model = ""
+
+    def test_put_settings_partial_ignores_missing(self, test_app):
+        from core.config import settings as s
+
+        old = s.agent_max_retries
+        try:
+            resp = test_app.put("/settings", json={"agent_max_retries": 5})
+            assert resp.status_code == 200
+            assert s.agent_max_retries == 5
+        finally:
+            s.agent_max_retries = old
