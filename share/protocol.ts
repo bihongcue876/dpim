@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.4 (SearchTab 多维搜索 + system 源过滤补充)
+// 版本 1.5 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -7,6 +7,18 @@ export type EventType = 'interaction' | 'data' | 'source';
 export type EventStatus = 'raw' | 'indexed' | 'linked' | 'failed' | 'skipped';
 export type NodeType = 'system' | 'interaction' | 'data';
 export type SourceFilter = 'all' | 'interaction' | 'data' | 'system';
+
+/** Agent 角色（BYOK 角色路由 / 提示词文件映射） */
+export type AgentRole = 'cr' | 'in' | 'gr' | 'meta';
+
+/** Agent 管线开关：disabled（默认，无 Agent 降级态）| pipeline（四 Agent 管线） */
+export type AgentMode = 'disabled' | 'pipeline';
+
+/** 检索路径选择 */
+export type SearchMethod = 'direct_search' | 'graph_query' | 'hybrid';
+
+/** 分块类型标注 */
+export type ChunkType = 'interaction' | 'data' | 'source' | 'ignore';
 
 // ==================== 数据模型 ====================
 
@@ -59,11 +71,41 @@ export interface Event {
 
 // ==================== Agent 输入输出 ====================
 
-/** 信息处理 Agent 输出 */
+/** 信息处理 Agent 输出（已废弃，由 AnnotatedChunks 替代，暂保留兼容） */
 export interface InformationFragment {
   interaction: string[];
   data: string[];
   source: string;          // 原始证据，无则为空字符串
+}
+
+/** 语义分块：必须是原文连续子串，不允许概括或改写 */
+export interface SemanticChunk {
+  content: string;          // 原文连续子串，不可增删改
+  chunk_type: ChunkType;    // 分块类型标注
+  label: string;            // 10 字以内中文标签
+  confidence: number;       // 分类置信度 0.0-1.0
+}
+
+/** 信息管理 Agent 输出：带类型标注的原文分区（来源锚定，杜绝幻觉） */
+export interface AnnotatedChunks {
+  raw_content: string;      // 来源事件原始内容
+  chunks: SemanticChunk[];
+}
+
+/** 中央控制 Agent 检索意图分析输出 */
+export interface QueryIntent {
+  method: SearchMethod;     // 检索路径选择
+  keywords: string[];
+  confidence: number;       // 0.0-1.0
+}
+
+/** BYOK 提供商实例配置（OpenAI 兼容协议） */
+export interface ProviderConfig {
+  name: string;             // provider 名称（'primary' = LLM_* 主配置）
+  base_url: string;
+  api_key: string;
+  model: string;
+  timeout: number;
 }
 
 /** 图构建 Agent - 新节点 */
@@ -350,6 +392,14 @@ export interface SettingsResponse {
   llm_api_key: string;
   llm_model_name: string;
   llm_timeout: number;
+  available_providers: string[];  // 可选 provider 名单（含 'primary'）
+  active_provider: string;      // BYOK 活动 provider（默认 'primary'）
+  agent_mode: AgentMode;        // 管线开关
+  agent_max_retries: number;    // Meta 驳回最大修正轮次
+  agent_cr_model: string;       // 空值 = 回退活动 provider 默认模型
+  agent_in_model: string;
+  agent_gr_model: string;
+  agent_meta_model: string;
   max_graph_hops: number;
   rrf_k: number;
   jaccard_threshold: number;
@@ -364,6 +414,13 @@ export interface SettingsRequest {
   llm_api_key?: string;
   llm_model_name?: string;
   llm_timeout?: number;
+  active_provider?: string;
+  agent_mode?: AgentMode;
+  agent_max_retries?: number;
+  agent_cr_model?: string;
+  agent_in_model?: string;
+  agent_gr_model?: string;
+  agent_meta_model?: string;
   max_graph_hops?: number;
   rrf_k?: number;
   jaccard_threshold?: number;
@@ -380,6 +437,16 @@ export interface DPIMConfig {
   LLM_API_KEY: string;
   LLM_MODEL_NAME: string;
   LLM_TIMEOUT: number;
+  // BYOK 多模型网关
+  PROVIDERS?: string;           // JSON dict：{name: {base_url, api_key, model, timeout}}
+  ACTIVE_PROVIDER: string;      // 默认 'primary'
+  // Agent 管线
+  AGENT_MODE: AgentMode;        // 默认 'disabled'
+  AGENT_MAX_RETRIES: number;    // 默认 2
+  AGENT_CR_MODEL: string;
+  AGENT_IN_MODEL: string;
+  AGENT_GR_MODEL: string;
+  AGENT_META_MODEL: string;
   MAX_GRAPH_HOPS: number;
   RRF_K: number;
   JACCARD_THRESHOLD: number;

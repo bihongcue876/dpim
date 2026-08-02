@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.4
-> 日期：2026-07-27
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤
+> 版本：1.5
+> 日期：2026-08-01
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线
 
 ---
 
@@ -454,16 +454,26 @@ content
 |--------|--------|------|
 | MEMORY_DB_PATH | ./data/memory.db | SQLite 数据库路径 |
 | GRAPH_JSON_PATH | ./data/graph.json | 图层 JSON 路径 |
-| LLM_BASE_URL | http://localhost:11434/v1 | LLM 服务地址 |
+| LLM_BASE_URL | http://localhost:11434/v1 | LLM 服务地址（主 provider，向后兼容） |
 | LLM_API_KEY | (空) | LLM API Key |
 | LLM_MODEL_NAME | llama3:8b | 模型名称 |
 | LLM_TIMEOUT | 30 | LLM 请求超时（秒） |
+| **PROVIDERS** | (空 JSON) | BYOK 多 provider 注册（JSON dict：name → {base_url, api_key, model, timeout}） |
+| **ACTIVE_PROVIDER** | primary | 活动 provider（primary = LLM_* 主配置） |
+| **AGENT_MODE** | disabled | Agent 管线开关：disabled \| pipeline |
+| **AGENT_MAX_RETRIES** | 2 | Meta 驳回时的最大修正轮次 |
+| **AGENT_CR_MODEL** | (空) | Cr 角色模型覆盖（空 → 回退活动 provider） |
+| **AGENT_IN_MODEL** | (空) | In 角色模型覆盖 |
+| **AGENT_GR_MODEL** | (空) | Gr 角色模型覆盖 |
+| **AGENT_META_MODEL** | (空) | Meta 角色模型覆盖 |
 | MAX_GRAPH_HOPS | 2 | 图扩散最大跳数 |
 | RRF_K | 60 | RRF 融合 k 值 |
 | JACCARD_THRESHOLD | 0.85 | 去重预检相似度阈值 |
 | HEALTH_CHECK_INTERVAL | 60 | 健康检查间隔（秒） |
 | COMPENSATE_BATCH_SIZE | 20 | 补偿批次大小 |
 | LOG_LEVEL | INFO | 日志级别 |
+
+> 2026-08-01：新增 BYOK 多模型网关与 Agent 管线配置（PROVIDERS / ACTIVE_PROVIDER / AGENT_*）。
 
 ---
 
