@@ -66,7 +66,7 @@
             </template>
             <template v-else>
               <n-button size="small" @click="startEdit">编辑事件</n-button>
-              <n-button size="small" type="error" @click="onDelete(detail.event_id)">删除事件</n-button>
+              <n-button size="small" type="error" @click="onDelete(detail.event_id as string)">删除事件</n-button>
               <n-popover trigger="hover" placement="top">
                 <template #trigger>
                   <n-button size="small" :disabled="detail.event_type === 'source'" @click="onGenerate">生成知识</n-button>
@@ -93,7 +93,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useDialog, createDiscreteApi } from 'naive-ui'
 import type { EventListItem } from '@/api/client'
 import * as api from '@/api/client'
@@ -236,7 +236,23 @@ async function saveEdit() {
   finally { saving.value = false }
 }
 
-onMounted(load)
+// 跨标签导航：从「信息传入」跳转定位到某条事件
+const onFocusEvent = ((e: Event) => {
+  const eventId = (e as CustomEvent).detail?.event_id as string | undefined
+  if (!eventId) return
+  filterType.value = undefined
+  filterStatus.value = undefined
+  onSelectRow(eventId)
+  load()
+}) as EventListener
+
+onMounted(() => {
+  load()
+  window.addEventListener('dpim:focus-event', onFocusEvent)
+})
+onUnmounted(() => {
+  window.removeEventListener('dpim:focus-event', onFocusEvent)
+})
 
 function onGenerate() {
   // TODO: 调用图构建 Agent，需 Agent 提示词就绪后启用

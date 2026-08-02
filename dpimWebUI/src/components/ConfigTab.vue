@@ -8,13 +8,13 @@
       </div>
       <div v-for="field in fields" :key="field.key" class="config-row">
         <span class="cf-name">{{ field.label }}</span>
-        <span class="cf-current" :title="field.key === 'backend_url' ? backendUrl : String(original[field.key] ?? '')">{{ field.key === 'backend_url' ? backendUrl : (original[field.key] ?? '—') }}</span>
+        <span class="cf-current" :title="field.key === 'backend_url' ? backendUrl : String(orig(field.key) ?? '')">{{ field.key === 'backend_url' ? backendUrl : (orig(field.key) ?? '—') }}</span>
         <div class="cf-edit">
           <template v-if="field.key === 'backend_url'">
             <n-input v-model:value="backendUrl" size="small" placeholder="http://localhost:8000" />
           </template>
           <template v-else-if="field.type === 'text'">
-            <n-input v-model:value="edits[field.key]" size="small" :placeholder="String(original[field.key] ?? '')" />
+            <n-input v-model:value="edits[field.key]" size="small" :placeholder="String(orig(field.key) ?? '')" />
           </template>
           <n-input v-else-if="field.type === 'password'" v-model:value="edits[field.key]" type="password" size="small" placeholder="••••••" />
           <n-input-number v-else-if="field.type === 'number'" v-model:value="edits[field.key]" size="small" style="width:100%" :min="field.min ?? 0" :max="field.max ?? 9999" />
@@ -31,7 +31,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import type { SettingsResponse, HealthResponse } from '@/api/client'
 import * as api from '@/api/client'
 
@@ -43,10 +43,19 @@ const props = defineProps<{
 
 const original = ref<SettingsResponse>({
   memory_db_path: '', graph_json_path: '', llm_base_url: '', llm_api_key: '',
-  llm_model_name: '', llm_timeout: 30, max_graph_hops: 2, rrf_k: 60,
+  llm_model_name: '', llm_timeout: 30, available_providers: ['primary'],
+  active_provider: 'primary',
+  agent_mode: 'disabled', agent_max_retries: 2, agent_cr_model: '',
+  agent_in_model: '', agent_gr_model: '', agent_meta_model: '',
+  max_graph_hops: 2, rrf_k: 60,
   jaccard_threshold: 0.85, health_check_interval: 60, compensate_batch_size: 20, log_level: 'INFO',
 })
 const edits = reactive<Record<string, any>>({})
+
+/** 安全读取配置项现值（field.key 为动态字符串） */
+function orig(key: string): unknown {
+  return (original.value as Record<string, unknown>)[key]
+}
 const backendUrl = ref('http://localhost:8000')
 const submitting = ref(false)
 const staleHint = ref('')
@@ -61,13 +70,31 @@ interface ConfigField {
   options?: Array<{ label: string; value: string }>
 }
 
-const fields: ConfigField[] = [
+// 活动提供商下拉选项：来自后端 available_providers（含 'primary' + 注册的 provider）
+const providerOptions = computed(() =>
+  (original.value.available_providers ?? ['primary']).map(p => ({
+    label: p === 'primary' ? 'primary（DPIM_LLM_* 主配置）' : p,
+    value: p,
+  })),
+)
+
+const fields = computed<ConfigField[]>(() => [
   { key: 'memory_db_path', label: '记忆库路径', type: 'text' },
   { key: 'graph_json_path', label: '图谱文件路径', type: 'text' },
   { key: 'llm_base_url', label: 'LLM 地址', type: 'text' },
   { key: 'llm_api_key', label: 'LLM API 密钥', type: 'password' },
   { key: 'llm_model_name', label: 'LLM 模型名称', type: 'text' },
   { key: 'llm_timeout', label: 'LLM 超时（秒）', type: 'number', min: 5, max: 300 },
+  { key: 'active_provider', label: '活动提供商', type: 'select', options: providerOptions.value },
+  { key: 'agent_mode', label: 'Agent 管线模式', type: 'select', options: [
+    { label: 'disabled（默认）', value: 'disabled' },
+    { label: 'pipeline（四 Agent 管线）', value: 'pipeline' },
+  ]},
+  { key: 'agent_max_retries', label: 'Agent 最大修正轮次', type: 'number', min: 0, max: 10 },
+  { key: 'agent_cr_model', label: 'Cr 模型（空=活动提供商）', type: 'text' },
+  { key: 'agent_in_model', label: 'In 模型（空=活动提供商）', type: 'text' },
+  { key: 'agent_gr_model', label: 'Gr 模型（空=活动提供商）', type: 'text' },
+  { key: 'agent_meta_model', label: 'Meta 模型（空=活动提供商）', type: 'text' },
   { key: 'max_graph_hops', label: '图谱最大跳数', type: 'number', min: 1, max: 5 },
   { key: 'rrf_k', label: 'RRF 参数 K', type: 'number', min: 1, max: 200 },
   { key: 'jaccard_threshold', label: '杰卡德阈值', type: 'number', min: 0, max: 1 },
@@ -78,7 +105,7 @@ const fields: ConfigField[] = [
     { label: 'WARNING', value: 'WARNING' }, { label: 'ERROR', value: 'ERROR' },
   ]},
   { key: 'backend_url', label: '后端地址', type: 'text' },
-]
+])
 
 async function load() {
   try {
@@ -86,7 +113,7 @@ async function load() {
     // 读取前端本地配置（后端地址）
     backendUrl.value = localStorage.getItem('dpim_backend_url') || 'http://localhost:8000'
     // 用现有值初始化编辑框，以便用户看到在哪里修改
-    for (const f of fields) {
+    for (const f of fields.value) {
       if (f.key === 'backend_url') continue
       edits[f.key] = original.value[f.key as keyof SettingsResponse] ?? ''
     }
@@ -111,7 +138,7 @@ async function onSubmit() {
   submitting.value = true
   try {
     const changed: Record<string, any> = {}
-    for (const f of fields) {
+    for (const f of fields.value) {
       if (f.key === 'backend_url') {
         // 前端本地配置，不提交到后端 API
         const newUrl = backendUrl.value.trim()

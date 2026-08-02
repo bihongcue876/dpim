@@ -87,6 +87,14 @@ export interface SettingsResponse {
   llm_api_key: string
   llm_model_name: string
   llm_timeout: number
+  available_providers: string[]
+  active_provider: string
+  agent_mode: string
+  agent_max_retries: number
+  agent_cr_model: string
+  agent_in_model: string
+  agent_gr_model: string
+  agent_meta_model: string
   max_graph_hops: number
   rrf_k: number
   jaccard_threshold: number
@@ -205,6 +213,7 @@ export async function ingest(content: string, eventType = 'auto'): Promise<{ eve
 export async function query(params: {
   query: string
   source_filter?: string
+  max_hops?: number
   limit?: number
   offset?: number
 }): Promise<{ results: SearchResult[]; total: number; degraded: boolean }> {

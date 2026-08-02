@@ -331,7 +331,13 @@ async function fetchPage(page: number) {
 
   try {
     const limit = resultLimit.value
-    const params: Record<string, any> = {
+    const params: {
+      query: string
+      limit: number
+      offset: number
+      source_filter?: string
+      max_hops?: number
+    } = {
       query: query.value,
       limit,
       offset: (page - 1) * limit,
