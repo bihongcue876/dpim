@@ -47,7 +47,8 @@ class Settings:
         self.llm_base_url = getenv("DPIM_LLM_BASE_URL", "http://localhost:11434/v1")
         self.llm_api_key = getenv("DPIM_LLM_API_KEY", "")
         self.llm_model_name = getenv("DPIM_LLM_MODEL_NAME", "llama3:8b")
-        self.llm_timeout = int(getenv("DPIM_LLM_TIMEOUT", "30"))
+        # 生成请求超时（秒）：本地模型慢，默认放宽到 300；provider 条目可单独覆盖
+        self.llm_timeout = int(getenv("DPIM_LLM_TIMEOUT", "300"))
         # ── BYOK 多提供商注册：env DPIM_PROVIDERS 优先，否则读 dpim.json ──
         self.providers: dict[str, dict[str, Any]] = {}
         raw_providers = getenv("DPIM_PROVIDERS", "").strip()
@@ -85,6 +86,8 @@ class Settings:
         self.rrf_k = int(getenv("DPIM_RRF_K", "60"))
         self.jaccard_threshold = float(getenv("DPIM_JACCARD_THRESHOLD", "0.85"))
         self.health_check_interval = int(getenv("DPIM_HEALTH_CHECK_INTERVAL", "60"))
+        # 健康检查超时（秒）：与生成超时分离，模型加载/单槽忙碌时不至于 3 连败假降级
+        self.health_check_timeout = int(getenv("DPIM_HEALTH_CHECK_TIMEOUT", "60"))
         self.compensate_batch_size = int(getenv("DPIM_COMPENSATE_BATCH_SIZE", "20"))
         self.log_level = getenv("DPIM_LOG_LEVEL", "INFO")
         self._validate()

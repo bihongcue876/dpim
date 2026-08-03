@@ -19,7 +19,12 @@ from time import time
 from typing import Any, TypeVar, cast
 
 import instructor
-from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+)
 from pydantic import BaseModel
 
 from core.config import ProviderConfig, settings
@@ -35,7 +40,23 @@ _STRUCTURED_MODES: dict[str, instructor.Mode] = {
 
 def _client_for(conf: ProviderConfig) -> AsyncOpenAI:
     key = conf.api_key or "not-set"
-    return AsyncOpenAI(base_url=conf.base_url, api_key=key)
+    # timeout 应用 provider 配置（默认 DPIM_LLM_TIMEOUT，本地模型放宽）
+    return AsyncOpenAI(base_url=conf.base_url, api_key=key, timeout=conf.timeout)
+
+
+def is_transient_error(e: Exception) -> bool:
+    """瞬时错误判定：超时 / 断连 / 5xx 服务端错误。
+
+    这类错误重试可能成功（本地模型慢、加载中、单槽忙碌），
+    不应将事件判死为 failed，而应回到 indexed 等待补偿重试。
+    """
+    if isinstance(e, (APITimeoutError, APIConnectionError, APIStatusError)):
+        return True
+    import httpx
+    # httpx 底层传输错误：ReadTimeout / ConnectError / ReadError 等
+    if isinstance(e, httpx.TransportError):
+        return True
+    return False
 
 
 # ── AI 调用日志（环形缓冲，供前端观测 LLM 发了什么）──

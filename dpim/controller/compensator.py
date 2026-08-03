@@ -47,9 +47,11 @@ class Compensator:
 
     async def _check_llm(self):
         try:
+            # 健康检查用独立超时（health_check_timeout），与生成超时分离：
+            # 模型加载/单槽忙碌时不至于快速 3 连败假降级
             await asyncio.wait_for(
                 self._client.models.list(),
-                timeout=settings.llm_timeout,
+                timeout=settings.health_check_timeout,
             )
             self._failure_count = 0
             if not ai_state.available:
