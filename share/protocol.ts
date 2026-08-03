@@ -393,7 +393,10 @@ export interface SettingsResponse {
   llm_model_name: string;
   llm_timeout: number;
   available_providers: string[];  // 可选 provider 名单（含 'primary'）
+  providers: Record<string, { base_url: string; api_key: string; model?: string; models?: string[]; timeout?: number }>;
   active_provider: string;      // BYOK 活动 provider（默认 'primary'）
+  available_models: string[];   // 活动 provider 的模型列表（供「使用」选择）
+  active_model: string;         // 使用中的模型（空 → provider 首个/默认）
   agent_mode: AgentMode;        // 管线开关
   agent_max_retries: number;    // Meta 驳回最大修正轮次
   agent_cr_model: string;       // 空值 = 回退活动 provider 默认模型
@@ -414,7 +417,9 @@ export interface SettingsRequest {
   llm_api_key?: string;
   llm_model_name?: string;
   llm_timeout?: number;
+  providers?: Record<string, { base_url: string; api_key: string; model?: string; models?: string[]; timeout?: number }>;
   active_provider?: string;
+  active_model?: string;
   agent_mode?: AgentMode;
   agent_max_retries?: number;
   agent_cr_model?: string;
@@ -443,6 +448,7 @@ export interface DPIMConfig {
   // Agent 管线
   AGENT_MODE: AgentMode;        // 默认 'disabled'
   AGENT_MAX_RETRIES: number;    // 默认 2
+  MAX_RAW_CONTENT: number;      // 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（默认 10000）
   AGENT_CR_MODEL: string;
   AGENT_IN_MODEL: string;
   AGENT_GR_MODEL: string;

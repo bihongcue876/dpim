@@ -462,6 +462,9 @@ content
 | **ACTIVE_PROVIDER** | primary | 活动 provider（primary = LLM_* 主配置） |
 | **AGENT_MODE** | disabled | Agent 管线开关：disabled \| pipeline |
 | **AGENT_MAX_RETRIES** | 2 | Meta 驳回时的最大修正轮次 |
+| **ACTIVE_MODEL** | (空) | 使用中的模型（活动 provider 模型列表内；空 → provider 首个/默认） |
+| **LLM_STRUCTURED_MODE** | md_json | 结构化输出模式：md_json（默认，兼容 llama.cpp）\| json \| tools |
+| **MAX_RAW_CONTENT** | 10000 | 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（超限截断） |
 | **AGENT_CR_MODEL** | (空) | Cr 角色模型覆盖（空 → 回退活动 provider） |
 | **AGENT_IN_MODEL** | (空) | In 角色模型覆盖 |
 | **AGENT_GR_MODEL** | (空) | Gr 角色模型覆盖 |
@@ -474,6 +477,7 @@ content
 | LOG_LEVEL | INFO | 日志级别 |
 
 > 2026-08-01：新增 BYOK 多模型网关与 Agent 管线配置（PROVIDERS / ACTIVE_PROVIDER / AGENT_*）。
+> 2026-08-02：BYOK/Agent 结构化配置迁入 `dpim/dpim.json`（env DPIM_* 可覆盖）；前端 `PUT /settings` 写回 dpim.json 持久化。
 
 ---
 
