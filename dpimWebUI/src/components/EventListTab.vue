@@ -69,9 +69,9 @@
               <n-button size="small" type="error" @click="onDelete(detail.event_id as string)">删除事件</n-button>
               <n-popover trigger="hover" placement="top">
                 <template #trigger>
-                  <n-button size="small" :disabled="detail.event_type === 'source'" @click="onGenerate">生成知识</n-button>
+                  <n-button size="small" :disabled="!canGenerate" :loading="generating" @click="onGenerate">生成知识</n-button>
                 </template>
-                <span style="font-size:12px">需配置 Agent 提示词后启用</span>
+                <span style="font-size:12px">{{ generateHint }}</span>
               </n-popover>
             </template>
           </div>
@@ -93,7 +93,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useDialog, createDiscreteApi } from 'naive-ui'
 import type { EventListItem } from '@/api/client'
 import * as api from '@/api/client'
@@ -123,6 +123,7 @@ const editing = ref(false)
 const editContent = ref('')
 const saving = ref(false)
 const creating = ref(false)
+const generating = ref(false)
 const selectedIds = ref(new Set<string>())
 
 function toggleSelect(id: string) {
@@ -169,7 +170,7 @@ async function onRetry(eventId: string) {
   try {
     await api.putEventStatus(eventId, 'indexed')
     await props.onCommitted()
-    message.success('事件已重新入队处理')
+    message.success('已重置为 indexed，管线开始处理')
     await onSelectRow(eventId)
     await load()
   } catch (e: any) {
@@ -254,9 +255,34 @@ onUnmounted(() => {
   window.removeEventListener('dpim:focus-event', onFocusEvent)
 })
 
-function onGenerate() {
-  // TODO: 调用图构建 Agent，需 Agent 提示词就绪后启用
+async function onGenerate() {
+  // 触发补偿：把 raw/indexed 积压事件重新入队走 Agent 管线生成知识
+  // （本条若为 raw/indexed 也会被包含；failed 请先用「重试」）
+  generating.value = true
+  try {
+    await api.compensate()
+    message.success('已触发补偿，raw/indexed 积压事件开始重新处理')
+  } catch (e: any) {
+    message.error('触发失败: ' + (e?.message || '未知错误'))
+  } finally {
+    generating.value = false
+  }
 }
+
+// 生成知识 = 补偿 raw/indexed 积压事件：linked 已处理、failed 需先重试、source 不构图
+const canGenerate = computed(() => {
+  const s = String(detail.value?.status ?? '')
+  const t = String(detail.value?.event_type ?? '')
+  return t !== 'source' && s !== 'linked' && s !== 'failed'
+})
+const generateHint = computed(() => {
+  const s = String(detail.value?.status ?? '')
+  const t = String(detail.value?.event_type ?? '')
+  if (t === 'source') return 'source 类型仅存储，不进入图谱'
+  if (s === 'linked') return '本条已生成知识，无需处理'
+  if (s === 'failed') return '失败事件请先点「重试」重新入队'
+  return '将 raw / indexed 积压事件重新入队，走 Agent 管线处理'
+})
 
 async function onDelete(eventId: string) {
   dialog.warning({

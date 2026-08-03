@@ -83,10 +83,6 @@
 
         <template v-if="searchMode === 'events'">
           <div class="filter-row">
-            <span class="filter-label">事件状态</span>
-            <n-select v-model:value="eventStatus" :options="statusOpts" style="width:120px" clearable />
-          </div>
-          <div class="filter-row">
             <span class="filter-label">最低置信度</span>
             <n-slider v-model:value="minConfidence" :min="0" :max="1" :step="0.05" style="width:140px" />
             <span class="filter-value">{{ minConfidence.toFixed(2) }}</span>
@@ -232,7 +228,6 @@ const degraded = ref(false)
 const sourceFilter = ref('all')
 const maxHops = ref(2)
 const resultLimit = ref(20)
-const eventStatus = ref('')
 const minConfidence = ref(0)
 
 // 分页
@@ -258,13 +253,6 @@ const limitOpts = [
   { label: '20', value: 20 },
   { label: '50', value: 50 },
   { label: '100', value: 100 },
-]
-
-const statusOpts = [
-  { label: '全部', value: '' },
-  { label: '待处理', value: 'pending' },
-  { label: '有效', value: 'valid' },
-  { label: '失效', value: 'invalid' },
 ]
 
 // ── 计算属性 ──

@@ -116,7 +116,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useDialog, createDiscreteApi } from 'naive-ui'
 import GraphCanvas from '@/components/GraphCanvas.vue'
 import * as api from '@/api/client'
@@ -221,13 +221,22 @@ async function loadEvents() {
 
 watch(() => props.keyStatus, async () => { await loadGraph(); await loadEvents() }, { immediate: true })
 
-// 监听从搜索 Tab 传来的焦点节点
-watch(() => props.keyStatus, () => {
+// 跨 Tab 定位：监听来自检索 Tab 的焦点节点事件（不依赖 keyStatus 变化）
+function applyFocusNode() {
   const focusId = localStorage.getItem('dpim_focus_node')
   if (focusId && nodeItems.value.some(n => n.node_id === focusId)) {
     highlightId.value = focusId
     localStorage.removeItem('dpim_focus_node')
+    onSelectNode(focusId)
   }
+}
+const onFocusNode = (() => { applyFocusNode() }) as EventListener
+
+onMounted(() => {
+  window.addEventListener('dpim:focus-node', onFocusNode)
+})
+onUnmounted(() => {
+  window.removeEventListener('dpim:focus-node', onFocusNode)
 })
 
 function onSelectNode(id: string) {

@@ -84,7 +84,8 @@ interface HistoryItem {
 const STORAGE_KEY = 'dpim_ingest_history'
 const MAX_HISTORY = 10
 const POLL_INTERVAL = 5000
-const MAX_POLL_ATTEMPTS = 12
+// 本地模型处理慢：轮询窗口放宽到 120s（24 次），避免未完成被误标 timeout
+const MAX_POLL_ATTEMPTS = 24
 
 const content = ref('')
 const eventType = ref('auto')

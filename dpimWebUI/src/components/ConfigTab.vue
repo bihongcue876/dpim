@@ -54,7 +54,7 @@ const original = ref<SettingsResponse>({
   agent_mode: 'disabled', agent_max_retries: 2, agent_cr_model: '',
   agent_in_model: '', agent_gr_model: '', agent_meta_model: '',
   max_graph_hops: 2, rrf_k: 60,
-  jaccard_threshold: 0.85, health_check_interval: 60, compensate_batch_size: 20, log_level: 'INFO',
+  jaccard_threshold: 0.85, health_check_interval: 60, health_check_timeout: 60, compensate_batch_size: 20, log_level: 'INFO',
 })
 const edits = reactive<Record<string, any>>({})
 
@@ -128,6 +128,7 @@ const fields = computed<ConfigField[]>(() => [
   { key: 'rrf_k', label: 'RRF 参数 K', type: 'number', min: 1, max: 200, section: '检索' },
   { key: 'jaccard_threshold', label: '杰卡德阈值', type: 'number', min: 0, max: 1, section: '检索' },
   { key: 'health_check_interval', label: '健康检查间隔（秒）', type: 'number', min: 10, max: 600, section: '系统' },
+  { key: 'health_check_timeout', label: '健康检查超时（秒）', type: 'number', min: 10, max: 600, section: '系统' },
   { key: 'compensate_batch_size', label: '补偿批处理大小', type: 'number', min: 5, max: 100, section: '系统' },
   { key: 'log_level', label: '日志级别', type: 'select', section: '系统', options: [
     { label: 'DEBUG', value: 'DEBUG' }, { label: 'INFO', value: 'INFO' },
