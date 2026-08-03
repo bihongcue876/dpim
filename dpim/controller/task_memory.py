@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.models import AnnotatedChunks, GraphBuildOutput, GraphNode, MetaCogVerdict
+from core.models import AnnotatedChunks, CrSummary, GraphBuildOutput, GraphNode, MetaCogVerdict
 
 
 @dataclass
@@ -26,6 +26,7 @@ class TaskMemory:
     raw_content: str = ""
 
     # ingest 中间产物
+    cr_summary: CrSummary | None = None
     annotated_chunks: AnnotatedChunks | None = None
     similar_nodes: list[GraphNode] = field(default_factory=list)
     graph_proposal: GraphBuildOutput | None = None

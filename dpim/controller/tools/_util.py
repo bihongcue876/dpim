@@ -16,3 +16,10 @@ def issues_text(issues: list[Any]) -> str:
     return "; ".join(
         f"{i.type}: {i.suggestion or i.description}" for i in issues
     )
+
+
+def truncate(text: str, limit: int) -> str:
+    """上下文护栏：超限截断并附注，防止单次 LLM 调用输入过大。"""
+    if limit and len(text) > limit:
+        return text[:limit] + f"\n[内容超长，仅保留前 {limit} 字]"
+    return text

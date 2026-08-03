@@ -13,16 +13,21 @@ from core.llm import gateway
 from core.models import MetaCogIssue, MetaCogVerdict
 
 from ._util import compact_json
-from .sys_tools import empty_verdict, run_local_checks
+from .sys_tools import empty_verdict, relevant_edges, run_local_checks
 
 
-async def tool_meta_review(graph_store: Any, proposal: Any, source_content: str) -> MetaCogVerdict:
+async def tool_meta_review(
+    graph_store: Any,
+    proposal: Any,
+    source_content: str,
+    chunks: Any = None,
+) -> MetaCogVerdict:
     """审核图构建计划。
 
     本地检查（来源锚定/边合法性/空节点）作为预筛，通过后始终调用
     LLM 做冲突检测与质量复核（元认知为硬关卡）。
     """
-    local_issues = run_local_checks(graph_store, proposal, source_content)
+    local_issues = run_local_checks(graph_store, proposal, source_content, chunks)
     if local_issues:
         return empty_verdict(local_issues)
 
@@ -31,7 +36,7 @@ async def tool_meta_review(graph_store: Any, proposal: Any, source_content: str)
         "task": "review_proposal",
         "proposal": proposal.model_dump(),
         "source_content": source_content,
-        "existing_edges": graph_store.list_edges()[:50],
+        "relevant_edges": relevant_edges(graph_store, proposal),
         "output_schema": MetaCogVerdict.model_json_schema(),
     })
     try:

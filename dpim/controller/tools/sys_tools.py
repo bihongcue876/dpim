@@ -125,14 +125,19 @@ async def tool_apply_to_store(
 # ── Meta 本地检查（无 LLM）──
 
 def run_local_checks(
-    graph_store: Any, proposal: Any, source_content: str
+    graph_store: Any,
+    proposal: Any,
+    source_content: str,
+    chunks: Any = None,
 ) -> list[MetaCogIssue]:
     """来源锚定 / 边合法性 / 空节点 的本地逻辑检查。
 
     纯确定性检查，不调 LLM。有任一问题即返回 fail 级 issues。
+    传入 chunks 时，额外校验 evidence_quote 至少属于某个 chunk.content（合并跨块可容忍）。
     """
     issues: list[MetaCogIssue] = []
     new_titles = {nc.title for nc in proposal.new_nodes}
+    chunk_texts = [c.content for c in (chunks.chunks if chunks else [])]
 
     for nc in proposal.new_nodes:
         if not (nc.content or "").strip():
@@ -150,6 +155,14 @@ def run_local_checks(
                     type="hallucination",
                     description=f"evidence_quote 未在原文中找到：{nc.title}",
                     suggestion="改为原文连续子串摘录",
+                )
+            )
+        elif quote and chunk_texts and not any(quote in t for t in chunk_texts):
+            issues.append(
+                MetaCogIssue(
+                    type="hallucination",
+                    description=f"evidence_quote 不属于任何 In 分块：{nc.title}",
+                    suggestion="从所属分块的原文中逐字摘录",
                 )
             )
 
@@ -171,6 +184,28 @@ def run_local_checks(
                 )
             )
     return issues
+
+
+def relevant_edges(graph_store: Any, proposal: Any, limit: int = 50) -> list[dict[str, Any]]:
+    """冲突检测用的邻域边：优先取 new_edges 引用到的已有节点所参与的边；
+    不足时补任意边作上下文，避免 Meta 无图上下文可判。"""
+    ids: set[str] = set()
+    for ec in proposal.new_edges:
+        if graph_store.get_node(ec.source) is not None:
+            ids.add(ec.source)
+        if graph_store.get_node(ec.target) is not None:
+            ids.add(ec.target)
+    all_edges = graph_store.list_edges()
+    filtered = [e for e in all_edges if e["source"] in ids or e["target"] in ids]
+    if len(filtered) < 10:
+        seen = set()
+        for e in filtered:
+            seen.add((e["source"], e["target"]))
+        filtered += [
+            e for e in all_edges
+            if (e["source"], e["target"]) not in seen
+        ][: 10 - len(filtered)]
+    return filtered[:limit]
 
 
 def empty_verdict(issues: list[MetaCogIssue]) -> MetaCogVerdict:

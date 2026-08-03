@@ -9,6 +9,7 @@ from controller.task_memory import TaskMemory
 from controller.tools import (
     tool_analyze_intent,
     tool_apply_to_store,
+    tool_cr_summarize,
     tool_direct_search,
     tool_graph_expand,
     tool_graph_propose,
@@ -28,6 +29,12 @@ from core.search import _build_results
 from core.state import ai_state
 
 logger = logging.getLogger(__name__)
+
+
+def _cr_prior_text(cr) -> str:
+    """将 CrSummary 转为压缩的先验上下文文本，注入 In/Gr 的调用上下文。"""
+    lines = [f"- {s}" for s in cr.summary] + [f"#主题: {t}" for t in cr.themes]
+    return "\n".join(lines) if lines else ""
 
 
 class Orchestrator:
@@ -111,21 +118,28 @@ class Orchestrator:
         tm = TaskMemory(task_id=event_id, event_id=event_id, raw_content=raw)
         max_attempts = max(1, settings.agent_max_retries + 1)
         try:
-            # 并行：In 拆分 + Gr 初查（基于原文）
+            # 步骤1: Cr 内容要点概括（真实模型，产出辅助上下文）
+            cr = await tool_cr_summarize(raw)
+            tm.cr_summary = cr
+            prior = _cr_prior_text(cr)
+            # 并行：In 拆分（基于原文 + Cr 要点）+ Gr 初查（基于 Cr 主题关键词）
+            query_text = " ".join(cr.themes) if cr.themes else raw[:500]
             chunks, similar = await asyncio.gather(
-                tool_info_split(raw),
-                tool_graph_query(self.graph_store, raw[:500]),
+                tool_info_split(raw, prior_context=prior),
+                tool_graph_query(self.graph_store, query_text),
             )
             tm.annotated_chunks = chunks
             for attempt in range(max_attempts):
-                # 第 2+ 轮起基于分块关键词重新查询近似点
+                # 第 2+ 轮起基于分块关键词重新查询近似点（截断防超大查询串）
                 if attempt > 0:
-                    keywords = " ".join(c.content for c in chunks.chunks)
+                    keywords = " ".join(c.content for c in chunks.chunks)[:500]
                     similar = await tool_graph_query(self.graph_store, keywords)
                 tm.similar_nodes = similar
-                proposal = await tool_graph_propose(chunks, similar, tm.last_feedback)
+                proposal = await tool_graph_propose(
+                    chunks, similar, tm.last_feedback, prior_context=prior, event_id=event_id
+                )
                 tm.graph_proposal = proposal
-                verdict = await tool_meta_review(self.graph_store, proposal, raw)
+                verdict = await tool_meta_review(self.graph_store, proposal, raw, chunks)
                 tm.meta_verdict = verdict
                 if verdict.verdict == "pass":
                     created = await tool_apply_to_store(
