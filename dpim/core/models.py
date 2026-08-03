@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class EventType(str, Enum):
@@ -74,6 +75,56 @@ class InformationFragment(BaseModel):
     source: str = ""
 
 
+# ── Agent 管线新增模型（《零》方案A）──
+# 说明：AnnotatedChunks 替代 InformationFragment 作为信息处理 Agent 的输出。
+# 每个分块必须是 raw_content 的原文连续子串（不允许概括/改写），
+# 保证元认知可在解析期即完成来源锚定校验。InformationFragment 标记废弃，暂保留兼容。
+
+ChunkType = Literal["interaction", "data", "source", "ignore"]
+
+
+class SemanticChunk(BaseModel):
+    content: str = Field(description="原文连续子串，不可增删改")
+    chunk_type: ChunkType = Field(description="分块类型标注")
+    label: str = Field(max_length=10, description="10 字以内中文标签")
+    confidence: float = Field(ge=0.0, le=1.0, description="分类置信度")
+
+
+class AnnotatedChunks(BaseModel):
+    raw_content: str = Field(description="来源事件原始内容")
+    chunks: list[SemanticChunk] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _verify_anchor(self) -> "AnnotatedChunks":
+        """结构级校验：每个分块必须是 raw_content 的原文连续子串。"""
+        for c in self.chunks:
+            if c.content and c.content not in self.raw_content:
+                raise ValueError(
+                    f"chunk '{c.label}' 不是 raw_content 的原文连续子串，禁止改写或概括"
+                )
+        return self
+
+
+class QueryIntent(BaseModel):
+    method: Literal["direct_search", "graph_query", "hybrid"] = Field(
+        description="检索路径选择"
+    )
+    keywords: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class CrSummary(BaseModel):
+    """中央控制 Agent 存入概括输出：逐条要点 + 主题方向。
+
+    作为 In 分拣 / Gr 查图的辅助上下文注入，指引切分方向与查图关键词；
+    不替代 raw_content（AnnotatedChunks 仍须基于原文子串）。
+    """
+
+    summary: list[str] = Field(default_factory=list, description="内容要点逐条概括")
+    themes: list[str] = Field(default_factory=list, description="独立主题方向（供图查询关键词）")
+    confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+
+
 class NodeCreate(BaseModel):
     title: str
     content: str
@@ -108,7 +159,7 @@ class MetaCogVerdict(BaseModel):
 
 class QueueMessage(BaseModel):
     type: str
-    payload: dict
+    payload: dict[str, Any]
     timestamp: float
 
 
@@ -186,7 +237,7 @@ class FeedbackRequest(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     ai_available: bool
-    layers: dict
+    layers: dict[str, Any]
     last_event_at: str = ""
     version: str = "0.1.0"
 
@@ -239,9 +290,9 @@ class NodeDetailResponse(BaseModel):
     title: str
     content: str
     node_type: str
-    source_refs: list
+    source_refs: list[dict[str, Any]]
     confidence: float
-    metadata: dict
+    metadata: dict[str, Any]
     edges: list[EdgeInfo]
 
 
@@ -252,6 +303,18 @@ class SettingsResponse(BaseModel):
     llm_api_key: str
     llm_model_name: str
     llm_timeout: int
+    available_providers: list[str]
+    providers: dict[str, dict[str, Any]] = Field(default_factory=dict,
+                                                 description="BYOK 提供商注册表")
+    active_provider: str
+    available_models: list[str] = Field(default_factory=list)
+    active_model: str
+    agent_mode: str
+    agent_max_retries: int
+    agent_cr_model: str
+    agent_in_model: str
+    agent_gr_model: str
+    agent_meta_model: str
     max_graph_hops: int
     rrf_k: int
     jaccard_threshold: float
@@ -265,6 +328,15 @@ class SettingsUpdateRequest(BaseModel):
     llm_api_key: str | None = None
     llm_model_name: str | None = None
     llm_timeout: int | None = None
+    providers: dict[str, dict[str, Any]] | None = None
+    active_provider: str | None = None
+    active_model: str | None = None
+    agent_mode: str | None = None
+    agent_max_retries: int | None = None
+    agent_cr_model: str | None = None
+    agent_in_model: str | None = None
+    agent_gr_model: str | None = None
+    agent_meta_model: str | None = None
     max_graph_hops: int | None = None
     rrf_k: int | None = None
     jaccard_threshold: float | None = None

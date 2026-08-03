@@ -12,8 +12,6 @@ from core.graph_store import GraphStore
 from core.models import SearchRequest
 from core.search import search as hybrid_search
 
-
-
 cli = typer.Typer()
 
 

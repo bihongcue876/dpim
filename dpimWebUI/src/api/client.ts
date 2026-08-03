@@ -87,6 +87,17 @@ export interface SettingsResponse {
   llm_api_key: string
   llm_model_name: string
   llm_timeout: number
+  available_providers: string[]
+  providers: Record<string, { base_url: string; api_key: string; model?: string; models?: string[]; timeout?: number }>
+  active_provider: string
+  available_models: string[]
+  active_model: string
+  agent_mode: string
+  agent_max_retries: number
+  agent_cr_model: string
+  agent_in_model: string
+  agent_gr_model: string
+  agent_meta_model: string
   max_graph_hops: number
   rrf_k: number
   jaccard_threshold: number
@@ -103,6 +114,10 @@ export async function getStateHash(): Promise<StateHashResponse> {
 
 export async function getHealth(): Promise<HealthResponse> {
   return req('/health')
+}
+
+export async function getAgentLogs(limit = 30): Promise<{ logs: Array<{ role: string; timestamp: number; model: string; input_preview: string; output: string; error: string }> }> {
+  return req(`/agent/logs?limit=${limit}`)
 }
 
 export async function listEvents(params: {
@@ -205,6 +220,7 @@ export async function ingest(content: string, eventType = 'auto'): Promise<{ eve
 export async function query(params: {
   query: string
   source_filter?: string
+  max_hops?: number
   limit?: number
   offset?: number
 }): Promise<{ results: SearchResult[]; total: number; degraded: boolean }> {
@@ -225,7 +241,27 @@ export async function getSettings(): Promise<SettingsResponse> {
   return req('/settings')
 }
 
-export async function putSettings(body: Partial<SettingsResponse>): Promise<void> {
+export async function putSettings(body: {
+  llm_base_url?: string
+  llm_api_key?: string
+  llm_model_name?: string
+  llm_timeout?: number
+  providers?: Record<string, unknown>
+  active_provider?: string
+  active_model?: string
+  agent_mode?: string
+  agent_max_retries?: number
+  agent_cr_model?: string
+  agent_in_model?: string
+  agent_gr_model?: string
+  agent_meta_model?: string
+  max_graph_hops?: number
+  rrf_k?: number
+  jaccard_threshold?: number
+  health_check_interval?: number
+  compensate_batch_size?: number
+  log_level?: string
+}): Promise<void> {
   await req('/settings', {
     method: 'PUT',
     body: JSON.stringify(body),

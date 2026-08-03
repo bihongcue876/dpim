@@ -1,6 +1,8 @@
 """FastAPI 应用，15 个 REST 端点"""
 
+import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 
@@ -10,6 +12,7 @@ from core.config import settings
 from core.database import Database
 from core.event_store import EventStore
 from core.graph_store import GraphStore
+from core.llm import get_llm_logs
 from core.models import (
     CreateEdgeRequest,
     CreateNodeRequest,
@@ -28,6 +31,7 @@ from core.models import (
     NodeDetailResponse,
     NodeListItem,
     NodeListResponse,
+    QueueMessage,
     SearchRequest,
     SearchResponse,
     SettingsResponse,
@@ -36,6 +40,8 @@ from core.models import (
 )
 from core.search import search as hybrid_search
 from core.state import ai_state, get_key, refresh_key
+
+logger = logging.getLogger(__name__)
 
 
 def _ok(**extra: str) -> dict[str, str]:
@@ -87,6 +93,15 @@ async def ingest(body: IngestRequest):
     es, gs = _stores()
     eid, status = await es.insert_event(body.content, body.event_type)
     refresh_key()
+    # Agent 管线启用时，入队让管线即时处理（异步，不阻塞写入返回）
+    if settings.agent_mode == "pipeline" and ai_state.available and orchestrator:
+        await orchestrator.enqueue(
+            QueueMessage(
+                type="ingest",
+                payload={"event_id": eid},
+                timestamp=datetime.now(timezone.utc).timestamp(),
+            )
+        )
     return IngestResponse(event_id=eid, status=status, message="Event ingested")
 
 
@@ -207,7 +222,8 @@ async def delete_edge(source: str, target: str):
 @app.post("/nodes")
 async def create_node(body: CreateNodeRequest):
     import uuid
-    from core.models import GraphNode, SourceRef, NodeMetadata
+
+    from core.models import GraphNode, NodeMetadata, SourceRef
     es, gs = _stores()
     node_id = uuid.uuid4().hex[:16]
 
@@ -246,6 +262,11 @@ async def clear_graph():
 @app.post("/query", response_model=SearchResponse)
 async def query(body: SearchRequest):
     es, gs = _stores()
+    if settings.agent_mode == "pipeline" and ai_state.available and orchestrator:
+        try:
+            return await orchestrator.run_query(body)
+        except Exception:
+            logger.exception("Query agent pipeline failed, fallback to hybrid search")
     return await hybrid_search(body, es, gs, degraded=not ai_state.available)
 
 
@@ -331,7 +352,11 @@ async def get_node(node_id: str):
             for sr in node.source_refs
         ],
         confidence=node.confidence,
-        metadata=node.metadata.model_dump() if hasattr(node.metadata, "model_dump") else dict(node.metadata),
+        metadata=(
+            node.metadata.model_dump()
+            if hasattr(node.metadata, "model_dump")
+            else dict(node.metadata)
+        ),
         edges=[EdgeInfo(**e) for e in edges],
     )
 
@@ -345,6 +370,17 @@ async def get_settings():
         llm_api_key=settings.llm_api_key,
         llm_model_name=settings.llm_model_name,
         llm_timeout=settings.llm_timeout,
+        available_providers=["primary", *settings.providers.keys()],
+        providers=settings.providers,
+        active_provider=settings.active_provider,
+        available_models=settings.available_models(),
+        active_model=settings.active_model,
+        agent_mode=settings.agent_mode,
+        agent_max_retries=settings.agent_max_retries,
+        agent_cr_model=settings.agent_cr_model,
+        agent_in_model=settings.agent_in_model,
+        agent_gr_model=settings.agent_gr_model,
+        agent_meta_model=settings.agent_meta_model,
         max_graph_hops=settings.max_graph_hops,
         rrf_k=settings.rrf_k,
         jaccard_threshold=settings.jaccard_threshold,
@@ -359,8 +395,9 @@ async def update_settings(body: SettingsUpdateRequest):
     for field, value in body.model_dump(exclude_none=True).items():
         if hasattr(settings, field):
             setattr(settings, field, value)
+    settings.save_dpim_config()  # 持久化 BYOK/Agent 配置到 dpim.json，重启保留
     refresh_key()
-    return _ok(message="Settings updated (runtime only, not persisted to .env)")
+    return _ok(message="Settings updated and persisted to dpim.json")
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -386,3 +423,24 @@ async def health():
         },
         last_event_at=last or "",
     )
+
+
+@app.get("/agent/logs")
+async def agent_logs(limit: int = 30):
+    """返回最近 AI 调用日志（环形缓冲，新→旧），供前端观测 LLM 输入/输出。"""
+    return {"logs": get_llm_logs(limit=min(limit, 100))}
+
+
+@app.post("/agent/compensate")
+async def agent_compensate():
+    """手动触发补偿：把 raw/indexed 事件重新入队走 Agent 管线（处理积压事件）。"""
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail="Orchestrator not initialized")
+    await orchestrator.enqueue(
+        QueueMessage(
+            type="compensate",
+            payload={},
+            timestamp=datetime.now(timezone.utc).timestamp(),
+        )
+    )
+    return _ok(message="Compensation triggered")

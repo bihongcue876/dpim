@@ -134,7 +134,7 @@ function render() {
       .id(d => d.id).distance(120).strength(0.3))
     .force('charge', d3.forceManyBody().strength(-300))
     .force('center', d3.forceCenter(w / 2, h / 2))
-    .force('collision', d3.forceCollide(d => nodeRadius(d) + 8).strength(0.8))
+    .force('collision', d3.forceCollide(d => nodeRadius(d as SimNode) + 8).strength(0.8))
     .alphaDecay(0.03)
     .velocityDecay(0.3)
 

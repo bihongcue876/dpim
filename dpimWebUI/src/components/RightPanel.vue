@@ -156,7 +156,13 @@ function doCreateNode() {
 // Settings
 const localSettings = ref<SettingsResponse>({
   memory_db_path: '', graph_json_path: '', llm_base_url: '', llm_api_key: '',
-  llm_model_name: '', llm_timeout: 30, max_graph_hops: 2, rrf_k: 60,
+  llm_model_name: '', llm_timeout: 30, available_providers: ['primary'],
+  providers: {},
+  active_provider: 'primary',
+  available_models: [], active_model: '',
+  agent_mode: 'disabled', agent_max_retries: 2, agent_cr_model: '',
+  agent_in_model: '', agent_gr_model: '', agent_meta_model: '',
+  max_graph_hops: 2, rrf_k: 60,
   jaccard_threshold: 0.85, health_check_interval: 60, compensate_batch_size: 20, log_level: 'INFO',
 })
 

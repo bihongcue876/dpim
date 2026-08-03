@@ -266,3 +266,137 @@ class TestFeedbackEndpoint:
         assert resp.status_code == 200
         node = api.graph_store.get_node("fb_node")
         assert node.confidence == 0.51  # 0.5 + 0.01
+
+
+class TestSettingsEndpoint:
+    """GET/PUT /settings — 含 BYOK 多模型网关配置项"""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_dpim(self, tmp_path, monkeypatch):
+        """重定向 dpim.json 到临时文件，避免 PUT 写入真实配置。"""
+        from interface import api as api_mod
+
+        monkeypatch.setattr(api_mod.settings, "config_file", str(tmp_path / "test_dpim.json"))
+    BYOK_FIELDS = [
+        "available_providers",
+        "active_provider",
+        "agent_mode",
+        "agent_max_retries",
+        "agent_cr_model",
+        "agent_in_model",
+        "agent_gr_model",
+        "agent_meta_model",
+    ]
+
+    def test_get_settings_contains_byok_fields(self, test_app):
+        resp = test_app.get("/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        for field in self.BYOK_FIELDS:
+            assert field in data, f"缺少配置项 {field}"
+
+    def test_get_settings_available_providers_default(self, test_app, monkeypatch):
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "providers", {})
+        resp = test_app.get("/settings")
+        data = resp.json()
+        assert data["available_providers"] == ["primary"]
+
+    def test_put_providers_registers_and_active(self, test_app, monkeypatch):
+        """PUT /settings 注册 provider + 设为活动 → 即时生效，无需重启。"""
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "providers", {})
+        monkeypatch.setattr(s, "active_provider", "primary")
+        r = test_app.put("/settings", json={
+            "providers": {
+                "qwen": {
+                    "base_url": "http://localhost:5091/v1",
+                    "api_key": "1",
+                    "model": "Qwen3.5-9B",
+                }
+            },
+            "active_provider": "qwen",
+        })
+        assert r.status_code == 200
+        data = test_app.get("/settings").json()
+        assert "qwen" in data["available_providers"]
+        assert data["active_provider"] == "qwen"
+        assert s.role_provider("cr").base_url == "http://localhost:5091/v1"
+
+    def test_get_settings_active_model_fields(self, test_app):
+        resp = test_app.get("/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "available_models" in data
+        assert "active_model" in data
+
+    def test_put_settings_active_model(self, test_app, monkeypatch):
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "providers", {
+            "qwen": {"base_url": "http://localhost:5091/v1", "api_key": "1",
+                     "models": ["Qwen3.5-9B", "Qwen3.5-35B-A3B"]},
+        })
+        monkeypatch.setattr(s, "active_provider", "qwen")
+        monkeypatch.setattr(s, "active_model", "")
+        r = test_app.put("/settings", json={"active_model": "Qwen3.5-35B-A3B"})
+        assert r.status_code == 200
+        assert s.role_model("cr") == "Qwen3.5-35B-A3B"
+
+    def test_put_settings_updates_agent_mode(self, test_app):
+        from core.config import settings as s
+
+        old_mode = s.agent_mode
+        old_active = s.active_provider
+        try:
+            resp = test_app.put("/settings", json={
+                "agent_mode": "pipeline",
+                "active_provider": "deepseek",
+                "agent_cr_model": "deepseek-reasoner",
+            })
+            assert resp.status_code == 200
+            assert s.agent_mode == "pipeline"
+            assert s.active_provider == "deepseek"
+            assert s.role_model("cr") == "deepseek-reasoner"
+            # GET 反映运行时更新
+            data = test_app.get("/settings").json()
+            assert data["agent_mode"] == "pipeline"
+            assert data["active_provider"] == "deepseek"
+        finally:
+            s.agent_mode = old_mode
+            s.active_provider = old_active
+            s.agent_cr_model = ""
+
+    def test_put_settings_partial_ignores_missing(self, test_app):
+        from core.config import settings as s
+
+        old = s.agent_max_retries
+        try:
+            resp = test_app.put("/settings", json={"agent_max_retries": 5})
+            assert resp.status_code == 200
+            assert s.agent_max_retries == 5
+        finally:
+            s.agent_max_retries = old
+
+
+class TestAgentLogsEndpoint:
+    """GET /agent/logs — AI 调用日志观测"""
+
+    def test_agent_logs_endpoint(self, test_app):
+        from core.llm import clear_llm_logs, log_llm_call
+
+        clear_llm_logs()
+        log_llm_call("cr", "Qwen3.5-9B", "输入", "输出")
+        resp = test_app.get("/agent/logs")
+        assert resp.status_code == 200
+        logs = resp.json()["logs"]
+        assert isinstance(logs, list)
+        assert logs and logs[0]["role"] == "cr"
+        clear_llm_logs()
+
+    def test_agent_compensate_requires_orchestrator(self, test_app):
+        """测试夹具中 orchestrator 未启动 → 503；生产环境 orchestrator 存在则触发。"""
+        resp = test_app.post("/agent/compensate")
+        assert resp.status_code == 503

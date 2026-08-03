@@ -13,6 +13,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/health': { target: 'http://localhost:8000', changeOrigin: true },
+      '/agent': { target: 'http://localhost:8000', changeOrigin: true },
       '/state-hash': { target: 'http://localhost:8000', changeOrigin: true },
       '/ingest': { target: 'http://localhost:8000', changeOrigin: true },
       '/events': { target: 'http://localhost:8000', changeOrigin: true },

@@ -24,6 +24,9 @@
           <n-tab-pane name="search" tab="检索">
             <SearchTab />
           </n-tab-pane>
+          <n-tab-pane name="ingest" tab="信息传入">
+            <IngestTab />
+          </n-tab-pane>
         </n-tabs>
       </n-layout>
     </n-message-provider>
@@ -40,6 +43,7 @@ import ConfigTab from '@/components/ConfigTab.vue'
 import EventListTab from '@/components/EventListTab.vue'
 import GraphTab from '@/components/GraphTab.vue'
 import SearchTab from '@/components/SearchTab.vue'
+import IngestTab from '@/components/IngestTab.vue'
 import { useStateKey } from '@/composables/useStateKey'
 import * as api from '@/api/client'
 import type { HealthResponse } from '@/api/client'
@@ -54,6 +58,11 @@ const activeTab = ref('config')
 // 跨 Tab 导航事件处理函数（搜索→图谱）
 const onFocusNode = ((_e: CustomEvent) => {
   activeTab.value = 'graph'
+}) as EventListener
+
+// 跨 Tab 导航事件处理函数（信息传入→信息列表）
+const onFocusEvent = ((_e: CustomEvent) => {
+  activeTab.value = 'events'
 }) as EventListener
 
 async function onRefreshKey() {
@@ -84,10 +93,12 @@ onMounted(async () => {
   loadHealth()
   healthTimer = setInterval(loadHealth, 30000)
   window.addEventListener('dpim:focus-node', onFocusNode)
+  window.addEventListener('dpim:focus-event', onFocusEvent)
 })
 onUnmounted(() => {
   clearInterval(healthTimer)
   window.removeEventListener('dpim:focus-node', onFocusNode)
+  window.removeEventListener('dpim:focus-event', onFocusEvent)
 })
 </script>
 
