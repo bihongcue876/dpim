@@ -63,15 +63,16 @@ function tagType(status: string): 'success' | 'info' | 'warning' | 'error' | 'de
 
 <style scoped>
 .ingest-history { display: flex; flex-direction: column; }
-.ih-header { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-.ih-empty { font-size: 12px; color: var(--n-text-color-3); padding: 12px 0; text-align: center; }
+.ih-header { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--dpim-text, #e6edf3); }
+.ih-empty { font-size: 12px; color: var(--dpim-text-3, #7c8694); padding: 12px 0; text-align: center; }
 .ih-row {
   display: flex; align-items: center; gap: 12px;
-  padding: 6px 4px; font-size: 12px;
-  border-bottom: 1px dashed var(--n-border-color);
+  padding: 7px 4px; font-size: 12px;
+  border-bottom: 1px dashed var(--dpim-border, rgba(255,255,255,0.07));
 }
-.ih-time { color: var(--n-text-color-3); flex-shrink: 0; }
-.ih-id { cursor: pointer; color: var(--n-text-color-1); text-decoration: underline dotted; }
-.ih-id:hover { color: #18a058; }
-.mono { font-family: 'Consolas', 'Cascadia Code', monospace; }
+.ih-row:last-child { border-bottom: none; }
+.ih-time { color: var(--dpim-text-3, #7c8694); flex-shrink: 0; font-family: 'Cascadia Code', Consolas, monospace; font-size: 11px; }
+.ih-id { cursor: pointer; color: var(--dpim-text, #e6edf3); text-decoration: underline dotted; }
+.ih-id:hover { color: var(--dpim-primary, #5b8cff); }
+.mono { font-family: 'Cascadia Code', Consolas, monospace; }
 </style>

@@ -319,6 +319,7 @@ class SettingsResponse(BaseModel):
     rrf_k: int
     jaccard_threshold: float
     health_check_interval: int
+    health_check_timeout: int
     compensate_batch_size: int
     log_level: str
 
@@ -341,5 +342,6 @@ class SettingsUpdateRequest(BaseModel):
     rrf_k: int | None = None
     jaccard_threshold: float | None = None
     health_check_interval: int | None = None
+    health_check_timeout: int | None = None
     compensate_batch_size: int | None = None
     log_level: str | None = None

@@ -453,6 +453,45 @@ async def test_ingest_pipeline_in_error_marks_failed(
     assert (await event_store.get(eid))["status"] == "failed"
 
 
+def test_is_transient_error_classification():
+    """瞬时错误（超时/断连）判定：可重试；逻辑错误不算瞬时。"""
+    import httpx
+
+    from core.llm import is_transient_error
+
+    assert is_transient_error(httpx.ReadTimeout("read timeout"))
+    assert is_transient_error(httpx.ConnectError("connect error"))
+    assert is_transient_error(httpx.TimeoutException("timeout"))
+    assert not is_transient_error(ValueError("校验失败"))
+    assert not is_transient_error(RuntimeError("其他错误"))
+
+
+async def test_ingest_pipeline_transient_error_back_to_indexed(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """瞬时错误（超时/断连）不判死：事件回到 indexed，等待补偿重试。"""
+    import httpx
+
+    raw = "用户询问了Python异步编程的实现方式"
+    fake = FakeLLM(
+        chunks=make_chunks(raw),
+        proposal=make_proposal(),
+        verdict=make_verdict(pass_=True),
+    )
+    original = fake.chat_structured
+
+    async def chat_with_timeout(role, response_model, system, user, temperature=0.2, **kw):
+        if role == "cr":
+            raise httpx.ReadTimeout("模型生成超时")
+        return await original(role, response_model, system, user, temperature=temperature, **kw)
+
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", chat_with_timeout)
+    orch = make_orchestrator(db, event_store, graph_store)
+    eid, _ = await event_store.insert_event(raw, "interaction")
+    await orch._handle_ingest_pipeline(eid)
+    assert (await event_store.get(eid))["status"] == "indexed"
+
+
 async def test_handle_ingest_degraded_keeps_indexed(
     db, event_store, graph_store, monkeypatch
 ):

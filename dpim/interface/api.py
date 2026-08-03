@@ -173,6 +173,21 @@ async def modify_event_status(event_id: str, body: ModifyEventStatusRequest):
             detail=f"Status transition {current} -> {new} not allowed",
         )
     await es.update_status(event_id, new)
+    # 目标为 indexed 且管线可用时入队，让「重试」真正重新走 Agent 管线
+    # （对已 indexed 事件 _handle_ingest 会跳过基础索引直接进入管线，幂等安全）
+    if (
+        new == "indexed"
+        and settings.agent_mode == "pipeline"
+        and ai_state.available
+        and orchestrator
+    ):
+        await orchestrator.enqueue(
+            QueueMessage(
+                type="ingest",
+                payload={"event_id": event_id},
+                timestamp=datetime.now(timezone.utc).timestamp(),
+            )
+        )
     refresh_key()
     return _ok(event_id=event_id, new_status=new, message="Status updated")
 
@@ -385,6 +400,7 @@ async def get_settings():
         rrf_k=settings.rrf_k,
         jaccard_threshold=settings.jaccard_threshold,
         health_check_interval=settings.health_check_interval,
+        health_check_timeout=settings.health_check_timeout,
         compensate_batch_size=settings.compensate_batch_size,
         log_level=settings.log_level,
     )

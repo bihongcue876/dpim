@@ -69,9 +69,9 @@
               <n-button size="small" type="error" @click="onDelete(detail.event_id as string)">删除事件</n-button>
               <n-popover trigger="hover" placement="top">
                 <template #trigger>
-                  <n-button size="small" :disabled="detail.event_type === 'source'" @click="onGenerate">生成知识</n-button>
+                  <n-button size="small" :disabled="!canGenerate" :loading="generating" @click="onGenerate">生成知识</n-button>
                 </template>
-                <span style="font-size:12px">需配置 Agent 提示词后启用</span>
+                <span style="font-size:12px">{{ generateHint }}</span>
               </n-popover>
             </template>
           </div>
@@ -93,7 +93,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useDialog, createDiscreteApi } from 'naive-ui'
 import type { EventListItem } from '@/api/client'
 import * as api from '@/api/client'
@@ -123,6 +123,7 @@ const editing = ref(false)
 const editContent = ref('')
 const saving = ref(false)
 const creating = ref(false)
+const generating = ref(false)
 const selectedIds = ref(new Set<string>())
 
 function toggleSelect(id: string) {
@@ -169,7 +170,7 @@ async function onRetry(eventId: string) {
   try {
     await api.putEventStatus(eventId, 'indexed')
     await props.onCommitted()
-    message.success('事件已重新入队处理')
+    message.success('已重置为 indexed，管线开始处理')
     await onSelectRow(eventId)
     await load()
   } catch (e: any) {
@@ -254,9 +255,34 @@ onUnmounted(() => {
   window.removeEventListener('dpim:focus-event', onFocusEvent)
 })
 
-function onGenerate() {
-  // TODO: 调用图构建 Agent，需 Agent 提示词就绪后启用
+async function onGenerate() {
+  // 触发补偿：把 raw/indexed 积压事件重新入队走 Agent 管线生成知识
+  // （本条若为 raw/indexed 也会被包含；failed 请先用「重试」）
+  generating.value = true
+  try {
+    await api.compensate()
+    message.success('已触发补偿，raw/indexed 积压事件开始重新处理')
+  } catch (e: any) {
+    message.error('触发失败: ' + (e?.message || '未知错误'))
+  } finally {
+    generating.value = false
+  }
 }
+
+// 生成知识 = 补偿 raw/indexed 积压事件：linked 已处理、failed 需先重试、source 不构图
+const canGenerate = computed(() => {
+  const s = String(detail.value?.status ?? '')
+  const t = String(detail.value?.event_type ?? '')
+  return t !== 'source' && s !== 'linked' && s !== 'failed'
+})
+const generateHint = computed(() => {
+  const s = String(detail.value?.status ?? '')
+  const t = String(detail.value?.event_type ?? '')
+  if (t === 'source') return 'source 类型仅存储，不进入图谱'
+  if (s === 'linked') return '本条已生成知识，无需处理'
+  if (s === 'failed') return '失败事件请先点「重试」重新入队'
+  return '将 raw / indexed 积压事件重新入队，走 Agent 管线处理'
+})
 
 async function onDelete(eventId: string) {
   dialog.warning({
@@ -342,22 +368,40 @@ async function doCreate() {
 
 <style scoped>
 .event-tab { display: flex; height: 100%; }
-.event-left { width: 35%; border-right: 1px solid var(--n-border-color); display: flex; flex-direction: column; padding: 8px; }
-.event-toolbar { display: flex; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
-.toolbar-spacer { flex: 1; }
-.toolbar-count { font-size: 11px; color: var(--n-text-color-3); white-space: nowrap; }
-.event-table-wrap { flex: 1; overflow-y: auto; }
-.event-row {
-  display: flex; align-items: center; gap: 6px; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 3px;
+.event-left {
+  width: 36%; display: flex; flex-direction: column;
+  padding: 12px 14px; gap: 8px;
+  border-right: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  background: var(--dpim-surface, #161b22);
 }
-.event-row:hover { background: rgba(255,255,255,0.05); }
-.event-row.active { background: rgba(81,162,255,0.2); }
-.ev-time { color: var(--n-text-color-3); width: 80px; flex-shrink: 0; }
-.ev-content { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.event-right { flex: 1; display: flex; flex-direction: column; padding: 12px; overflow: hidden; }
-.detail-scroll { overflow-y: auto; height: 100%; }
-.detail-actions { display: flex; gap: 8px; margin-top: 16px; }
-.raw-content { font-size: 13px; line-height: 1.6; white-space: pre-wrap; max-height: 300px; overflow-y: auto; background: rgba(0,0,0,0.15); padding: 8px; border-radius: 4px; }
-.mono-text { font-family: 'Consolas', 'Cascadia Code', monospace; font-size: 12px; color: var(--n-text-color-3); }
-h4 { margin: 0 0 8px; font-size: 14px; }
+.event-toolbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.toolbar-spacer { flex: 1; }
+.toolbar-count { font-size: 11px; color: var(--dpim-text-3, #7c8694); white-space: nowrap; }
+.event-table-wrap {
+  flex: 1; overflow-y: auto; min-height: 0;
+  border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  border-radius: var(--dpim-radius-sm, 8px);
+  background: var(--dpim-bg, #0e1217);
+  padding: 4px;
+}
+.event-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12px;
+  cursor: pointer; border-radius: 6px; border-left: 2px solid transparent;
+  transition: background 0.12s ease;
+}
+.event-row:hover { background: var(--dpim-surface-hover, rgba(255,255,255,0.04)); }
+.event-row.active { background: var(--dpim-primary-soft, rgba(91,140,255,0.14)); border-left-color: var(--dpim-primary, #5b8cff); }
+.ev-time { color: var(--dpim-text-3, #7c8694); width: 84px; flex-shrink: 0; font-family: 'Cascadia Code', Consolas, monospace; font-size: 11px; }
+.ev-content { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dpim-text-2, #aab4c0); }
+.event-right { flex: 1; display: flex; flex-direction: column; padding: 16px 20px; overflow: hidden; }
+.detail-scroll { overflow-y: auto; height: 100%; min-height: 0; }
+.detail-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+.raw-content {
+  font-size: 13px; line-height: 1.7; white-space: pre-wrap; max-height: 320px; overflow-y: auto;
+  background: var(--dpim-bg, #0e1217); border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  padding: 10px 12px; border-radius: var(--dpim-radius-sm, 8px);
+  color: var(--dpim-text-2, #aab4c0);
+}
+.mono-text { font-family: 'Cascadia Code', Consolas, monospace; font-size: 12px; color: var(--dpim-text-3, #7c8694); }
+h4 { margin: 0 0 12px; font-size: 14px; color: var(--dpim-text, #e6edf3); }
 </style>

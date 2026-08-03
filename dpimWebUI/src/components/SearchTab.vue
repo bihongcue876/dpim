@@ -83,10 +83,6 @@
 
         <template v-if="searchMode === 'events'">
           <div class="filter-row">
-            <span class="filter-label">事件状态</span>
-            <n-select v-model:value="eventStatus" :options="statusOpts" style="width:120px" clearable />
-          </div>
-          <div class="filter-row">
             <span class="filter-label">最低置信度</span>
             <n-slider v-model:value="minConfidence" :min="0" :max="1" :step="0.05" style="width:140px" />
             <span class="filter-value">{{ minConfidence.toFixed(2) }}</span>
@@ -232,7 +228,6 @@ const degraded = ref(false)
 const sourceFilter = ref('all')
 const maxHops = ref(2)
 const resultLimit = ref(20)
-const eventStatus = ref('')
 const minConfidence = ref(0)
 
 // 分页
@@ -258,13 +253,6 @@ const limitOpts = [
   { label: '20', value: 20 },
   { label: '50', value: 50 },
   { label: '100', value: 100 },
-]
-
-const statusOpts = [
-  { label: '全部', value: '' },
-  { label: '待处理', value: 'pending' },
-  { label: '有效', value: 'valid' },
-  { label: '失效', value: 'invalid' },
 ]
 
 // ── 计算属性 ──
@@ -464,16 +452,16 @@ async function onFeedback(id: string, accepted: boolean) {
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 0 24px 12px;
+  padding: 4px 24px 12px;
   overflow: hidden;
 }
 
 /* 搜索栏 */
 .search-bar {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   flex-shrink: 0;
-  margin-top: 4px;
+  margin-top: 8px;
 }
 
 /* 高级筛选 */
@@ -481,34 +469,35 @@ async function onFeedback(id: string, accepted: boolean) {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  padding: 2px 0;
+  padding: 4px 0;
 }
 .filter-panel {
   flex-shrink: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 10px 24px;
-  padding: 6px 12px;
-  margin-bottom: 4px;
-  background: rgba(255,255,255,0.04);
-  border-radius: 6px;
-  border: 1px solid var(--n-border-color);
+  gap: 12px 28px;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  background: var(--dpim-surface, #161b22);
+  border-radius: var(--dpim-radius-sm, 8px);
+  border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
 }
 .filter-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 .filter-label {
   font-size: 12px;
-  color: var(--n-text-color-3);
+  color: var(--dpim-text-3, #7c8694);
   white-space: nowrap;
 }
 .filter-value {
   font-size: 12px;
-  color: var(--n-text-color-2);
-  min-width: 28px;
+  color: var(--dpim-text-2, #aab4c0);
+  min-width: 32px;
   text-align: center;
+  font-family: 'Cascadia Code', Consolas, monospace;
 }
 
 /* 统计栏 */
@@ -517,11 +506,11 @@ async function onFeedback(id: string, accepted: boolean) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 0;
+  padding: 6px 2px;
   font-size: 12px;
-  color: var(--n-text-color-3);
-  border-bottom: 1px solid var(--n-border-color);
-  margin-bottom: 6px;
+  color: var(--dpim-text-3, #7c8694);
+  border-bottom: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  margin-bottom: 10px;
 }
 .stats-text { display: flex; align-items: center; }
 
@@ -530,48 +519,51 @@ async function onFeedback(id: string, accepted: boolean) {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
+  padding-right: 4px;
 }
 
 /* 结果分组 */
-.result-group { margin-bottom: 10px; }
+.result-group { margin-bottom: 14px; }
 .group-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  margin-bottom: 4px;
-  border-radius: 4px;
-  background: rgba(255,255,255,0.03);
-  border-left: 3px solid var(--n-primary-color);
+  gap: 8px;
+  padding: 6px 12px;
+  margin-bottom: 8px;
+  border-radius: var(--dpim-radius-sm, 8px);
+  background: var(--dpim-surface-2, #1c2230);
+  border-left: 3px solid var(--dpim-primary, #5b8cff);
 }
 .group-icon { font-size: 13px; }
-.group-label { font-size: 13px; font-weight: 600; color: var(--n-text-color-2); }
+.group-label { font-size: 13px; font-weight: 600; color: var(--dpim-text, #e6edf3); }
 .group-count {
   font-size: 11px;
-  color: var(--n-text-color-3);
-  background: rgba(255,255,255,0.08);
-  padding: 0 6px;
-  border-radius: 8px;
+  color: var(--dpim-text-3, #7c8694);
+  background: rgba(255,255,255,0.07);
+  padding: 0 8px;
+  border-radius: 999px;
 }
 
 /* 结果卡片 */
 .result-card {
-  border: 1px solid var(--n-border-color);
-  border-radius: 6px;
-  padding: 8px 12px;
-  margin-bottom: 6px;
+  border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  border-radius: var(--dpim-radius-sm, 8px);
+  padding: 12px 14px;
+  margin-bottom: 10px;
   cursor: pointer;
-  transition: border-color 0.2s, background 0.15s;
+  background: var(--dpim-surface, #161b22);
+  transition: border-color 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
 }
 .result-card:hover {
-  border-color: var(--n-primary-color);
-  background: rgba(255,255,255,0.02);
+  border-color: var(--dpim-primary, #5b8cff);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  transform: translateY(-1px);
 }
 .card-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 3px;
+  gap: 8px;
+  margin-bottom: 6px;
   flex-wrap: wrap;
 }
 .card-title {
@@ -582,17 +574,19 @@ async function onFeedback(id: string, accepted: boolean) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--dpim-text, #e6edf3);
 }
 .card-score {
-  color: var(--n-text-color-3);
+  color: var(--dpim-text-3, #7c8694);
   font-size: 11px;
   white-space: nowrap;
+  font-family: 'Cascadia Code', Consolas, monospace;
 }
 .card-snippet {
   font-size: 13px;
-  line-height: 1.5;
-  color: var(--n-text-color-2);
-  margin-bottom: 4px;
+  line-height: 1.6;
+  color: var(--dpim-text-2, #aab4c0);
+  margin-bottom: 8px;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
@@ -603,12 +597,12 @@ async function onFeedback(id: string, accepted: boolean) {
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
 }
-.footer-left { display: flex; align-items: center; gap: 8px; }
-.card-conf { color: var(--n-text-color-3); font-size: 11px; }
-.card-events { color: var(--n-text-color-3); font-size: 11px; cursor: help; border-bottom: 1px dotted var(--n-border-color); }
-.footer-actions { display: flex; align-items: center; gap: 4px; }
+.footer-left { display: flex; align-items: center; gap: 12px; }
+.card-conf { color: var(--dpim-text-3, #7c8694); font-size: 11px; font-family: 'Cascadia Code', Consolas, monospace; }
+.card-events { color: var(--dpim-text-3, #7c8694); font-size: 11px; cursor: help; border-bottom: 1px dotted var(--dpim-border-strong, rgba(255,255,255,0.16)); }
+.footer-actions { display: flex; align-items: center; gap: 6px; }
 
 /* 分页栏 */
 .pagination-bar {
@@ -617,18 +611,19 @@ async function onFeedback(id: string, accepted: boolean) {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  padding: 8px 0 4px;
-  border-top: 1px solid var(--n-border-color);
-  margin-top: 4px;
+  padding: 10px 0 4px;
+  border-top: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  margin-top: 8px;
 }
 .page-num {
   font-size: 12px;
-  color: var(--n-text-color-3);
+  color: var(--dpim-text-3, #7c8694);
   min-width: 50px;
   text-align: center;
+  font-family: 'Cascadia Code', Consolas, monospace;
 }
 .page-indicator {
-  color: var(--n-text-color-3);
+  color: var(--dpim-text-3, #7c8694);
   font-weight: 500;
 }
 

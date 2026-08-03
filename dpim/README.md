@@ -22,13 +22,14 @@
 
 | Agent | 文件 | 职责 |
 |-------|------|------|
-| 中央控制 Cr | `prompts/core.md` | 检索意图分析 |
+| 中央控制 Cr | `prompts/core.md` | 存入概括 + 检索意图分析 |
 | 信息管理 In | `prompts/infomater.md` | 内容分拣标注（原文子串） |
 | 图对接 Gr | `prompts/grapher.md` | 存图计划生成 |
 | 元认知 Meta | `prompts/metacognition.md` | 存图审核 + 检索复核（硬关卡） |
 
-**提示词正文待使用者填写**（`dpim/prompts/*.md` 现为结构骨架）。未配置时系统不受影响，
-事件停留在 `indexed` 状态等待补偿；AI 恢复后自动批量处理积压事件。
+**提示词正文已定稿**（Phase A，2026-08-01）：Cr 概括/意图、In 分拣、Gr 构图（含 event_id）、Meta 审核（4 类型），
+含上下文护栏（DPIM_MAX_RAW_CONTENT 截断、similar_nodes 瘦身、instructor 重试、邻域边）。
+未配置（agent_mode=disabled）时系统不受影响，事件停留在 `indexed` 状态等待补偿；AI 恢复后自动批量处理积压事件。
 
 ### 3. 核心存储独立于 AI
 

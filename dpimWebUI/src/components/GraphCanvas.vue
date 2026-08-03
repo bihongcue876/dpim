@@ -44,9 +44,9 @@ interface SimLink extends d3.SimulationLinkDatum<SimNode> {
 }
 
 const COLOR_MAP: Record<string, string> = {
-  system: '#4a90d9',
-  interaction: '#52c41a',
-  data: '#4fc3f7',      // 从橙色改为浅蓝
+  system: '#5b8cff',       // 蓝
+  interaction: '#3fb68b',  // 绿
+  data: '#4cb5f5',         // 浅蓝
 }
 
 /** 获取圆半径：根据置信度 + 最少可见大小 */
@@ -128,15 +128,15 @@ function render() {
 
   if (simulation) simulation.stop()
 
-  // Tuned force parameters for better spreading
+  // 力导向参数：保留一点弹性（平滑铺开/落定），但不过度回弹
   simulation = d3.forceSimulation<SimNode>(simNodes)
     .force('link', d3.forceLink<SimNode, SimLink>(simLinks)
-      .id(d => d.id).distance(120).strength(0.3))
-    .force('charge', d3.forceManyBody().strength(-300))
+      .id(d => d.id).distance(120).strength(0.25))
+    .force('charge', d3.forceManyBody().strength(-280))
     .force('center', d3.forceCenter(w / 2, h / 2))
     .force('collision', d3.forceCollide(d => nodeRadius(d as SimNode) + 8).strength(0.8))
-    .alphaDecay(0.03)
-    .velocityDecay(0.3)
+    .alphaDecay(0.045)      // 稍快冷却，缩短初始摆动时长
+    .velocityDecay(0.5)     // 更高摩擦阻尼，减少弹性震荡
 
   // ---- Edges with curvature ----
   // 按无向对分组（A|B 和 B|A 视为同一组），双向边自动错开弯曲
@@ -197,9 +197,9 @@ function render() {
     .data(d => [d])
     .join('path')
     .attr('fill', 'none')
-    .attr('stroke', '#555')
+    .attr('stroke', '#7c8694')
     .attr('stroke-width', 1.2)
-    .attr('stroke-opacity', 0.4)
+    .attr('stroke-opacity', 0.45)
     .attr('marker-end', 'url(#arrow)')
     .style('cursor', 'pointer')
 
@@ -274,16 +274,18 @@ function render() {
     .attr('stroke-opacity', 0.3)
     .style('pointer-events', 'none')
 
-  // Drag
+  // Drag：拖动固定节点；松手后停留在拖放位置（不弹回），邻接节点仅轻微跟随（一点弹性）
   nodeG.call(d3.drag<SVGGElement, SimNode>()
     .on('start', (event, d) => {
-      if (!event.active && simulation) simulation.alphaTarget(0.3).restart()
+      // 轻微回温，让邻接节点有一点弹性跟随，但不剧烈
+      if (!event.active && simulation) simulation.alphaTarget(0.12).restart()
       d.fx = d.x; d.fy = d.y
     })
     .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y })
-    .on('end', (_event, d) => {
-      if (!_event.active && simulation) simulation.alphaTarget(0)
-      d.fx = null; d.fy = null
+    .on('end', (event, d) => {
+      if (!event.active && simulation) simulation.alphaTarget(0)
+      // 关键：保持 fx/fy，节点停留在拖放位置，不记忆、不弹回
+      d.fx = d.x; d.fy = d.y
     }) as any)
 
   // Click / dblclick on nodes
@@ -387,6 +389,14 @@ function resetZoom() {
 </script>
 
 <style scoped>
-.graph-canvas { width: 100%; height: 100%; overflow: hidden; position: relative; }
-.empty-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #666; font-size: 14px; }
+.graph-canvas {
+  width: 100%; height: 100%; overflow: hidden; position: relative;
+  background-color: var(--dpim-bg, #0e1217);
+  background-image: radial-gradient(rgba(255,255,255,0.05) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+.empty-hint {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--dpim-text-3, #7c8694); font-size: 14px;
+}
 </style>

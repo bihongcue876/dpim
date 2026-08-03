@@ -116,7 +116,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useDialog, createDiscreteApi } from 'naive-ui'
 import GraphCanvas from '@/components/GraphCanvas.vue'
 import * as api from '@/api/client'
@@ -221,13 +221,22 @@ async function loadEvents() {
 
 watch(() => props.keyStatus, async () => { await loadGraph(); await loadEvents() }, { immediate: true })
 
-// 监听从搜索 Tab 传来的焦点节点
-watch(() => props.keyStatus, () => {
+// 跨 Tab 定位：监听来自检索 Tab 的焦点节点事件（不依赖 keyStatus 变化）
+function applyFocusNode() {
   const focusId = localStorage.getItem('dpim_focus_node')
   if (focusId && nodeItems.value.some(n => n.node_id === focusId)) {
     highlightId.value = focusId
     localStorage.removeItem('dpim_focus_node')
+    onSelectNode(focusId)
   }
+}
+const onFocusNode = (() => { applyFocusNode() }) as EventListener
+
+onMounted(() => {
+  window.addEventListener('dpim:focus-node', onFocusNode)
+})
+onUnmounted(() => {
+  window.removeEventListener('dpim:focus-node', onFocusNode)
 })
 
 function onSelectNode(id: string) {
@@ -411,7 +420,7 @@ async function onDeleteSelNodes() {
 
 <style scoped>
 .graph-tab { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; position: relative; }
-.graph-canvas-area { flex: 1; width: 100%; min-height: 0; position: relative; }
+.graph-canvas-area { flex: 1; width: 100%; min-height: 0; position: relative; background: var(--dpim-bg, #0e1217); }
 
 /* 面板：absolute 定位 + translateY 向下滑出画布，canvas 始终 100% */
 .panel-slider {
@@ -421,30 +430,43 @@ async function onDeleteSelNodes() {
 .panel-slider.open { transform: translateY(0); }
 .panel-slider.closed { transform: translateY(calc(100% + 32px)); }
 
-.panel-body { height: 100%; display: flex; flex-direction: column; background: var(--n-color); border-top: 1px solid var(--n-border-color); overflow: hidden; }
+.panel-body {
+  height: 100%; display: flex; flex-direction: column;
+  background: var(--dpim-surface, #161b22);
+  border-top: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  overflow: hidden;
+}
 .panel-inner { display: flex; flex: 1; min-height: 0; overflow-y: auto; }
-.panel-left, .panel-right { flex: 1; padding: 10px 12px; overflow-y: auto; }
-.panel-left { border-right: 1px solid var(--n-border-color); }
+.panel-left, .panel-right { flex: 1; padding: 12px 16px; overflow-y: auto; }
+.panel-left { border-right: 1px solid var(--dpim-border, rgba(255,255,255,0.09)); }
 .node-list-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .node-mini-row {
-  display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 5px 6px; cursor: pointer; border-radius: 4px;
+  display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 6px 8px;
+  cursor: pointer; border-radius: 6px; border-left: 2px solid transparent;
 }
-.node-mini-row:hover { background: rgba(255,255,255,0.05); }
-.nd-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nd-conf { color: var(--n-text-color-3); width: 40px; text-align: right; font-size: 12px; }
+.node-mini-row:hover { background: var(--dpim-surface-hover, rgba(255,255,255,0.04)); }
+.nd-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dpim-text-2, #aab4c0); }
+.nd-conf { color: var(--dpim-text-3, #7c8694); width: 40px; text-align: right; font-size: 12px; font-family: 'Cascadia Code', Consolas, monospace; }
 
 /* 底部操作栏：absolute 定在页面最底部 */
 .toggle-row {
   position: absolute; left: 0; right: 0; bottom: 0; height: 32px; z-index: 3;
   display: flex; justify-content: space-between; align-items: center;
-  padding: 3px 8px; background: var(--n-color); border-top: 1px solid var(--n-border-color);
+  padding: 3px 12px; background: var(--dpim-surface, #161b22);
+  border-top: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
 }
-h4 { margin: 0 0 8px; font-size: 15px; }
-.sel-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.edge-list-label { font-size: 14px; color: var(--n-text-color-3); margin-bottom: 4px; }
+h4 { margin: 0 0 10px; font-size: 14px; color: var(--dpim-text, #e6edf3); }
+.sel-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dpim-text, #e6edf3); }
+.edge-list-label { font-size: 13px; color: var(--dpim-text-3, #7c8694); margin-bottom: 4px; }
 .edge-row { display: flex; align-items: center; gap: 6px; font-size: 13px; padding: 4px 0; }
-.edge-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.node-content { font-size: 14px; line-height: 1.6; white-space: pre-wrap; max-height: 200px; overflow-y: auto; background: rgba(0,0,0,0.12); padding: 8px; border-radius: 4px; color: var(--n-text-color-2); }
-.detail-label { font-size: 14px; font-weight: 600; color: var(--n-text-color-3); margin-bottom: 4px; }
+.edge-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dpim-text-2, #aab4c0); }
+.node-content {
+  font-size: 13px; line-height: 1.6; white-space: pre-wrap; max-height: 200px; overflow-y: auto;
+  background: var(--dpim-bg, #0e1217); border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  padding: 10px 12px; border-radius: var(--dpim-radius-sm, 8px);
+  color: var(--dpim-text-2, #aab4c0);
+}
+.detail-label { font-size: 13px; font-weight: 600; color: var(--dpim-text-3, #7c8694); margin-bottom: 4px; }
 .source-ref-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; }
+.mono-text { font-family: 'Cascadia Code', Consolas, monospace; font-size: 12px; color: var(--dpim-text-3, #7c8694); }
 </style>

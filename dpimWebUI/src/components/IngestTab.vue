@@ -33,6 +33,15 @@
         {{ submitDisabledHint }}
       </n-tooltip>
       <n-button :disabled="submitting || content.length === 0" @click="onClear">清空内容</n-button>
+      <div class="it-actions-spacer"></div>
+      <n-tooltip trigger="hover">
+        <template #trigger>
+          <n-button secondary :disabled="!aiOk" :loading="compensating" @click="onCompensate">
+            补偿积压事件
+          </n-button>
+        </template>
+        将停留在 raw / indexed 的积压事件重新入队，走 Agent 管线处理
+      </n-tooltip>
     </div>
 
     <div class="it-card">
@@ -75,11 +84,13 @@ interface HistoryItem {
 const STORAGE_KEY = 'dpim_ingest_history'
 const MAX_HISTORY = 10
 const POLL_INTERVAL = 5000
-const MAX_POLL_ATTEMPTS = 12
+// 本地模型处理慢：轮询窗口放宽到 120s（24 次），避免未完成被误标 timeout
+const MAX_POLL_ATTEMPTS = 24
 
 const content = ref('')
 const eventType = ref('auto')
 const submitting = ref(false)
+const compensating = ref(false)
 const health = ref<HealthResponse | null>(null)
 const connected = ref(true)
 const history = ref<HistoryItem[]>([])
@@ -236,6 +247,20 @@ function onClear() {
   content.value = ''
 }
 
+/** 手动补偿：把 raw/indexed 积压事件重新入队走 Agent 管线 */
+async function onCompensate() {
+  compensating.value = true
+  try {
+    await api.compensate()
+    message.success('已触发补偿，积压事件开始重新入队处理')
+    startPolling()
+  } catch (e: any) {
+    message.error('补偿触发失败: ' + (e?.message || '未知错误'))
+  } finally {
+    compensating.value = false
+  }
+}
+
 function onSelectEvent(eventId: string) {
   window.dispatchEvent(new CustomEvent('dpim:focus-event', { detail: { event_id: eventId } }))
 }
@@ -264,20 +289,24 @@ onUnmounted(() => {
   display: flex; flex-direction: column; gap: 14px;
 }
 .it-card {
-  border: 1px solid var(--n-border-color); border-radius: 8px;
-  padding: 12px 14px;
+  border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  border-radius: var(--dpim-radius, 12px);
+  background: var(--dpim-surface, #161b22);
+  padding: 14px 16px;
 }
-.it-card-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-.it-controls { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; flex-wrap: wrap; gap: 8px; }
-.it-count { font-size: 12px; color: var(--n-text-color-3); font-family: 'Consolas', 'Cascadia Code', monospace; }
-.it-actions { display: flex; gap: 12px; }
+.it-card-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: var(--dpim-text, #e6edf3); letter-spacing: 0.3px; }
+.it-controls { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; flex-wrap: wrap; gap: 10px; }
+.it-count { font-size: 12px; color: var(--dpim-text-3, #7c8694); font-family: 'Cascadia Code', Consolas, monospace; }
+.it-actions { display: flex; gap: 12px; align-items: center; }
+.it-actions-spacer { flex: 1; }
 .it-log-title { display: flex; align-items: center; }
-.it-log-empty { font-size: 12px; color: var(--n-text-color-3); padding: 8px 0; text-align: center; }
-.it-log-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 2px; font-size: 12px; border-bottom: 1px dashed var(--n-border-color); flex-wrap: wrap; }
-.it-log-model { color: var(--n-text-color-3); flex-shrink: 0; }
-.it-log-time { color: var(--n-text-color-3); font-size: 11px; flex-shrink: 0; }
+.it-log-empty { font-size: 12px; color: var(--dpim-text-3, #7c8694); padding: 12px 0; text-align: center; }
+.it-log-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 2px; font-size: 12px; border-bottom: 1px dashed var(--dpim-border, rgba(255,255,255,0.07)); flex-wrap: wrap; }
+.it-log-row:last-child { border-bottom: none; }
+.it-log-model { color: var(--dpim-text-3, #7c8694); flex-shrink: 0; }
+.it-log-time { color: var(--dpim-text-3, #7c8694); font-size: 11px; flex-shrink: 0; }
 .it-log-body { width: 100%; }
-.it-log-error { color: #d03050; word-break: break-all; }
-.it-log-out { color: var(--n-text-color-2); word-break: break-all; white-space: pre-wrap; }
-.mono { font-family: 'Consolas', 'Cascadia Code', monospace; }
+.it-log-error { color: #f08080; word-break: break-all; }
+.it-log-out { color: var(--dpim-text-2, #aab4c0); word-break: break-all; white-space: pre-wrap; }
+.mono { font-family: 'Cascadia Code', Consolas, monospace; }
 </style>

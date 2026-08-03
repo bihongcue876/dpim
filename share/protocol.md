@@ -457,7 +457,7 @@ content
 | LLM_BASE_URL | http://localhost:11434/v1 | LLM 服务地址（主 provider，向后兼容） |
 | LLM_API_KEY | (空) | LLM API Key |
 | LLM_MODEL_NAME | llama3:8b | 模型名称 |
-| LLM_TIMEOUT | 30 | LLM 请求超时（秒） |
+| LLM_TIMEOUT | 300 | LLM 生成请求超时（秒，本地模型宽容默认；provider 条目可覆盖） |
 | **PROVIDERS** | (空 JSON) | BYOK 多 provider 注册（JSON dict：name → {base_url, api_key, model, timeout}） |
 | **ACTIVE_PROVIDER** | primary | 活动 provider（primary = LLM_* 主配置） |
 | **AGENT_MODE** | disabled | Agent 管线开关：disabled \| pipeline |
@@ -473,6 +473,7 @@ content
 | RRF_K | 60 | RRF 融合 k 值 |
 | JACCARD_THRESHOLD | 0.85 | 去重预检相似度阈值 |
 | HEALTH_CHECK_INTERVAL | 60 | 健康检查间隔（秒） |
+| HEALTH_CHECK_TIMEOUT | 60 | 健康检查超时（秒，与生成超时分离） |
 | COMPENSATE_BATCH_SIZE | 20 | 补偿批次大小 |
 | LOG_LEVEL | INFO | 日志级别 |
 

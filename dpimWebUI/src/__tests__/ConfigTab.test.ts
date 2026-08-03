@@ -11,7 +11,7 @@ vi.mock('@/api/client', () => ({
     agent_mode: 'disabled', agent_max_retries: 2, agent_cr_model: '',
     agent_in_model: '', agent_gr_model: '', agent_meta_model: '',
     max_graph_hops: 2, rrf_k: 60, jaccard_threshold: 0.85,
-    health_check_interval: 60, compensate_batch_size: 20, log_level: 'INFO',
+    health_check_interval: 60, health_check_timeout: 60, compensate_batch_size: 20, log_level: 'INFO',
   }),
   putSettings: vi.fn().mockResolvedValue(undefined),
 }))

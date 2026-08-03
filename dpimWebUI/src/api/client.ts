@@ -8,8 +8,13 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
   })
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: { code: 'UNKNOWN', message: res.statusText } }))
-    throw new Error(body.error?.message ?? res.statusText)
+    // FastAPI 错误信封为 {detail: "..."}，兼容 {message} / {error:{message}} 两种
+    let detail = res.statusText
+    try {
+      const body = await res.json()
+      detail = body?.detail ?? body?.message ?? body?.error?.message ?? res.statusText
+    } catch { /* 非 JSON 响应，使用 statusText */ }
+    throw new Error(detail)
   }
   return res.json()
 }
@@ -102,6 +107,7 @@ export interface SettingsResponse {
   rrf_k: number
   jaccard_threshold: number
   health_check_interval: number
+  health_check_timeout: number
   compensate_batch_size: number
   log_level: string
 }
@@ -118,6 +124,11 @@ export async function getHealth(): Promise<HealthResponse> {
 
 export async function getAgentLogs(limit = 30): Promise<{ logs: Array<{ role: string; timestamp: number; model: string; input_preview: string; output: string; error: string }> }> {
   return req(`/agent/logs?limit=${limit}`)
+}
+
+/** 手动触发补偿：把 raw/indexed 积压事件重新入队走 Agent 管线 */
+export async function compensate(): Promise<{ message?: string }> {
+  return req('/agent/compensate', { method: 'POST' })
 }
 
 export async function listEvents(params: {
@@ -259,6 +270,7 @@ export async function putSettings(body: {
   rrf_k?: number
   jaccard_threshold?: number
   health_check_interval?: number
+  health_check_timeout?: number
   compensate_batch_size?: number
   log_level?: string
 }): Promise<void> {

@@ -24,6 +24,7 @@ from core.config import settings
 from core.database import Database
 from core.event_store import EventStore
 from core.graph_store import GraphStore
+from core.llm import is_transient_error
 from core.models import QueueMessage, SearchRequest, SearchResponse, SearchResult
 from core.search import _build_results
 from core.state import ai_state
@@ -154,9 +155,17 @@ class Orchestrator:
                 "Event %s agent pipeline failed after %d attempts", event_id, max_attempts
             )
             await self.event_store.update_status(event_id, "failed")
-        except Exception:
+        except Exception as e:
             logger.exception("Agent pipeline error for event %s", event_id)
-            await self.event_store.update_status(event_id, "failed")
+            if is_transient_error(e):
+                # 瞬时错误（超时/断连/5xx）：回到 indexed，等补偿或手动重试，不判死
+                logger.warning(
+                    "Event %s transient error (%s), back to indexed for retry",
+                    event_id, type(e).__name__,
+                )
+                await self.event_store.update_status(event_id, "indexed")
+            else:
+                await self.event_store.update_status(event_id, "failed")
 
     async def run_query(self, request: SearchRequest) -> SearchResponse:
         """Agent 管线检索入口（api.py 在 agent_mode=pipeline 时调用）。"""

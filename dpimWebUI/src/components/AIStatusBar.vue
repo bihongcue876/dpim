@@ -89,20 +89,22 @@ watch(
 <style scoped>
 .ai-status {
   display: flex; flex-direction: column; gap: 6px;
-  padding: 12px 16px; border-radius: 8px;
-  border: 1px solid var(--n-border-color);
-  background: var(--n-color-2, rgba(128, 128, 128, 0.06));
+  padding: 12px 16px; border-radius: var(--dpim-radius, 12px);
+  border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  background: var(--dpim-surface, #161b22);
+  border-left: 3px solid #3fb68b;
 }
-.ai-status.offline { border-color: rgba(208, 48, 80, 0.4); }
+.ai-status.offline { border-left-color: #f08080; }
 .ai-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ai-dot {
-  width: 10px; height: 10px; border-radius: 50%;
-  background: #d03050;
+  width: 9px; height: 9px; border-radius: 50%;
+  background: #f08080; flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(240,128,128,0.15);
 }
-.ai-dot.on { background: #18a058; }
-.ai-title { font-weight: 600; font-size: 14px; }
-.ai-meta { font-size: 12px; color: var(--n-text-color-3); font-family: 'Consolas', 'Cascadia Code', monospace; }
-.ai-hint { color: #d03050; }
-.ai-sub { display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--n-text-color-3); flex-wrap: wrap; }
-.ai-stats { font-family: 'Consolas', 'Cascadia Code', monospace; }
+.ai-dot.on { background: #3fb68b; box-shadow: 0 0 0 3px rgba(63,182,139,0.15); }
+.ai-title { font-weight: 600; font-size: 14px; color: var(--dpim-text, #e6edf3); }
+.ai-meta { font-size: 12px; color: var(--dpim-text-3, #7c8694); font-family: 'Cascadia Code', Consolas, monospace; }
+.ai-hint { color: #f08080; }
+.ai-sub { display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--dpim-text-3, #7c8694); flex-wrap: wrap; }
+.ai-stats { font-family: 'Cascadia Code', Consolas, monospace; }
 </style>
