@@ -342,22 +342,40 @@ async function doCreate() {
 
 <style scoped>
 .event-tab { display: flex; height: 100%; }
-.event-left { width: 35%; border-right: 1px solid var(--n-border-color); display: flex; flex-direction: column; padding: 8px; }
-.event-toolbar { display: flex; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
-.toolbar-spacer { flex: 1; }
-.toolbar-count { font-size: 11px; color: var(--n-text-color-3); white-space: nowrap; }
-.event-table-wrap { flex: 1; overflow-y: auto; }
-.event-row {
-  display: flex; align-items: center; gap: 6px; padding: 4px 6px; font-size: 12px; cursor: pointer; border-radius: 3px;
+.event-left {
+  width: 36%; display: flex; flex-direction: column;
+  padding: 12px 14px; gap: 8px;
+  border-right: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  background: var(--dpim-surface, #161b22);
 }
-.event-row:hover { background: rgba(255,255,255,0.05); }
-.event-row.active { background: rgba(81,162,255,0.2); }
-.ev-time { color: var(--n-text-color-3); width: 80px; flex-shrink: 0; }
-.ev-content { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.event-right { flex: 1; display: flex; flex-direction: column; padding: 12px; overflow: hidden; }
-.detail-scroll { overflow-y: auto; height: 100%; }
-.detail-actions { display: flex; gap: 8px; margin-top: 16px; }
-.raw-content { font-size: 13px; line-height: 1.6; white-space: pre-wrap; max-height: 300px; overflow-y: auto; background: rgba(0,0,0,0.15); padding: 8px; border-radius: 4px; }
-.mono-text { font-family: 'Consolas', 'Cascadia Code', monospace; font-size: 12px; color: var(--n-text-color-3); }
-h4 { margin: 0 0 8px; font-size: 14px; }
+.event-toolbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.toolbar-spacer { flex: 1; }
+.toolbar-count { font-size: 11px; color: var(--dpim-text-3, #7c8694); white-space: nowrap; }
+.event-table-wrap {
+  flex: 1; overflow-y: auto; min-height: 0;
+  border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  border-radius: var(--dpim-radius-sm, 8px);
+  background: var(--dpim-bg, #0e1217);
+  padding: 4px;
+}
+.event-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12px;
+  cursor: pointer; border-radius: 6px; border-left: 2px solid transparent;
+  transition: background 0.12s ease;
+}
+.event-row:hover { background: var(--dpim-surface-hover, rgba(255,255,255,0.04)); }
+.event-row.active { background: var(--dpim-primary-soft, rgba(91,140,255,0.14)); border-left-color: var(--dpim-primary, #5b8cff); }
+.ev-time { color: var(--dpim-text-3, #7c8694); width: 84px; flex-shrink: 0; font-family: 'Cascadia Code', Consolas, monospace; font-size: 11px; }
+.ev-content { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dpim-text-2, #aab4c0); }
+.event-right { flex: 1; display: flex; flex-direction: column; padding: 16px 20px; overflow: hidden; }
+.detail-scroll { overflow-y: auto; height: 100%; min-height: 0; }
+.detail-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+.raw-content {
+  font-size: 13px; line-height: 1.7; white-space: pre-wrap; max-height: 320px; overflow-y: auto;
+  background: var(--dpim-bg, #0e1217); border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  padding: 10px 12px; border-radius: var(--dpim-radius-sm, 8px);
+  color: var(--dpim-text-2, #aab4c0);
+}
+.mono-text { font-family: 'Cascadia Code', Consolas, monospace; font-size: 12px; color: var(--dpim-text-3, #7c8694); }
+h4 { margin: 0 0 12px; font-size: 14px; color: var(--dpim-text, #e6edf3); }
 </style>

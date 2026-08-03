@@ -120,6 +120,11 @@ export async function getAgentLogs(limit = 30): Promise<{ logs: Array<{ role: st
   return req(`/agent/logs?limit=${limit}`)
 }
 
+/** 手动触发补偿：把 raw/indexed 积压事件重新入队走 Agent 管线 */
+export async function compensate(): Promise<{ message?: string }> {
+  return req('/agent/compensate', { method: 'POST' })
+}
+
 export async function listEvents(params: {
   status?: string
   type?: string
