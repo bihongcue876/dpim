@@ -113,6 +113,18 @@ class QueryIntent(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+class CrSummary(BaseModel):
+    """中央控制 Agent 存入概括输出：逐条要点 + 主题方向。
+
+    作为 In 分拣 / Gr 查图的辅助上下文注入，指引切分方向与查图关键词；
+    不替代 raw_content（AnnotatedChunks 仍须基于原文子串）。
+    """
+
+    summary: list[str] = Field(default_factory=list, description="内容要点逐条概括")
+    themes: list[str] = Field(default_factory=list, description="独立主题方向（供图查询关键词）")
+    confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+
+
 class NodeCreate(BaseModel):
     title: str
     content: str
@@ -292,7 +304,11 @@ class SettingsResponse(BaseModel):
     llm_model_name: str
     llm_timeout: int
     available_providers: list[str]
+    providers: dict[str, dict[str, Any]] = Field(default_factory=dict,
+                                                 description="BYOK 提供商注册表")
     active_provider: str
+    available_models: list[str] = Field(default_factory=list)
+    active_model: str
     agent_mode: str
     agent_max_retries: int
     agent_cr_model: str
@@ -312,7 +328,9 @@ class SettingsUpdateRequest(BaseModel):
     llm_api_key: str | None = None
     llm_model_name: str | None = None
     llm_timeout: int | None = None
+    providers: dict[str, dict[str, Any]] | None = None
     active_provider: str | None = None
+    active_model: str | None = None
     agent_mode: str | None = None
     agent_max_retries: int | None = None
     agent_cr_model: str | None = None

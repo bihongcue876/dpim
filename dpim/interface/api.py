@@ -12,6 +12,7 @@ from core.config import settings
 from core.database import Database
 from core.event_store import EventStore
 from core.graph_store import GraphStore
+from core.llm import get_llm_logs
 from core.models import (
     CreateEdgeRequest,
     CreateNodeRequest,
@@ -370,7 +371,10 @@ async def get_settings():
         llm_model_name=settings.llm_model_name,
         llm_timeout=settings.llm_timeout,
         available_providers=["primary", *settings.providers.keys()],
+        providers=settings.providers,
         active_provider=settings.active_provider,
+        available_models=settings.available_models(),
+        active_model=settings.active_model,
         agent_mode=settings.agent_mode,
         agent_max_retries=settings.agent_max_retries,
         agent_cr_model=settings.agent_cr_model,
@@ -391,8 +395,9 @@ async def update_settings(body: SettingsUpdateRequest):
     for field, value in body.model_dump(exclude_none=True).items():
         if hasattr(settings, field):
             setattr(settings, field, value)
+    settings.save_dpim_config()  # 持久化 BYOK/Agent 配置到 dpim.json，重启保留
     refresh_key()
-    return _ok(message="Settings updated (runtime only, not persisted to .env)")
+    return _ok(message="Settings updated and persisted to dpim.json")
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -418,3 +423,24 @@ async def health():
         },
         last_event_at=last or "",
     )
+
+
+@app.get("/agent/logs")
+async def agent_logs(limit: int = 30):
+    """返回最近 AI 调用日志（环形缓冲，新→旧），供前端观测 LLM 输入/输出。"""
+    return {"logs": get_llm_logs(limit=min(limit, 100))}
+
+
+@app.post("/agent/compensate")
+async def agent_compensate():
+    """手动触发补偿：把 raw/indexed 事件重新入队走 Agent 管线（处理积压事件）。"""
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail="Orchestrator not initialized")
+    await orchestrator.enqueue(
+        QueueMessage(
+            type="compensate",
+            payload={},
+            timestamp=datetime.now(timezone.utc).timestamp(),
+        )
+    )
+    return _ok(message="Compensation triggered")
