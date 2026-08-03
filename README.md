@@ -27,10 +27,12 @@ DPIM 是一个双区智能贮存系统，同时承担两个角色：
   一次调用打包完整上下文（chat_structured）
 - 事件源证锚定：每条图节点必含 source_refs 与 evidence_quote，杜绝幻觉
 - 删除保护：system 和 data 类型节点失去所有源证时禁止删除
-- 降级与补偿：LLM 不可用时自动降级，恢复后批量补偿积压事件
+- 降级与补偿：LLM 不可用时自动降级，恢复后批量补偿积压事件；WebUI/CLI 可手动触发补偿
+- 超时包容：生成请求超时默认 300s（provider 可覆盖）、健康检查独立超时 60s；超时/断连等瞬时错误不判死事件，自动回到 indexed 等待补偿重试
+- AI 调用日志：每次 LLM 调用的输入/输出/错误环形缓冲（GET /agent/logs），前端「信息传入」页实时观测
 - 线程安全的 AI 可用性状态管理（AIState 单例封装）
 - 启动时配置校验：LLM 地址格式 + API Key 空值警告
-- FastAPI REST 接口层，23 个端点
+- FastAPI REST 接口层，22 个端点
 - 命令行管理：内置 Typer CLI + 独立 dpim-cli（推荐，支持 Shell/管道/JSON 输出）
 
 ---
@@ -129,7 +131,7 @@ dpim-webui 提供五个标签页管理 DPIM 系统的全部功能：
 | **信息列表** | 事件分页展示、类型/状态筛选、行内编辑、删除确认、新建事件、失败重试 |
 | **信息图** | D3.js 力导向知识图谱，节点按类型着色（data=浅蓝/interaction=绿/system=蓝），边带箭头标记，双向边弯曲错开；点击节点查看/编辑详情面板，面板可向下收起释放画布空间 |
 | **检索** | 三维度搜索：综合检索（分组展示◆事件原文/■知识节点/▲系统事件）/ 事件原文 / 知识节点；高级可折叠筛选面板（来源类型、图扩散跳数、最低置信度、结果数量）；翻页功能（服务端 offset 分页） |
-| **信息传入** | 人工写入事件（内容 + 类型 auto/interaction/data/source）+ AI 状态监控（就绪/未连接，30s 轮询）+ 处理历史（localStorage 10 条，5s 轮询状态，60s 超时） |
+| **信息传入** | 人工写入事件（内容 + 类型 auto/interaction/data/source）+ AI 状态监控（就绪/未连接，30s 轮询）+ 处理历史（localStorage 10 条，5s 轮询状态，60s 超时）+ 补偿积压事件按钮 + AI 调用日志面板（5s 轮询） |
 
 核心交互：检索结果可跳转到信息图定位节点；信息传入历史可跳转到信息列表定位事件；所有写操作受状态校验密钥保护。组件库：Naive UI（暗色模式）。
 
@@ -143,7 +145,7 @@ dpim-cli 是通过 HTTP API 管理 DPIM 系统的命令行工具，与 dpim-webu
 
 ```bash
 # 进入 CLI 项目目录
-cd dpim-cli
+cd dpimCLI
 
 # 安装依赖并注册 dpim 命令
 pip install -e .
@@ -193,7 +195,7 @@ dpim shell
 
 支持 `--format table|json|yaml` 全局选项切换输出格式。
 
-详细说明和所有命令参见 [dpim-cli/README.md](dpim-cli/README.md)。
+详细说明和所有命令参见 [dpimCLI/](dpimCLI/)（CLI 项目自述文档待补）。
 
 ---
 
@@ -216,6 +218,6 @@ dpim shell
 - 前端技术栈：Vue 3 + TypeScript + Vite + Naive UI + D3.js
 - CLI 技术栈：Python + httpx + prompt-toolkit + tabulate + PyYAML
 - 包管理：后端 uv（64 依赖）/ 前端 pnpm / CLI pip
-- 测试：pytest 113 用例 + vitest 13 用例，全部通过
+- 测试：pytest 149 用例 + vitest 24 用例，全部通过
 - 代码质量：ruff + mypy（后端）/ vue-tsc（前端）
 - 存储文件：data/memory.db（SQLite）和 data/graph.json（JSON），位于 dpim/data/

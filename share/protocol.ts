@@ -457,6 +457,7 @@ export interface DPIMConfig {
   RRF_K: number;
   JACCARD_THRESHOLD: number;
   HEALTH_CHECK_INTERVAL: number;
+  HEALTH_CHECK_TIMEOUT: number;   // 健康检查超时（秒，默认 60，与生成超时分离）
   COMPENSATE_BATCH_SIZE: number;
   LOG_LEVEL: string;
 }
