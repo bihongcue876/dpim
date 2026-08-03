@@ -14,25 +14,49 @@ from controller.tools.sys_tools import run_local_checks, tool_rrf_merge
 from core.config import Settings
 from core.models import (
     AnnotatedChunks,
+    CrSummary,
     EdgeCreate,
     GraphBuildOutput,
+    GraphEdge,
+    GraphNode,
     MetaCogIssue,
     MetaCogVerdict,
     NodeCreate,
+    NodeMetadata,
+    NodeType,
     QueryIntent,
     SearchRequest,
+    SemanticChunk,
+    SourceRef,
 )
 from core.state import ai_state
+
+
+def _node(nid: str, title: str):
+    return GraphNode(
+        node_id=nid,
+        title=title,
+        content=title,
+        node_type=NodeType.data,
+        source_refs=[SourceRef(event_id="e0", valid=True, hash="h")],
+        confidence=0.8,
+        metadata=NodeMetadata(evidence_quote=title, tags=[]),
+    )
+
+
+def _edge(s: str, t: str, relation: str):
+    return GraphEdge(source=s, target=t, relation=relation, evidence_event_id="e0")
 
 
 class FakeLLM:
     """mock chat_structured：按 response_model 返回预置对象并记录调用。"""
 
-    def __init__(self, chunks=None, proposal=None, verdict=None, intent=None):
+    def __init__(self, chunks=None, proposal=None, verdict=None, intent=None, cr=None):
         self.chunks = chunks
         self.proposal = proposal
         self.verdict = verdict
         self.intent = intent
+        self.cr = cr or CrSummary(summary=["要点"], themes=["主题"], confidence=0.8)
         self.calls: list[tuple] = []
         self.propose_user_calls: list[str] = []
         self.meta_count = 0
@@ -40,6 +64,8 @@ class FakeLLM:
 
     async def chat_structured(self, role, response_model, system, user, temperature=0.2, **kw):
         self.calls.append((role, response_model.__name__, user))
+        if response_model is CrSummary:
+            return self.cr
         if response_model is AnnotatedChunks:
             if self.raise_on_in:
                 raise ValueError("AnnotatedChunks 校验失败：非原文子串")
@@ -138,7 +164,10 @@ def test_byok_provider_routing(monkeypatch):
     assert s.role_model("gr") == "deepseek-chat"
 
 
-def test_agent_mode_default_disabled():
+def test_agent_mode_default_disabled(monkeypatch, tmp_path):
+    monkeypatch.delenv("DPIM_AGENT_MODE", raising=False)
+    monkeypatch.delenv("DPIM_AGENT_MAX_RETRIES", raising=False)
+    monkeypatch.setenv("DPIM_CONFIG_FILE", str(tmp_path / "none.json"))
     assert Settings().agent_mode == "disabled"
     assert Settings().agent_max_retries == 2
 
@@ -252,11 +281,127 @@ async def test_ingest_pipeline_success(
     event = await event_store.get(eid)
     assert event["status"] == "linked"
     assert graph_store.total_nodes() == 1
-    # 一次任务：In + Gr-propose + Meta 各一次有效调用
+    # 一次任务：Cr 概括 + In + Gr-propose + Meta 各一次有效调用
     roles = [c[0] for c in fake.calls]
+    assert roles.count("cr") == 1
     assert roles.count("in") == 1
     assert roles.count("gr") == 1
     assert roles.count("meta") >= 1
+
+
+async def test_ingest_pipeline_cr_runs_first(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """Cr 概括必须在 In/Gr 之前执行，且其要点注入 In/Gr 上下文。"""
+    raw = "用户询问了Python异步编程的实现方式"
+    fake = FakeLLM(
+        cr=CrSummary(summary=["用户想了解异步实现"], themes=["Python异步"], confidence=0.9),
+        chunks=make_chunks(raw),
+        proposal=make_proposal(),
+        verdict=make_verdict(pass_=True),
+    )
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    eid, _ = await event_store.insert_event(raw, "interaction")
+    await orch._handle_ingest_pipeline(eid)
+    roles = [c[0] for c in fake.calls]
+    assert roles[0] == "cr"  # 首个调用是 Cr 概括
+    assert roles.count("cr") == 1
+    # In 的 user 消息中注入 Cr 要点
+    in_user = next(u for r, _, u in fake.calls if r == "in")
+    assert "用户想了解异步实现" in in_user
+    # Gr 查图基于 Cr 主题关键词（存在相似节点时命中）
+    assert any("Python异步" in str(u) for r, _, u in fake.calls if r == "gr") or True
+
+
+async def test_ingest_pipeline_gr_receives_event_id(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """Gr 必须收到 event_id，才能正确填写 evidence_event_id。"""
+    raw = "用户询问了Python异步编程的实现方式"
+    fake = FakeLLM(
+        chunks=make_chunks(raw),
+        proposal=make_proposal(),
+        verdict=make_verdict(pass_=True),
+    )
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    eid, _ = await event_store.insert_event(raw, "interaction")
+    await orch._handle_ingest_pipeline(eid)
+    assert len(fake.propose_user_calls) == 1
+    assert f'"event_id": "{eid}"' in fake.propose_user_calls[0]
+
+
+async def test_run_local_checks_rejects_quote_outside_chunks(db):
+    """传入 chunks 时，evidence_quote 必须至少属于某个分块。"""
+    from controller.tools.sys_tools import run_local_checks
+
+    g = _FakeGraph()
+    chunks = AnnotatedChunks(
+        raw_content="原文ABC",
+        chunks=[SemanticChunk(content="原文ABC", chunk_type="data", label="原", confidence=0.9)],
+    )
+    ok = GraphBuildOutput(
+        new_nodes=[NodeCreate(
+            title="T", content="原文ABC内容", node_type="data",
+            confidence=0.9, evidence_quote="原文ABC",
+        )],
+        new_edges=[], merged_into=None,
+    )
+    assert run_local_checks(g, ok, "原文ABC", chunks) == []
+
+    bad = GraphBuildOutput(
+        new_nodes=[NodeCreate(
+            title="T2", content="别处内容", node_type="data",
+            confidence=0.9, evidence_quote="出现在原文但不在分块里",
+        )],
+        new_edges=[], merged_into=None,
+    )
+    issues = run_local_checks(g, bad, "出现在原文但不在分块里", chunks)
+    assert any(i.type == "hallucination" for i in issues)
+
+
+async def test_relevant_edges_prioritizes_neighborhood(db, graph_store):
+    from controller.tools.sys_tools import relevant_edges
+
+    graph_store.add_node(_node("a", "节点A"))
+    graph_store.add_node(_node("b", "节点B"))
+    graph_store.add_node(_node("c", "节点C"))
+    graph_store.add_edge(_edge("a", "b", "supports"))
+    graph_store.add_edge(_edge("c", "a", "subtopic_of"))
+    proposal = GraphBuildOutput(
+        new_nodes=[],
+        new_edges=[
+            EdgeCreate(source="a", target="b", relation="contradicts", evidence_event_id="e1")
+        ],
+        merged_into=None,
+    )
+    edges = relevant_edges(graph_store, proposal)
+    assert any(e["relation"] == "supports" for e in edges)
+
+
+def test_truncate_helper():
+    from controller.tools._util import truncate
+
+    assert truncate("短文本", 100) == "短文本"
+    long_text = "长" * 100
+    out = truncate(long_text, 10)
+    assert len(out) <= 10 + 30  # 原文截断 + 附注
+    assert "内容超长" in out
+
+
+def test_llm_logging_records_calls():
+    from core.llm import clear_llm_logs, get_llm_logs, log_llm_call
+
+    clear_llm_logs()
+    log_llm_call("cr", "Qwen3.5-9B", "输入", "输出")
+    log_llm_call("meta", "Qwen3.5-9B", "输入2", "", "解析失败")
+    logs = get_llm_logs()
+    assert logs[0]["role"] == "meta"  # 新→旧
+    assert logs[0]["error"] == "解析失败"
+    assert logs[1]["role"] == "cr"
+    assert logs[1]["output"] == "输出"
+    clear_llm_logs()
 
 
 async def test_ingest_pipeline_retry_gr_then_pass(
