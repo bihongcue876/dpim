@@ -38,6 +38,20 @@
     <div class="it-card">
       <IngestHistory :items="history" @select="onSelectEvent" />
     </div>
+
+    <div class="it-card">
+      <div class="it-card-title it-log-title">AI 调用日志（最近 {{ llmLogs.length }} 条）</div>
+      <div v-if="llmLogs.length === 0" class="it-log-empty">暂无调用记录</div>
+      <div v-for="(log, i) in llmLogs" :key="i" class="it-log-row">
+        <n-tag size="tiny" :bordered="false" :type="log.error ? 'error' : 'info'">{{ log.role }}</n-tag>
+        <span class="it-log-model mono">{{ log.model }}</span>
+        <span class="it-log-time">{{ fmtLogTime(log.timestamp) }}</span>
+        <div class="it-log-body">
+          <div v-if="log.error" class="it-log-error">✗ {{ log.error }}</div>
+          <div v-else class="it-log-out mono">{{ shortLog(log.output) }}</div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -72,6 +86,24 @@ const history = ref<HistoryItem[]>([])
 const pollAttempts = ref<Record<string, number>>({})
 let healthTimer: number | null = null
 let pollTimer: number | null = null
+let logTimer: number | null = null
+
+const llmLogs = ref<Array<{ role: string; timestamp: number; model: string; input_preview: string; output: string; error: string }>>([])
+
+async function loadLogs() {
+  try {
+    const r = await api.getAgentLogs(30)
+    llmLogs.value = r.logs
+  } catch { /* 忽略 */ }
+}
+function fmtLogTime(ts: number): string {
+  const d = new Date(ts * 1000)
+  if (isNaN(d.getTime())) return ''
+  return d.toTimeString().slice(0, 8)
+}
+function shortLog(s: string): string {
+  return (s || '').slice(0, 400)
+}
 
 const aiOk = computed(() => Boolean(health.value?.ai_available))
 const submitDisabled = computed(() => submitting.value || !content.value.trim() || !aiOk.value)
@@ -214,12 +246,15 @@ onMounted(() => {
   loadHealth()
   restore()
   startPolling()
+  loadLogs()
   healthTimer = window.setInterval(loadHealth, 30000)
+  logTimer = window.setInterval(loadLogs, 5000)
 })
 
 onUnmounted(() => {
   stopPolling()
   if (healthTimer) window.clearInterval(healthTimer)
+  if (logTimer) window.clearInterval(logTimer)
 })
 </script>
 
@@ -236,4 +271,13 @@ onUnmounted(() => {
 .it-controls { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; flex-wrap: wrap; gap: 8px; }
 .it-count { font-size: 12px; color: var(--n-text-color-3); font-family: 'Consolas', 'Cascadia Code', monospace; }
 .it-actions { display: flex; gap: 12px; }
+.it-log-title { display: flex; align-items: center; }
+.it-log-empty { font-size: 12px; color: var(--n-text-color-3); padding: 8px 0; text-align: center; }
+.it-log-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 2px; font-size: 12px; border-bottom: 1px dashed var(--n-border-color); flex-wrap: wrap; }
+.it-log-model { color: var(--n-text-color-3); flex-shrink: 0; }
+.it-log-time { color: var(--n-text-color-3); font-size: 11px; flex-shrink: 0; }
+.it-log-body { width: 100%; }
+.it-log-error { color: #d03050; word-break: break-all; }
+.it-log-out { color: var(--n-text-color-2); word-break: break-all; white-space: pre-wrap; }
+.mono { font-family: 'Consolas', 'Cascadia Code', monospace; }
 </style>

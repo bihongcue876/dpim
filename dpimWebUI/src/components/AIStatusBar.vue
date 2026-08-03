@@ -4,7 +4,7 @@
       <span class="ai-dot" :class="{ on: aiOk }"></span>
       <span class="ai-title">{{ aiOk ? 'AI 就绪' : '未连接上' }}</span>
       <template v-if="aiOk && settings">
-        <span class="ai-meta">{{ settings.llm_model_name || '—' }} · {{ shortUrl(settings.llm_base_url) }}</span>
+        <span class="ai-meta">{{ activeModel }} · {{ shortUrl(activeBaseUrl) }}</span>
       </template>
       <span v-else class="ai-meta ai-hint">当前仅支持建立全文索引</span>
     </div>
@@ -31,6 +31,24 @@ const secondsAgo = ref(0)
 const aiOk = computed(() => Boolean(props.health?.ai_available))
 const nodes = computed(() => props.health?.layers?.knowledge_graph?.total_nodes ?? 0)
 const events = computed(() => props.health?.layers?.event_line?.total_events ?? 0)
+
+// 显示活动 provider 的模型/地址（注册表优先，primary 回退环境变量）
+const activeModel = computed(() => {
+  const s = settings.value
+  if (!s) return '—'
+  const p = s.providers?.[s.active_provider]
+  if (s.active_model) return s.active_model
+  if (p) {
+    const list = p.models ?? (p.model ? [p.model] : [])
+    return list[0] ?? '—'
+  }
+  return s.llm_model_name || '—'
+})
+const activeBaseUrl = computed(() => {
+  const s = settings.value
+  if (!s) return ''
+  return s.providers?.[s.active_provider]?.base_url || s.llm_base_url || ''
+})
 
 function shortUrl(url: string): string {
   try {
