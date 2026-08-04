@@ -182,19 +182,24 @@ class TestCompensationControlledVariables:
     async def test_probe_success_resumes_batches(
         self, db, event_store, graph_store, monkeypatch
     ):
-        """对照：probe 试探成功（事件进入 linked）→ 计数清零，恢复批量"""
+        """对照：probe 试探成功（事件进入 linked）→ 计数清零并继续正常批量"""
         from core.config import settings
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
         monkeypatch.setattr(settings, "health_check_interval", 0.02)
         orchestrator._comp_fail_streak = 1
+        enqueued: list[dict] = []
+        async def record_enqueue(msg):
+            enqueued.append(msg.payload)
+        orchestrator.enqueue = record_enqueue
         eid, _ = await event_store.insert("probe ok")
         await event_store.update_status(eid, "raw")
-        orchestrator.enqueue = _null_enqueue
         await orchestrator._handle_compensate({"probe": True})
         await event_store.update_status(eid, "linked")
         await asyncio.sleep(0.05)
         assert orchestrator._comp_fail_streak == 0
+        # 试探成功后自动继续正常批量（不带 probe）
+        assert enqueued[-1] == {}
 
     @pytest.mark.asyncio
     async def test_backoff_caps_at_60s(

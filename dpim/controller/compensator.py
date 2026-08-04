@@ -77,9 +77,11 @@ class Compensator:
         return not ai_state.available
 
     async def _trigger_compensate(self):
+        # 首条试探模式：AI 恢复后先只处理 1 条事件验证稳定性，
+        # 试探成功由 orchestrator 自动继续批量，失败则退避（防雪崩震荡）
         msg = QueueMessage(
             type="compensate",
-            payload={},
+            payload={"probe": True},
             timestamp=__import__("time").time(),
         )
         await self.enqueue(msg)

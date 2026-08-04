@@ -343,6 +343,13 @@ class Orchestrator:
                 if ev and ev["status"] == "linked":
                     self._comp_fail_streak = 0
                     logger.info("Compensation probe ok, resume batches")
+                    # 继续正常批量补偿（不再试探）
+                    msg = QueueMessage(
+                        type="compensate",
+                        payload={},
+                        timestamp=datetime.now(timezone.utc).timestamp(),
+                    )
+                    await self.enqueue(msg)
                 else:
                     self._comp_fail_streak += 1
                     logger.warning("Compensation probe failed (streak=%d)",
