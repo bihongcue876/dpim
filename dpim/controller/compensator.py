@@ -21,7 +21,8 @@ class Compensator:
         self._failure_count = 0
         self._health_task: asyncio.Task | None = None
         self._running = False
-        self._client = create_client()
+        # 注意：不缓存客户端 —— 前端 PUT /settings 切换 provider 后，
+        # 健康检查立即跟随新 provider（gateway.client 内部按 base_url/api_key 缓存，动态取零开销）
 
     def start(self):
         self._running = True
@@ -47,10 +48,12 @@ class Compensator:
 
     async def _check_llm(self):
         try:
+            # 每次动态取客户端：跟随当前活动 provider（前端切配置立即生效）
+            client = create_client()
             # 健康检查用独立超时（health_check_timeout），与生成超时分离：
             # 模型加载/单槽忙碌时不至于快速 3 连败假降级
             await asyncio.wait_for(
-                self._client.models.list(),
+                client.models.list(),
                 timeout=settings.health_check_timeout,
             )
             self._failure_count = 0

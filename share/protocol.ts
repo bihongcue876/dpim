@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.5 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型)
+// 版本 1.6 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 补全 22 端点类型)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -265,6 +265,19 @@ export interface ModifyEventResponse {
   message: string;
 }
 
+// ---- 创建节点 ----
+export interface CreateNodeRequest {
+  title: string;            // ≤60 字符
+  content?: string;         // 缺省等于 title
+  node_type?: NodeType;     // 默认 'data'
+  source_event_id?: string; // 可选，关联来源事件 ID
+}
+export interface CreateNodeResponse {
+  status: 'ok';
+  node_id: string;
+  message: string;
+}
+
 // ---- 检索 ----
 export interface SearchRequest {
   query: string;
@@ -298,6 +311,31 @@ export interface FeedbackRequest {
 }
 
 export interface FeedbackResponse {
+  status: 'ok';
+  message: string;
+}
+
+// ---- 清空图谱 ----
+export interface ClearGraphResponse {
+  status: 'ok';
+  message: string;
+}
+
+// ---- AI 调用日志（GET /agent/logs）----
+export interface LLMCallLog {
+  role: string;            // cr | in | gr | meta
+  model: string;
+  timestamp: number;       // Unix 时间戳（秒）
+  input_preview: string;   // LLM 输入前 2000 字符
+  output: string;          // LLM 输出前 2000 字符
+  error: string;           // 空字符串 = 成功
+}
+export interface AgentLogsResponse {
+  logs: LLMCallLog[];
+}
+
+// ---- 手动补偿（POST /agent/compensate）----
+export interface CompensateResponse {
   status: 'ok';
   message: string;
 }

@@ -1,7 +1,9 @@
 """信息图层：NetworkX 内存图 + JSON 原子持久化 + 反向索引"""
 
 import json
+import logging
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -10,6 +12,8 @@ import networkx as nx
 from core.config import settings
 from core.database import Database
 from core.models import GraphEdge, GraphNode
+
+logger = logging.getLogger(__name__)
 
 
 class GraphStore:
@@ -26,16 +30,40 @@ class GraphStore:
         path = Path(self.json_path)
         if not path.exists():
             return
-        data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.error("graph.json 解析失败，尝试从备份恢复: %s", exc)
+            backup = path.with_suffix(".json.bak")
+            if backup.exists():
+                try:
+                    data = json.loads(backup.read_text(encoding="utf-8"))
+                    logger.warning("已从备份 %s 恢复图谱", backup)
+                except (json.JSONDecodeError, OSError) as bexc:
+                    logger.error("graph.json 备份亦损坏，以空图启动: %s", bexc)
+                    return
+            else:
+                logger.error("graph.json 无可用备份，以空图启动（请检查存储文件）")
+                return
         nodes_data = data.get("nodes", {})
         edges_data = data.get("edges", [])
-        for nid, ndata in nodes_data.items():
-            node = GraphNode(**ndata)
-            self.graph.add_node(nid, data=node)
-        for edata in edges_data:
-            edge = GraphEdge(**edata)
-            self.graph.add_edge(edge.source, edge.target, data=edge)
+        try:
+            for nid, ndata in nodes_data.items():
+                node = GraphNode(**ndata)
+                self.graph.add_node(nid, data=node)
+            for edata in edges_data:
+                edge = GraphEdge(**edata)
+                self.graph.add_edge(edge.source, edge.target, data=edge)
+        except Exception as exc:
+            logger.error("图谱节点/边构建失败，以空图启动: %s", exc)
+            self.graph.clear()
+            return
         self._rebuild_reverse_index()
+        # 留存最近一次可用快照，供下次加载损坏时恢复
+        try:
+            shutil.copy(path, path.with_suffix(".json.bak"))
+        except OSError as exc:
+            logger.warning("备份 graph.json 失败（不影响运行）: %s", exc)
 
     async def save(self):
         path = Path(self.json_path)

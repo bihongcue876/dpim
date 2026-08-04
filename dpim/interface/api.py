@@ -1,4 +1,4 @@
-"""FastAPI 应用，15 个 REST 端点"""
+"""FastAPI 应用，22 个 REST 端点"""
 
 import logging
 from contextlib import asynccontextmanager
@@ -416,6 +416,9 @@ async def update_settings(body: SettingsUpdateRequest):
             setattr(settings, field, value)
     settings.save_dpim_config()  # 持久化 BYOK/Agent 配置到 dpim.json，重启保留
     refresh_key()
+    # 配置变更后立即健康检查一次：切换 provider/模型即刻生效，无需重启
+    if compensator is not None:
+        await compensator._check_llm()
     return _ok(message="Settings updated and persisted to dpim.json")
 
 

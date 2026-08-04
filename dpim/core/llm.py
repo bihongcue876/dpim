@@ -45,13 +45,16 @@ def _client_for(conf: ProviderConfig) -> AsyncOpenAI:
 
 
 def is_transient_error(e: Exception) -> bool:
-    """瞬时错误判定：超时 / 断连 / 5xx 服务端错误。
+    """瞬时错误判定：超时 / 断连 / 5xx 服务端错误（可重试）。
 
     这类错误重试可能成功（本地模型慢、加载中、单槽忙碌），
     不应将事件判死为 failed，而应回到 indexed 等待补偿重试。
+    4xx 客户端错误（401/402/403/400 等）不可自愈 → 不判瞬时，直接 failed。
     """
-    if isinstance(e, (APITimeoutError, APIConnectionError, APIStatusError)):
+    if isinstance(e, (APITimeoutError, APIConnectionError)):
         return True
+    if isinstance(e, APIStatusError):
+        return 500 <= e.status_code <= 599 or e.status_code in (408, 429)
     import httpx
     # httpx 底层传输错误：ReadTimeout / ConnectError / ReadError 等
     if isinstance(e, httpx.TransportError):

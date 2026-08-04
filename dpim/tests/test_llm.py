@@ -1,7 +1,10 @@
 """LLM 网关厂商适配层测试（SiliconFlow / DeepSeek / llama.cpp 透传）"""
 
+import httpx
+from openai import APIStatusError
+
 from core.config import ProviderConfig
-from core.llm import _client_for, _is_local_host, _request_extra
+from core.llm import _client_for, _is_local_host, _request_extra, is_transient_error
 
 
 def make_conf(**kw):
@@ -67,3 +70,23 @@ def test_client_for_applies_timeout():
     conf = make_conf(timeout=321)
     client = _client_for(conf)
     assert client.timeout == 321
+
+
+def _status_error(code: int) -> APIStatusError:
+    req = httpx.Request("POST", "http://x/v1/chat/completions")
+    resp = httpx.Response(code, request=req)
+    return APIStatusError(f"http {code}", response=resp, body=None)
+
+
+def test_transient_4xx_not_transient():
+    """4xx 客户端错误（如 402 余额不足）不可自愈 → 判 failed，不无限重试。"""
+    assert not is_transient_error(_status_error(402))
+    assert not is_transient_error(_status_error(401))
+    assert not is_transient_error(_status_error(400))
+
+
+def test_transient_5xx_and_429_transient():
+    assert is_transient_error(_status_error(500))
+    assert is_transient_error(_status_error(503))
+    assert is_transient_error(_status_error(429))
+    assert is_transient_error(_status_error(408))

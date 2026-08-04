@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.5
-> 日期：2026-08-01
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线
+> 版本：1.6
+> 日期：2026-08-04
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 清理遗留空 stub
 
 ---
 
@@ -373,35 +373,39 @@ content
 
 ### 八、API 端点
 
-#### 已有接口
+> 当前共 22 个端点。查询同步返回；写操作在 Agent 管线启用时异步入队，否则同步确认。
+
+#### 8.1 写入类
+
+| 方法 | 路径 | 说明 | 请求体 |
+|------|------|------|--------|
+| POST | /ingest | 写入事件 | IngestRequest |
+| PUT | /events/{event_id} | 修改事件内容（更新 raw_content + FTS5） | `{"content": "..."}` |
+| PUT | /events/{event_id}/status | 修改事件状态 | ModifyEventStatusRequest |
+| DELETE | /events/{event_id} | 删除事件（带源证保护） | — |
+| POST | /nodes | 人工创建图节点（source_event_id 可选） | CreateNodeRequest |
+| PUT | /nodes/{node_id} | 修改节点内容（重置 confidence=0.7，system 禁止） | ModifyNodeRequest |
+| DELETE | /nodes/{node_id} | 删除节点（force=true 覆盖源证保护） | DeleteNodeRequest |
+| POST | /edges | 创建关联边 | CreateEdgeRequest |
+| DELETE | /edges | 删除关联边（query: source, target） | — |
+| DELETE | /graph | 清空图谱（节点 + 边） | — |
+| PUT | /settings | 批量更新配置项（持久化 dpim.json） | SettingsUpdateRequest |
+| POST | /agent/compensate | 手动触发补偿：积压 raw/indexed 事件重入队 | — |
+
+#### 8.2 读取类
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /ingest | 写入事件 |
-| DELETE | /events/{event_id} | 删除事件 |
-| DELETE | /nodes/{node_id} | 删除节点 |
-| PUT | /nodes/{node_id} | 修改节点内容 |
-| PUT | /events/{event_id}/status | 修改事件状态 |
-| PUT | /events/{event_id} | 修改事件内容（更新 raw_content + FTS5） |
-| POST | /edges | 创建关联边（source, target, relation, evidence_event_id） |
-| DELETE | /edges | 删除关联边（query: source, target） |
-| POST | /query | 检索 |
-| POST | /feedback | 检索反馈 |
-| GET | /health | 健康检查 |
-
-查询同步返回，写操作异步返回确认。
-
-#### 新增接口（dpim-webui）
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | /state-hash | 获取当前存储状态哈希 |
+| POST | /query | 混合检索（Agent 可用时走 Agent 检索，失败回退） |
+| POST | /feedback | 检索反馈（调整节点置信度） |
+| GET | /health | 健康检查 + 双区统计 |
+| GET | /state-hash | 状态校验密钥 |
 | GET | /events | 分页事件列表 |
 | GET | /events/{event_id} | 事件详情 |
 | GET | /nodes | 分页节点列表 |
 | GET | /nodes/{node_id} | 节点详情（含关联边） |
 | GET | /settings | 获取所有配置项 |
-| PUT | /settings | 批量更新配置项 |
+| GET | /agent/logs | AI 调用日志（环形缓冲，新→旧） |
 
 **分页约定（适用于 GET /events 和 GET /nodes）：**
 
@@ -434,7 +438,7 @@ content
 }
 ```
 
-**配置更新请求：** 接受完整的配置键值对 JSON，只下发需要修改的字段即可。
+**配置更新请求：** 接受完整的配置键值对 JSON，只下发需要修改的字段即可（详见第九节配置项）。
 
 **事件内容修改请求（PUT /events/{event_id}）：**
 
@@ -445,6 +449,36 @@ content
 ```
 
 响应：`{"status": "ok", "message": "Event content updated", "event_id": "..."}`
+
+**创建节点请求（POST /nodes）：**
+
+```json
+{
+  "title": "节点标题（≤60 字符）",
+  "content": "节点内容（缺省等于 title）",
+  "node_type": "data",
+  "source_event_id": "可选，关联来源事件 ID"
+}
+```
+
+响应：`{"status": "ok", "node_id": "...", "message": "Node created"}`
+
+**AI 调用日志响应（GET /agent/logs）：**
+
+```json
+{
+  "logs": [
+    {
+      "role": "cr|in|gr|meta",
+      "model": "模型名",
+      "timestamp": 1754294400.0,
+      "input_preview": "LLM 输入前 2000 字符",
+      "output": "LLM 输出前 2000 字符",
+      "error": "错误信息（空 = 成功）"
+    }
+  ]
+}
+```
 
 ---
 
@@ -483,6 +517,7 @@ content
 > 2026-08-01：新增 BYOK 多模型网关与 Agent 管线配置（PROVIDERS / ACTIVE_PROVIDER / AGENT_*）。
 > 2026-08-02：BYOK/Agent 结构化配置迁入 `dpim/dpim.json`（env DPIM_* 可覆盖）；前端 `PUT /settings` 写回 dpim.json 持久化。
 > 2026-08-03：厂商适配（LLM_MAX_TOKENS / LLM_ENABLE_THINKING / LLM_THINKING_BUDGET + provider 条目 thinking_style/extra_body/structured_mode）；provider 条目字段可在前端「提供商注册表(JSON)」编辑。
+> 2026-08-04：规约升级至 v1.6。补全 API 端点清单至 22 个（新增 POST /nodes、DELETE /graph、GET /agent/logs、POST /agent/compensate 的说明与请求/响应结构）；图谱 JSON 加载增加容错（损坏时从 .bak 恢复或空图启动）。
 
 ---
 
