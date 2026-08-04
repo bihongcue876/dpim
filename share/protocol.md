@@ -458,7 +458,10 @@ content
 | LLM_API_KEY | (空) | LLM API Key |
 | LLM_MODEL_NAME | llama3:8b | 模型名称 |
 | LLM_TIMEOUT | 300 | LLM 生成请求超时（秒，本地模型宽容默认；provider 条目可覆盖） |
-| **PROVIDERS** | (空 JSON) | BYOK 多 provider 注册（JSON dict：name → {base_url, api_key, model, timeout}） |
+| **LLM_MAX_TOKENS** | (空) | 输出 token 上限（0/空 = 服务端默认；provider 条目可覆盖） |
+| **LLM_ENABLE_THINKING** | (空) | 思考开关（true/false/空 = 服务端默认；provider 条目可覆盖） |
+| **LLM_THINKING_BUDGET** | (空) | 思考预算 tokens（0/空 = 不设；provider 条目可覆盖） |
+| **PROVIDERS** | (空 JSON) | BYOK 多 provider 注册（JSON dict：name → {base_url, api_key, model, timeout, max_tokens, enable_thinking, thinking_budget, thinking_style, extra_body, structured_mode}） |
 | **ACTIVE_PROVIDER** | primary | 活动 provider（primary = LLM_* 主配置） |
 | **AGENT_MODE** | disabled | Agent 管线开关：disabled \| pipeline |
 | **AGENT_MAX_RETRIES** | 2 | Meta 驳回时的最大修正轮次 |
@@ -479,6 +482,7 @@ content
 
 > 2026-08-01：新增 BYOK 多模型网关与 Agent 管线配置（PROVIDERS / ACTIVE_PROVIDER / AGENT_*）。
 > 2026-08-02：BYOK/Agent 结构化配置迁入 `dpim/dpim.json`（env DPIM_* 可覆盖）；前端 `PUT /settings` 写回 dpim.json 持久化。
+> 2026-08-03：厂商适配（LLM_MAX_TOKENS / LLM_ENABLE_THINKING / LLM_THINKING_BUDGET + provider 条目 thinking_style/extra_body/structured_mode）；provider 条目字段可在前端「提供商注册表(JSON)」编辑。
 
 ---
 

@@ -23,8 +23,9 @@ DPIM 是一个双区智能贮存系统，同时承担两个角色：
 - 混合检索：FTS5 召回 → 2 跳图扩散 → RRF 融合排序（无 Agent 默认仅 FTS5）
 - **Agent 管线（方案A，硬编码编排）**：Cr/In/Gr/Meta 四 Agent，ingest 并行拆分与查图、
   Gr 修正循环（仅重试 Gr）、Meta 硬关卡审核；检索意图分析 + Meta 复核
-- **BYOK 多模型网关**：多 provider 注册（DeepSeek/Ollama/OpenRouter…），按角色路由模型，
-  一次调用打包完整上下文（chat_structured）
+- **BYOK 多模型网关**：多 provider 注册（DeepSeek/SiliconFlow/Ollama/llama.cpp…），按角色路由模型，
+  一次调用打包完整上下文（chat_structured）；厂商适配：思考开关/预算（enable_thinking、thinking_budget，
+  SiliconFlow 顶层字段、llama.cpp chat_template_kwargs 自动适配）、输出上限 max_tokens、任意参数 extra_body 透传
 - 事件源证锚定：每条图节点必含 source_refs 与 evidence_quote，杜绝幻觉
 - 删除保护：system 和 data 类型节点失去所有源证时禁止删除
 - 降级与补偿：LLM 不可用时自动降级，恢复后批量补偿积压事件；WebUI/CLI 可手动触发补偿

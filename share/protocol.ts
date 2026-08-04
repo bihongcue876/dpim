@@ -385,6 +385,21 @@ export interface NodeDetail extends GraphNode {
 // ==================== 配置（dpim-webui）====================
 
 /** 配置项响应 (GET /settings) */
+/** BYOK provider 条目：基础连接 + 厂商适配参数 */
+export interface ProviderEntry {
+  base_url: string;
+  api_key: string;
+  model?: string;              // 旧式单模型
+  models?: string[];           // 多模型列表
+  timeout?: number;
+  max_tokens?: number;         // 输出 token 上限（0 = 服务端默认）
+  enable_thinking?: boolean;   // 思考开关（缺省 = 服务端默认）
+  thinking_budget?: number;    // 思考预算 tokens（0 = 不设）
+  thinking_style?: string;     // auto | top_level | chat_template_kwargs
+  extra_body?: Record<string, unknown>;  // 任意厂商参数透传
+  structured_mode?: string;    // md_json | json | tools
+}
+
 export interface SettingsResponse {
   memory_db_path: string;
   graph_json_path: string;
@@ -393,10 +408,13 @@ export interface SettingsResponse {
   llm_model_name: string;
   llm_timeout: number;
   available_providers: string[];  // 可选 provider 名单（含 'primary'）
-  providers: Record<string, { base_url: string; api_key: string; model?: string; models?: string[]; timeout?: number }>;
+  providers: Record<string, ProviderEntry>;
   active_provider: string;      // BYOK 活动 provider（默认 'primary'）
   available_models: string[];   // 活动 provider 的模型列表（供「使用」选择）
   active_model: string;         // 使用中的模型（空 → provider 首个/默认）
+  llm_max_tokens?: number | null;        // 输出 token 上限（null = 服务端默认）
+  llm_enable_thinking?: boolean | null;  // 思考开关（null = 服务端默认）
+  llm_thinking_budget?: number | null;   // 思考预算 tokens（null = 不设）
   agent_mode: AgentMode;        // 管线开关
   agent_max_retries: number;    // Meta 驳回最大修正轮次
   agent_cr_model: string;       // 空值 = 回退活动 provider 默认模型
@@ -417,7 +435,10 @@ export interface SettingsRequest {
   llm_api_key?: string;
   llm_model_name?: string;
   llm_timeout?: number;
-  providers?: Record<string, { base_url: string; api_key: string; model?: string; models?: string[]; timeout?: number }>;
+  llm_max_tokens?: number | null;
+  llm_enable_thinking?: boolean | null;
+  llm_thinking_budget?: number | null;
+  providers?: Record<string, ProviderEntry>;
   active_provider?: string;
   active_model?: string;
   agent_mode?: AgentMode;
@@ -442,8 +463,11 @@ export interface DPIMConfig {
   LLM_API_KEY: string;
   LLM_MODEL_NAME: string;
   LLM_TIMEOUT: number;
+  LLM_MAX_TOKENS?: number;        // 输出 token 上限（0/空 = 服务端默认）
+  LLM_ENABLE_THINKING?: boolean;  // 思考开关（空 = 服务端默认）
+  LLM_THINKING_BUDGET?: number;   // 思考预算 tokens（0/空 = 不设）
   // BYOK 多模型网关
-  PROVIDERS?: string;           // JSON dict：{name: {base_url, api_key, model, timeout}}
+  PROVIDERS?: string;             // JSON dict：{name: {base_url, api_key, model, timeout, max_tokens, enable_thinking, thinking_budget, thinking_style, extra_body, structured_mode}}
   ACTIVE_PROVIDER: string;      // 默认 'primary'
   // Agent 管线
   AGENT_MODE: AgentMode;        // 默认 'disabled'

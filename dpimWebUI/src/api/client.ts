@@ -92,6 +92,9 @@ export interface SettingsResponse {
   llm_api_key: string
   llm_model_name: string
   llm_timeout: number
+  llm_max_tokens: number | null
+  llm_enable_thinking: boolean | null
+  llm_thinking_budget: number | null
   available_providers: string[]
   providers: Record<string, { base_url: string; api_key: string; model?: string; models?: string[]; timeout?: number }>
   active_provider: string
@@ -257,6 +260,9 @@ export async function putSettings(body: {
   llm_api_key?: string
   llm_model_name?: string
   llm_timeout?: number
+  llm_max_tokens?: number | null
+  llm_enable_thinking?: boolean | null
+  llm_thinking_budget?: number | null
   providers?: Record<string, unknown>
   active_provider?: string
   active_model?: string
