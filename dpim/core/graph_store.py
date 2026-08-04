@@ -243,23 +243,25 @@ class GraphStore:
         rows = await cursor.fetchall()
         if rows:
             return [dict(r) for r in rows]
-        # FTS5 不命中（如中文），遍历内存图数据做 LIKE 匹配
+        # FTS5 不命中（如中文），遍历内存图数据做 LIKE 匹配，按标题/内容位置计分排序
+        from core.event_store import like_rank
+
         results: list[dict] = []
+        q = query.lower()
         for nid, ndata in self.graph.nodes(data=True):
             data = ndata.get("data")
             if data is None:
                 continue
-            if query.lower() in (data.title or "").lower() or \
-               query.lower() in (data.content or "").lower():
+            if q in (data.title or "").lower() or \
+               q in (data.content or "").lower():
                 results.append({
                     "node_id": nid,
                     "title": data.title,
                     "content": data.content,
-                    "rank": 0.0,
+                    "rank": like_rank(query, data.title, data.content),
                 })
-                if len(results) >= limit:
-                    break
-        return results
+        results.sort(key=lambda x: x["rank"])
+        return results[:limit]
 
     @property
     def dirty(self) -> bool:

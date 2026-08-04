@@ -1,5 +1,7 @@
 """控制变量测试：补偿机制、降级状态切换、健康检查隔离"""
 
+import asyncio
+
 import pytest
 
 from controller.compensator import Compensator
@@ -63,3 +65,104 @@ class TestCompensationControlledVariables:
         assert c.is_degraded() is False
         ai_state.available = False
         assert c.is_degraded() is True
+
+    @pytest.mark.asyncio
+    async def test_compensate_probe_only_one(self, db, event_store, graph_store):
+        """对照：probe 试探只入队 1 条事件"""
+        ai_state.available = False
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        enqueued: list[str] = []
+        async def fake_enqueue(msg):
+            enqueued.append(msg.payload["event_id"])
+        orchestrator.enqueue = fake_enqueue
+        for i in range(5):
+            eid, _ = await event_store.insert(f"probe {i}")
+            await event_store.update_status(eid, "raw")
+        await orchestrator._handle_compensate({"probe": True})
+        assert len(enqueued) == 1
+        if orchestrator._comp_batch_check:
+            orchestrator._comp_batch_check.cancel()
+
+    @pytest.mark.asyncio
+    async def test_compensate_paused_skipped_unless_force(self, db, event_store, graph_store):
+        """对照：连续失败暂停后自动补偿跳过，手动 force 打破暂停"""
+        ai_state.available = False
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        enqueued: list[str] = []
+        async def fake_enqueue(msg):
+            enqueued.append(msg.payload["event_id"])
+        orchestrator.enqueue = fake_enqueue
+        eid, _ = await event_store.insert("pending")
+        await event_store.update_status(eid, "raw")
+        orchestrator._comp_paused = True
+        await orchestrator._handle_compensate({})
+        assert len(enqueued) == 0  # 暂停中跳过
+        await orchestrator._handle_compensate({"force": True})
+        assert len(enqueued) == 1  # force 打破暂停
+        assert orchestrator._comp_paused is False
+
+    @pytest.mark.asyncio
+    async def test_compensate_backoff_sleeps(self, db, event_store, graph_store, monkeypatch):
+        """对照：失败批次后退避延迟递增（2^(n-1)，封顶 60s）"""
+        from core.config import settings
+        ai_state.available = False
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        # 批次检查任务挂起（大间隔），不干扰退避断言
+        monkeypatch.setattr(settings, "health_check_interval", 999)
+        sleeps: list[float] = []
+        _real_sleep = asyncio.sleep
+        async def fake_sleep(s):
+            if s < 60:  # 退避延迟：记录并立即返回
+                sleeps.append(s)
+                return
+            await _real_sleep(s)  # 批次检查大间隔：真挂起，不干扰 streak
+        monkeypatch.setattr("asyncio.sleep", fake_sleep)
+        orchestrator.enqueue = _null_enqueue
+        orchestrator._comp_fail_streak = 1
+        eid, _ = await event_store.insert("backoff")
+        await event_store.update_status(eid, "raw")
+        await orchestrator._handle_compensate({})
+        assert sleeps == [1.0]  # 2^(1-1)
+        orchestrator._comp_fail_streak = 3
+        await orchestrator._handle_compensate({})
+        assert sleeps[-1] == 4.0  # 2^(3-1)
+        if orchestrator._comp_batch_check:
+            orchestrator._comp_batch_check.cancel()
+
+    @pytest.mark.asyncio
+    async def test_two_failed_batches_pause(self, db, event_store, graph_store, monkeypatch):
+        """对照：连续 2 批失败（批次事件未进入 linked）→ 自动暂停"""
+        from core.config import settings
+        ai_state.available = False
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        monkeypatch.setattr(settings, "health_check_interval", 0.02)
+        eid, _ = await event_store.insert("never links")
+        await event_store.update_status(eid, "raw")
+        orchestrator.enqueue = _null_enqueue
+        # 两轮批次，事件一直停留在 raw（未进入 linked）→ 每轮失败计数 +1
+        for round_no in range(2):
+            await orchestrator._handle_compensate({})
+            await asyncio.sleep(0.05)  # 等批次检查任务完成
+            assert orchestrator._comp_fail_streak == round_no + 1
+        assert orchestrator._comp_paused is True
+
+    @pytest.mark.asyncio
+    async def test_success_resets_streak(self, db, event_store, graph_store, monkeypatch):
+        """对照：批次成功（事件进入 linked）→ 失败计数清零"""
+        from core.config import settings
+        from tests.factories import make_event
+        ai_state.available = False
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        monkeypatch.setattr(settings, "health_check_interval", 0.02)
+        orchestrator._comp_fail_streak = 1
+        eid = await make_event(event_store, "linked soon", status="raw")
+        orchestrator.enqueue = _null_enqueue
+        await orchestrator._handle_compensate({})
+        await event_store.update_status(eid, "linked")
+        await asyncio.sleep(0.05)
+        assert orchestrator._comp_fail_streak == 0
+
+
+async def _null_enqueue(msg):
+    """no-op enqueue（测试辅助）"""
+    pass

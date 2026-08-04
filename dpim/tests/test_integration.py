@@ -208,6 +208,39 @@ class TestModifyEventStatusEndpoint:
         )
         assert resp.status_code == 404
 
+    def test_modify_status_raw_to_linked_rejected(self, test_app, event_store):
+        """白名单：raw→linked 绕过管线，必须拒绝"""
+        import asyncio
+
+        from tests.factories import make_event
+        eid = asyncio.run(make_event(event_store, "bypass attempt", status="raw"))
+        resp = test_app.put(
+            f"/events/{eid}/status", json={"status": "linked"},
+        )
+        assert resp.status_code == 400
+
+    def test_modify_status_linked_to_indexed_rejected(self, test_app):
+        """白名单：linked 为终态，不允许回退 indexed"""
+        create = test_app.post("/ingest", json={"content": "terminal state"})
+        eid = create.json()["event_id"]
+        linked = test_app.put(
+            f"/events/{eid}/status", json={"status": "linked"},
+        )
+        assert linked.status_code == 200
+        resp = test_app.put(
+            f"/events/{eid}/status", json={"status": "indexed"},
+        )
+        assert resp.status_code == 400
+
+    def test_modify_status_indexed_to_raw_rejected(self, test_app):
+        """白名单：indexed→raw 无意义，必须拒绝"""
+        create = test_app.post("/ingest", json={"content": "back to raw"})
+        eid = create.json()["event_id"]
+        resp = test_app.put(
+            f"/events/{eid}/status", json={"status": "raw"},
+        )
+        assert resp.status_code == 400
+
 
 class TestModifyEventEndpoint:
     """PUT /events/{event_id} 事件内容修改"""

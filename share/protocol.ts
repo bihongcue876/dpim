@@ -26,7 +26,7 @@ export type ChunkType = 'interaction' | 'data' | 'source' | 'ignore';
 export interface SourceRef {
   event_id: string;
   valid: boolean;
-  hash: string;           // BLAKE3 前 16 位
+  hash: string;           // BLAKE2s-8B（16 字符十六进制）
 }
 
 /** 图节点元数据 */

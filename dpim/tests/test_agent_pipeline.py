@@ -5,6 +5,8 @@
 """
 
 
+import os
+
 import pytest
 
 import core.llm
@@ -556,3 +558,26 @@ async def test_query_pipeline_empty_fallback(db, event_store, graph_store, enabl
     resp = await orch.run_query(SearchRequest(query="完全不存在xyzabc", limit=5))
     assert isinstance(resp.results, list)
     assert resp.total == 0
+
+def test_prompt_loader_mtime_cache(tmp_path):
+    """提示词热改即生效：文件 mtime 变化后重新读取，无需重启"""
+    from controller.prompt_loader import PromptLoader
+
+    p = tmp_path / "core.md"
+    p.write_text("v1", encoding="utf-8")
+    loader = PromptLoader(prompts_dir=tmp_path)
+    assert loader.load("cr") == "v1"
+    assert loader.load("cr") == "v1"  # 命中缓存
+    t1 = p.stat().st_mtime
+    p.write_text("v2", encoding="utf-8")
+    os.utime(p, (t1 + 5, t1 + 5))  # 推进 mtime，确保与 v1 不同
+    assert loader.load("cr") == "v2"
+    assert loader.load("cr") == "v2"
+
+
+def test_prompt_loader_missing_role_returns_skeleton(tmp_path):
+    from controller.prompt_loader import PromptLoader
+
+    loader = PromptLoader(prompts_dir=tmp_path)
+    content = loader.load("cr")
+    assert "骨架" in content

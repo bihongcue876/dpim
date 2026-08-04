@@ -256,6 +256,21 @@ class TestGraphStoreNodeFTS:
         results = await graph_store.search_node_fts("zzz_not_there")
         assert len(results) == 0
 
+    @pytest.mark.asyncio
+    async def test_like_fallback_title_priority(self, graph_store: GraphStore):
+        """对照：中文 LIKE 降级时标题匹配优先于内容匹配"""
+        from tests.factories import make_node
+        await make_node(graph_store, "n_title", "异步编程入门", "无相关内容", event_id="e1")
+        await make_node(graph_store, "n_content", "其他标题", "我学习异步编程", event_id="e2")
+        await graph_store.upsert_node_fts("n_title", "异步编程入门", "无相关内容")
+        await graph_store.upsert_node_fts("n_content", "其他标题", "我学习异步编程")
+        results = await graph_store.search_node_fts("异步编程")
+        # FTS5 对中文整串不命中 → 走 LIKE 降级
+        assert len(results) == 2
+        assert results[0]["node_id"] == "n_title"  # 标题命中排前
+        assert results[1]["node_id"] == "n_content"
+        assert results[0]["rank"] < results[1]["rank"]
+
 
 class TestGraphStoreControlledVariables:
     """控制变量：置信度排序、扩散跳数对照、多节点共享事件"""

@@ -225,6 +225,20 @@ class TestEventStoreFTS:
         results = await event_store.search_fts("java")
         assert len(results) == 1
 
+    @pytest.mark.asyncio
+    async def test_like_fallback_ranks_by_position(self, event_store: EventStore):
+        """对照：中文 LIKE 降级结果按命中位置排序（靠前得分高）"""
+        e1, _ = await event_store.insert("我学习异步编程")
+        await event_store.insert_fts(e1, "我学习异步编程")
+        e2, _ = await event_store.insert("异步编程我学习")
+        await event_store.insert_fts(e2, "异步编程我学习")
+        results = await event_store.search_fts("学习")
+        # FTS5 对中文整串不命中 → 走 LIKE 降级
+        assert len(results) == 2
+        assert results[0]["event_id"] == e1  # 命中位置靠前
+        assert results[1]["event_id"] == e2
+        assert results[0]["rank"] < results[1]["rank"]
+
 
 class TestEventStoreControlledVariables:
     """控制变量：状态机、删除保护、类型筛选"""
@@ -267,6 +281,29 @@ class TestEventStoreControlledVariables:
         r2 = await event_store.delete_with_protection(e_data, graph_store)
         assert r2["status"] == "protected"
         assert r2["node_type"] == "data"
+
+    @pytest.mark.asyncio
+    async def test_delete_protection_precheck_partial(self, event_store, graph_store):
+        """对照：事件同时关联 interaction + system 节点时，预检整体拒绝，
+        不做任何图修改（interaction 节点不得被误删、源证不得被提前失效）"""
+        from core.models import NodeType
+        from tests.factories import make_event, make_node
+        eid = await make_event(event_store, "mixed refs", "interaction")
+        await make_node(graph_store, "mix_inter", "MixInter", "c",
+                        NodeType.interaction, event_id=eid)
+        await make_node(graph_store, "mix_sys", "MixSys", "c",
+                        NodeType.system, event_id=eid)
+        await event_store.update_status(eid, "linked", graph_refs=["mix_inter", "mix_sys"])
+        r = await event_store.delete_with_protection(eid, graph_store)
+        assert r["status"] == "protected"
+        assert r["node_type"] == "system"
+        # 预检拒绝后：两节点仍在、事件仍在、源证仍有效
+        assert graph_store.get_node("mix_inter") is not None
+        assert graph_store.get_node("mix_sys") is not None
+        ev = await event_store.get(eid)
+        assert ev is not None and ev["status"] == "linked"
+        for sr in graph_store.get_node("mix_sys").source_refs:
+            assert sr.valid is True
 
     @pytest.mark.asyncio
     async def test_event_type_filtering(self, event_store):

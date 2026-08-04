@@ -46,6 +46,10 @@ class Orchestrator:
         self.queue: asyncio.Queue[QueueMessage] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
         self._running = False
+        # 补偿退避状态：连续失败批次计数 + 暂停标志（防 LLM 恢复→高负载→再降级震荡）
+        self._comp_fail_streak = 0
+        self._comp_paused = False
+        self._comp_batch_check: asyncio.Task | None = None
 
     def start(self):
         self._running = True
@@ -281,19 +285,84 @@ class Orchestrator:
         await self.event_store.update_status(event_id, new_status)
 
     async def _handle_compensate(self, payload: dict):
+        # 连续 2 批失败后暂停自动补偿；force=true（手动触发）打破暂停并重置失败计数
+        if self._comp_paused and not payload.get("force"):
+            logger.info("Compensation paused (consecutive failures), skip")
+            return
+        if payload.get("force"):
+            self._comp_paused = False
+            self._comp_fail_streak = 0
         raw_events = await self.event_store.list_by_status("raw")
         indexed_events = await self.event_store.list_by_status("indexed")
         pending = raw_events + indexed_events
-        logger.info("Compensating %d pending events", len(pending))
-        for i in range(0, len(pending), settings.compensate_batch_size):
-            batch = pending[i : i + settings.compensate_batch_size]
-            tasks = []
-            for ev in batch:
-                msg = QueueMessage(
-                    type="ingest",
-                    payload={"event_id": ev["event_id"]},
-                    timestamp=datetime.now(timezone.utc).timestamp(),
-                )
-                tasks.append(self.enqueue(msg))
-            await asyncio.gather(*tasks)
-            await asyncio.sleep(0)  # yield
+        if not pending:
+            self._comp_fail_streak = 0
+            self._comp_paused = False
+            return
+        # 指数退避：连续失败后延迟再试（1,2,4,8…封顶 60s）
+        if self._comp_fail_streak > 0:
+            delay = min(2 ** (self._comp_fail_streak - 1), 60)
+            logger.info("Compensation backoff %ds (fail streak=%d)",
+                        delay, self._comp_fail_streak)
+            await asyncio.sleep(delay)
+        # 首条试探：probe 只处理 1 条，成功后由后续补偿消息继续批量
+        probe = bool(payload.get("probe"))
+        batch = pending[:1] if probe else pending[: settings.compensate_batch_size]
+        logger.info("Compensating %d pending events%s",
+                    len(batch), " (probe)" if probe else "")
+        for ev in batch:
+            msg = QueueMessage(
+                type="ingest",
+                payload={"event_id": ev["event_id"]},
+                timestamp=datetime.now(timezone.utc).timestamp(),
+            )
+            await self.enqueue(msg)
+        if probe:
+            self._schedule_batch_check([ev["event_id"] for ev in batch], probe=True)
+        else:
+            self._schedule_batch_check([ev["event_id"] for ev in batch])
+
+    def _schedule_batch_check(self, event_ids: list[str], probe: bool = False) -> None:
+        """延迟检查补偿批次结果：批次事件全部未进入 linked → 视为失败。
+
+        连续 2 批失败 → 暂停自动补偿（手动 force 可恢复）。
+        """
+        if self._comp_batch_check and not self._comp_batch_check.done():
+            return
+
+        async def _check():
+            await asyncio.sleep(settings.health_check_interval)
+            if self._comp_paused:
+                return
+            if probe:
+                # 试探批次：成功则继续正常批次，失败则计入失败计数
+                if not event_ids:
+                    return
+                ev = await self.event_store.get(event_ids[0])
+                if ev and ev["status"] == "linked":
+                    self._comp_fail_streak = 0
+                    logger.info("Compensation probe ok, resume batches")
+                else:
+                    self._comp_fail_streak += 1
+                    logger.warning("Compensation probe failed (streak=%d)",
+                                   self._comp_fail_streak)
+                return
+            done = 0
+            for eid in event_ids:
+                ev = await self.event_store.get(eid)
+                if ev and ev["status"] == "linked":
+                    done += 1
+            if done > 0:
+                self._comp_fail_streak = 0
+                logger.info("Compensation batch ok (%d/%d linked)", done, len(event_ids))
+            else:
+                self._comp_fail_streak += 1
+                if self._comp_fail_streak >= 2:
+                    self._comp_paused = True
+                    logger.warning("Compensation paused after %d failed batches",
+                                   self._comp_fail_streak)
+                else:
+                    logger.warning("Compensation batch failed (streak=%d)",
+                                   self._comp_fail_streak)
+
+        self._comp_batch_check = asyncio.create_task(_check())

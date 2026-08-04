@@ -19,6 +19,21 @@ def _content_hash(content: str) -> str:
     return hashlib.blake2s(content.encode(), digest_size=8).hexdigest()
 
 
+def like_rank(query: str, title: str, content: str) -> float:
+    """LIKE 降级匹配的相关性分（rank 越小越相关，与 FTS5 rank 语义对齐）。
+
+    标题匹配优先于内容匹配，命中位置越靠前得分越高。
+    """
+    q = query.lower()
+    tp = (title or "").lower().find(q)
+    if tp >= 0:
+        return -1.0 / (1.0 + tp)
+    cp = (content or "").lower().find(q)
+    if cp >= 0:
+        return -0.5 / (1.0 + cp)
+    return 0.0
+
+
 class EventStore:
     def __init__(self, db: Database):
         self.db = db
@@ -164,14 +179,20 @@ class EventStore:
         rows = await cursor.fetchall()
         if rows:
             return [dict(r) for r in rows]
-        # FTS5 不命中（如中文），降级为 LIKE
+        # FTS5 不命中（如中文），降级为 LIKE：按标题/内容命中位置计分排序
         like_cursor = await self.db.conn.execute(
-            "SELECT e.*, 0.0 AS rank FROM events e "
-            "WHERE e.raw_content LIKE ? LIMIT ?",
-            (f"%{query}%", limit),
+            "SELECT e.* FROM events e "
+            "WHERE e.raw_content LIKE ?",
+            (f"%{query}%",),
         )
         rows = await like_cursor.fetchall()
-        return [dict(r) for r in rows]
+        scored = []
+        for r in rows:
+            d = dict(r)
+            d["rank"] = like_rank(query, "", d["raw_content"])
+            scored.append(d)
+        scored.sort(key=lambda x: x["rank"])
+        return scored[:limit]
 
     async def update_content(self, event_id: str, new_content: str) -> bool:
         """更新事件内容，同步更新 FTS 索引。返回是否存在该事件。"""
@@ -193,26 +214,41 @@ class EventStore:
     async def delete_with_protection(
         self, event_id: str, graph_store,
     ) -> dict:
-        """Delete event with source_ref protection for system/data nodes."""
+        """Delete event with source_ref protection for system/data nodes.
+
+        预检模式：先检查所有关联节点，任一受保护节点（system/data 且失去本事件后
+        无其他有效源证）即整体拒绝，不做任何图修改；全部安全后统一执行失效与删除。
+        """
         event = await self.get(event_id)
         if event is None:
             return {"status": "not_found"}
         refs = event.get("graph_refs", [])
+        # ── 预检：全安全才允许删除 ──
         for nid in refs:
             node = graph_store.get_node(nid)
             if node is None:
                 continue
+            has_other = any(
+                sr.valid for sr in node.source_refs if sr.event_id != event_id
+            )
+            if not has_other and node.node_type.value in ("system", "data"):
+                return {
+                    "status": "protected",
+                    "node_id": nid,
+                    "node_type": node.node_type.value,
+                }
+        # ── 预检通过：统一失效源证（一次调用覆盖全部节点）──
+        if refs:
             graph_store.invalidate_source_ref(event_id)
+        # 删除失去全部有效源证的 interaction 节点
+        for nid in refs:
+            node = graph_store.get_node(nid)
+            if node is None:
+                continue
             has_other = any(
                 sr.valid for sr in node.source_refs if sr.event_id != event_id
             )
             if not has_other:
-                if node.node_type.value in ("system", "data"):
-                    return {
-                        "status": "protected",
-                        "node_id": nid,
-                        "node_type": node.node_type.value,
-                    }
                 graph_store.remove_node(nid)
                 await graph_store.delete_node_fts(nid)
         await self.delete(event_id)
