@@ -23,8 +23,11 @@ def like_rank(query: str, title: str, content: str) -> float:
     """LIKE 降级匹配的相关性分（rank 越小越相关，与 FTS5 rank 语义对齐）。
 
     标题匹配优先于内容匹配，命中位置越靠前得分越高。
+    空查询或无命中返回 0.0（不参与相关性排序）。
     """
     q = query.lower()
+    if not q:
+        return 0.0
     tp = (title or "").lower().find(q)
     if tp >= 0:
         return -1.0 / (1.0 + tp)

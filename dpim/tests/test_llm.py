@@ -90,3 +90,41 @@ def test_transient_5xx_and_429_transient():
     assert is_transient_error(_status_error(503))
     assert is_transient_error(_status_error(429))
     assert is_transient_error(_status_error(408))
+
+
+def test_llm_logs_ring_buffer_caps_at_50():
+    """环形缓冲上限 50 条：超出后最旧日志被挤出"""
+    from core.llm import clear_llm_logs, get_llm_logs, log_llm_call
+    clear_llm_logs()
+    for i in range(60):
+        log_llm_call("cr", "m", f"in{i}", f"out{i}")
+    logs = get_llm_logs(limit=100, full=True)
+    assert len(logs) == 50
+    assert logs[0]["input"] == "in59"  # 新→旧，最新在最前
+    assert logs[-1]["input"] == "in10"  # 最早的 10 条被挤出
+    clear_llm_logs()
+
+
+def test_llm_logs_limit_truncation():
+    """limit 参数截断返回条数"""
+    from core.llm import clear_llm_logs, get_llm_logs, log_llm_call
+    clear_llm_logs()
+    for i in range(10):
+        log_llm_call("cr", "m", f"in{i}", "out")
+    assert len(get_llm_logs(limit=3)) == 3
+    assert len(get_llm_logs()) == 10
+    assert len(get_llm_logs(limit=0)) == 0
+    clear_llm_logs()
+
+
+def test_llm_logs_error_recorded_in_full_mode():
+    """full 模式下错误信息完整返回"""
+    from core.llm import clear_llm_logs, get_llm_logs, log_llm_call
+    clear_llm_logs()
+    long_err = "e" * 3000
+    log_llm_call("meta", "m", "in", "", long_err)
+    full = get_llm_logs(full=True)
+    assert full[0]["error"] == long_err
+    preview = get_llm_logs()
+    assert len(preview[0]["error"]) == 2000
+    clear_llm_logs()

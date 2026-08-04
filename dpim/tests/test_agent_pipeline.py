@@ -249,6 +249,36 @@ def test_rrf_merge_ranks_common_higher():
     assert ranked[0][0] == "b"
 
 
+def test_rrf_merge_matches_reference_impl():
+    """字典版 RRF 与原始 .index() 参照实现的结果完全一致（含 max_rank 兜底）"""
+    c1 = {"a": 3.0, "b": 2.0, "c": 1.0, "d": 0.5}
+    c2 = {"b": 5.0, "d": 4.0, "e": 1.0}
+    k = 60
+    result = tool_rrf_merge(c1, c2, k=k)
+    # 参照：原始 O(n²) 实现
+    keys = set(c1) | set(c2)
+    s1 = sorted(c1, key=lambda x: c1[x], reverse=True)
+    s2 = sorted(c2, key=lambda x: c2[x], reverse=True)
+    max_rank = max(len(s1), len(s2)) + 1
+    ref: dict[str, float] = {}
+    for key in keys:
+        r1 = s1.index(key) + 1 if key in c1 else max_rank
+        r2 = s2.index(key) + 1 if key in c2 else max_rank
+        ref[key] = (1.0 / (k + r1)) + (1.0 / (k + r2))
+    ref_sorted = sorted(ref.items(), key=lambda x: x[1], reverse=True)
+    assert result == ref_sorted
+
+
+def test_rrf_merge_empty_and_single_side():
+    """空输入与单侧输入：不崩溃、分数正确（缺失侧用 max_rank 兜底）"""
+    assert tool_rrf_merge({}, {}) == []
+    r = tool_rrf_merge({"a": 1.0}, {})
+    # r1=1（c1 内），r2=max_rank=2（缺失侧兜底）
+    assert r == [("a", 1.0 / 61.0 + 1.0 / 62.0)]
+    r2 = tool_rrf_merge({}, {"z": 1.0})
+    assert r2[0][0] == "z"
+
+
 # ── 存图写入 ──
 
 
@@ -483,6 +513,92 @@ def test_is_transient_error_classification():
     assert is_transient_error(httpx.TimeoutException("timeout"))
     assert not is_transient_error(ValueError("校验失败"))
     assert not is_transient_error(RuntimeError("其他错误"))
+
+
+def _status_error(code: int):
+    import httpx
+    from openai import APIStatusError
+    resp = httpx.Response(code, request=httpx.Request("GET", "http://x"))
+    return APIStatusError(f"err {code}", response=resp, body=None)
+
+
+@pytest.mark.parametrize("code,expected", [
+    (500, True), (502, True), (503, True), (504, True),
+    (408, True), (429, True),
+    (400, False), (401, False), (403, False), (404, False), (422, False),
+])
+def test_is_transient_error_status_codes(code, expected):
+    """5xx/408/429 瞬时；4xx 客户端错误非瞬时（不可自愈）"""
+    from core.llm import is_transient_error
+
+    assert is_transient_error(_status_error(code)) is expected
+
+
+def test_is_transient_error_multilevel_wrap():
+    """多层包装链：instructor 重试 → 底层仍超时 → 瞬时"""
+    import httpx
+
+    from core.llm import is_transient_error
+
+    inner = httpx.ReadTimeout("read timeout")
+    for _ in range(3):
+        outer = RuntimeError("wrapped")
+        outer.__cause__ = inner
+        inner = outer
+    assert is_transient_error(inner) is True
+
+
+def test_is_transient_error_context_chain():
+    """__context__ 链（非 cause）同样可判定"""
+    import httpx
+
+    from core.llm import is_transient_error
+
+    ctx_err = ValueError("outer")
+    ctx_err.__context__ = httpx.ConnectError("connect error")
+    assert is_transient_error(ctx_err) is True
+
+
+def test_is_transient_error_cycle_terminates():
+    """异常链成环（自引用）不无限循环"""
+    from core.llm import is_transient_error
+
+    e = RuntimeError("cycle")
+    e.__cause__ = e
+    assert is_transient_error(e) is False
+
+
+def test_is_transient_error_deep_4xx_stops():
+    """4xx 客户端错误出现在链深处 → 终止判定非瞬时"""
+
+    from core.llm import is_transient_error
+
+    inner = _status_error(401)
+    mid = RuntimeError("auth wrap")
+    mid.__cause__ = inner
+    outer = RuntimeError("instructor wrap")
+    outer.__cause__ = mid
+    assert is_transient_error(outer) is False
+
+
+def test_is_transient_error_unwraps_instructor_retry():
+    """InstructorRetryException 包装底层超时：沿 __cause__ 链判定为瞬时"""
+    import httpx
+    from instructor.v2.core.errors import InstructorRetryException
+    from openai import BadRequestError
+
+    from core.llm import is_transient_error
+
+    # 包装底层为读超时 → 瞬时
+    wrapped = InstructorRetryException.__new__(InstructorRetryException)
+    wrapped.__cause__ = httpx.ReadTimeout("request timed out")
+    assert is_transient_error(wrapped) is True
+
+    # 包装底层为 4xx 客户端错误 → 非瞬时（不可自愈）
+    resp = httpx.Response(400, request=httpx.Request("GET", "http://x"))
+    wrapped2 = InstructorRetryException.__new__(InstructorRetryException)
+    wrapped2.__cause__ = BadRequestError("400 bad request", response=resp, body=None)
+    assert is_transient_error(wrapped2) is False
 
 
 async def test_ingest_pipeline_transient_error_back_to_indexed(

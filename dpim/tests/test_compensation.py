@@ -162,6 +162,80 @@ class TestCompensationControlledVariables:
         await asyncio.sleep(0.05)
         assert orchestrator._comp_fail_streak == 0
 
+    @pytest.mark.asyncio
+    async def test_probe_failure_increments_streak(
+        self, db, event_store, graph_store, monkeypatch
+    ):
+        """对照：probe 试探失败（事件未 linked）→ 失败计数 +1"""
+        from core.config import settings
+        ai_state.available = False
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        monkeypatch.setattr(settings, "health_check_interval", 0.02)
+        eid, _ = await event_store.insert("probe fail")
+        await event_store.update_status(eid, "raw")
+        orchestrator.enqueue = _null_enqueue
+        await orchestrator._handle_compensate({"probe": True})
+        await asyncio.sleep(0.05)
+        assert orchestrator._comp_fail_streak == 1
+
+    @pytest.mark.asyncio
+    async def test_probe_success_resumes_batches(
+        self, db, event_store, graph_store, monkeypatch
+    ):
+        """对照：probe 试探成功（事件进入 linked）→ 计数清零，恢复批量"""
+        from core.config import settings
+        ai_state.available = False
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        monkeypatch.setattr(settings, "health_check_interval", 0.02)
+        orchestrator._comp_fail_streak = 1
+        eid, _ = await event_store.insert("probe ok")
+        await event_store.update_status(eid, "raw")
+        orchestrator.enqueue = _null_enqueue
+        await orchestrator._handle_compensate({"probe": True})
+        await event_store.update_status(eid, "linked")
+        await asyncio.sleep(0.05)
+        assert orchestrator._comp_fail_streak == 0
+
+    @pytest.mark.asyncio
+    async def test_backoff_caps_at_60s(
+        self, db, event_store, graph_store, monkeypatch
+    ):
+        """对照：指数退避封顶 60s（streak 再大也不无限增长）"""
+        from core.config import settings
+        ai_state.available = False
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        monkeypatch.setattr(settings, "health_check_interval", 999)
+        sleeps: list[float] = []
+        _real_sleep = asyncio.sleep
+        async def fake_sleep(s):
+            if s <= 60:  # 退避延迟（含封顶 60s）：记录并立即返回
+                sleeps.append(s)
+                return
+            await _real_sleep(s)  # 批次检查大间隔：真挂起，不干扰 streak
+        monkeypatch.setattr("asyncio.sleep", fake_sleep)
+        orchestrator.enqueue = _null_enqueue
+        orchestrator._comp_fail_streak = 10
+        eid, _ = await event_store.insert("cap")
+        await event_store.update_status(eid, "raw")
+        await orchestrator._handle_compensate({})
+        assert sleeps[-1] == 60.0
+        if orchestrator._comp_batch_check:
+            orchestrator._comp_batch_check.cancel()
+
+    @pytest.mark.asyncio
+    async def test_no_pending_resets_state(
+        self, db, event_store, graph_store, monkeypatch
+    ):
+        """对照：无积压事件 → 失败计数与暂停状态清零"""
+        ai_state.available = False
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        orchestrator.enqueue = _null_enqueue
+        orchestrator._comp_fail_streak = 3
+        orchestrator._comp_paused = True
+        await orchestrator._handle_compensate({})
+        assert orchestrator._comp_fail_streak == 0
+        assert orchestrator._comp_paused is False
+
 
 async def _null_enqueue(msg):
     """no-op enqueue（测试辅助）"""

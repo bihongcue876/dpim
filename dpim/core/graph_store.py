@@ -87,6 +87,11 @@ class GraphStore:
             raise
         self._dirty = False
         self._dirty_count = 0
+        # 保存成功后同步留存快照：下次加载损坏时可从最近一次成功保存恢复
+        try:
+            shutil.copy(path, path.with_suffix(".json.bak"))
+        except OSError as exc:
+            logger.warning("备份 graph.json 失败（不影响运行）: %s", exc)
 
     def _mark_dirty(self) -> None:
         """标记脏位并触发防抖式自动保存阈值计数。"""

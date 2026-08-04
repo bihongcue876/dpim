@@ -179,6 +179,55 @@ class TestGraphStorePersistence:
         graph_store.add_node(node)
         assert graph_store.dirty is True
 
+    @pytest.mark.asyncio
+    async def test_load_corrupt_json_falls_back_to_empty(self, db, tmp_path):
+        """容错：graph.json 损坏（手滑删括号）→ 空图启动，不崩溃"""
+        json_path = tmp_path / "graph.json"
+        json_path.write_text('{"nodes": {broken', encoding="utf-8")
+        gs = GraphStore(db, json_path=str(json_path))
+        await gs.load()  # 不抛异常
+        assert gs.graph.number_of_nodes() == 0
+
+    @pytest.mark.asyncio
+    async def test_load_corrupt_json_recovers_from_backup(self, db, tmp_path):
+        """容错：主文件损坏 → 自动从 .json.bak 快照恢复"""
+        json_path = tmp_path / "graph.json"
+        # 先正常保存一次生成 .bak
+        gs1 = GraphStore(db, json_path=str(json_path))
+        await gs1.load()
+        node = GraphNode(
+            node_id="backup_me", title="Backup", content="c",
+            node_type=NodeType.data,
+            source_refs=[SourceRef(event_id="e1", valid=True, hash="h1")],
+            confidence=0.5, metadata=NodeMetadata(evidence_quote="b"),
+        )
+        gs1.add_node(node)
+        await gs1.save()
+        # 主文件写坏，.bak 完好
+        json_path.write_text("truncated garbage", encoding="utf-8")
+        gs2 = GraphStore(db, json_path=str(json_path))
+        await gs2.load()
+        assert gs2.get_node("backup_me") is not None
+
+    @pytest.mark.asyncio
+    async def test_load_both_corrupt_starts_empty(self, db, tmp_path):
+        """容错：主文件与 .bak 均损坏 → 空图启动，不崩溃"""
+        json_path = tmp_path / "graph.json"
+        json_path.write_text('{"nodes": {', encoding="utf-8")
+        json_path.with_suffix(".json.bak").write_text("also broken", encoding="utf-8")
+        gs = GraphStore(db, json_path=str(json_path))
+        await gs.load()
+        assert gs.graph.number_of_nodes() == 0
+
+    @pytest.mark.asyncio
+    async def test_load_success_creates_backup(self, db, tmp_path):
+        """容错：正常加载后留存 .json.bak 快照，供下次损坏时恢复"""
+        json_path = tmp_path / "graph.json"
+        json_path.write_text('{"nodes": {}, "edges": []}', encoding="utf-8")
+        gs = GraphStore(db, json_path=str(json_path))
+        await gs.load()
+        assert json_path.with_suffix(".json.bak").exists()
+
 
 class TestGraphStoreEgoGraph:
     @pytest.mark.asyncio

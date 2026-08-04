@@ -285,6 +285,14 @@ class Orchestrator:
         await self.event_store.update_status(event_id, new_status)
 
     async def _handle_compensate(self, payload: dict):
+        raw_events = await self.event_store.list_by_status("raw")
+        indexed_events = await self.event_store.list_by_status("indexed")
+        pending = raw_events + indexed_events
+        # 无积压：无论是否暂停，都重置失败计数与暂停状态
+        if not pending:
+            self._comp_fail_streak = 0
+            self._comp_paused = False
+            return
         # 连续 2 批失败后暂停自动补偿；force=true（手动触发）打破暂停并重置失败计数
         if self._comp_paused and not payload.get("force"):
             logger.info("Compensation paused (consecutive failures), skip")
@@ -292,13 +300,6 @@ class Orchestrator:
         if payload.get("force"):
             self._comp_paused = False
             self._comp_fail_streak = 0
-        raw_events = await self.event_store.list_by_status("raw")
-        indexed_events = await self.event_store.list_by_status("indexed")
-        pending = raw_events + indexed_events
-        if not pending:
-            self._comp_fail_streak = 0
-            self._comp_paused = False
-            return
         # 指数退避：连续失败后延迟再试（1,2,4,8…封顶 60s）
         if self._comp_fail_streak > 0:
             delay = min(2 ** (self._comp_fail_streak - 1), 60)
