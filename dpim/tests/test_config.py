@@ -10,12 +10,12 @@ def test_default_values(monkeypatch):
     assert s.graph_json_path == "./data/graph.json"
     assert s.llm_base_url == "http://localhost:11434/v1"
     assert s.llm_model_name == "llama3:8b"
-    assert s.llm_timeout == 300  # 本地模型宽容默认
+    assert s.llm_timeout == 666  # 本地模型宽容默认
     assert s.max_graph_hops == 2
     assert s.rrf_k == 60
     assert s.jaccard_threshold == 0.85
     assert s.health_check_interval == 60
-    assert s.health_check_timeout == 60
+    assert s.health_check_timeout == 120
     assert s.compensate_batch_size == 20
     assert s.log_level == "INFO"
     assert s.max_raw_content == 10000

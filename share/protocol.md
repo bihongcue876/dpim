@@ -491,7 +491,7 @@ content
 | LLM_BASE_URL | http://localhost:11434/v1 | LLM 服务地址（主 provider，向后兼容） |
 | LLM_API_KEY | (空) | LLM API Key |
 | LLM_MODEL_NAME | llama3:8b | 模型名称 |
-| LLM_TIMEOUT | 300 | LLM 生成请求超时（秒，本地模型宽容默认；provider 条目可覆盖） |
+| LLM_TIMEOUT | 666 | LLM 生成请求超时（秒，本地模型宽容默认；provider 条目可覆盖） |
 | **LLM_MAX_TOKENS** | (空) | 输出 token 上限（0/空 = 服务端默认；provider 条目可覆盖） |
 | **LLM_ENABLE_THINKING** | (空) | 思考开关（true/false/空 = 服务端默认；provider 条目可覆盖） |
 | **LLM_THINKING_BUDGET** | (空) | 思考预算 tokens（0/空 = 不设；provider 条目可覆盖） |
@@ -510,7 +510,7 @@ content
 | RRF_K | 60 | RRF 融合 k 值 |
 | JACCARD_THRESHOLD | 0.85 | 去重预检相似度阈值 |
 | HEALTH_CHECK_INTERVAL | 60 | 健康检查间隔（秒） |
-| HEALTH_CHECK_TIMEOUT | 60 | 健康检查超时（秒，与生成超时分离） |
+| HEALTH_CHECK_TIMEOUT | 120 | 健康检查超时（秒，与生成超时分离） |
 | COMPENSATE_BATCH_SIZE | 20 | 补偿批次大小 |
 | LOG_LEVEL | INFO | 日志级别 |
 
@@ -518,6 +518,7 @@ content
 > 2026-08-02：BYOK/Agent 结构化配置迁入 `dpim/dpim.json`（env DPIM_* 可覆盖）；前端 `PUT /settings` 写回 dpim.json 持久化。
 > 2026-08-03：厂商适配（LLM_MAX_TOKENS / LLM_ENABLE_THINKING / LLM_THINKING_BUDGET + provider 条目 thinking_style/extra_body/structured_mode）；provider 条目字段可在前端「提供商注册表(JSON)」编辑。
 > 2026-08-04：规约升级至 v1.6。补全 API 端点清单至 22 个（新增 POST /nodes、DELETE /graph、GET /agent/logs、POST /agent/compensate 的说明与请求/响应结构）；图谱 JSON 加载增加容错（损坏时从 .bak 恢复或空图启动）。
+> 2026-08-04：超时放宽（本地模型宽容）：LLM_TIMEOUT 默认 300→666、HEALTH_CHECK_TIMEOUT 60→120；`GET /agent/logs` 新增 `full=true` 参数返回完整 input/output/error（前端折叠查看）。
 
 ---
 

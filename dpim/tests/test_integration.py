@@ -396,6 +396,19 @@ class TestAgentLogsEndpoint:
         assert logs and logs[0]["role"] == "cr"
         clear_llm_logs()
 
+    def test_agent_logs_endpoint_full(self, test_app):
+        from core.llm import clear_llm_logs, log_llm_call
+
+        clear_llm_logs()
+        log_llm_call("cr", "m", "入" * 3000, "出" * 3000)
+        resp = test_app.get("/agent/logs?full=true")
+        assert resp.status_code == 200
+        logs = resp.json()["logs"]
+        assert len(logs[0]["input"]) == 3000
+        assert len(logs[0]["output"]) == 3000
+        assert "input_preview" not in logs[0]
+        clear_llm_logs()
+
     def test_agent_compensate_requires_orchestrator(self, test_app):
         """测试夹具中 orchestrator 未启动 → 503；生产环境 orchestrator 存在则触发。"""
         resp = test_app.post("/agent/compensate")

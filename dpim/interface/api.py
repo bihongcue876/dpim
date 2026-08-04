@@ -448,9 +448,12 @@ async def health():
 
 
 @app.get("/agent/logs")
-async def agent_logs(limit: int = 30):
-    """返回最近 AI 调用日志（环形缓冲，新→旧），供前端观测 LLM 输入/输出。"""
-    return {"logs": get_llm_logs(limit=min(limit, 100))}
+async def agent_logs(limit: int = 30, full: bool = False):
+    """返回最近 AI 调用日志（环形缓冲，新→旧），供前端观测 LLM 输入/输出。
+
+    full=true 时返回完整 input/output/error（不做 2000 字符截断），供前端折叠查看。
+    """
+    return {"logs": get_llm_logs(limit=min(limit, 100), full=full)}
 
 
 @app.post("/agent/compensate")

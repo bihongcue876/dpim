@@ -125,8 +125,18 @@ export async function getHealth(): Promise<HealthResponse> {
   return req('/health')
 }
 
-export async function getAgentLogs(limit = 30): Promise<{ logs: Array<{ role: string; timestamp: number; model: string; input_preview: string; output: string; error: string }> }> {
-  return req(`/agent/logs?limit=${limit}`)
+export interface LLMCallLog {
+  role: string
+  timestamp: number
+  model: string
+  input_preview: string
+  input?: string
+  output: string
+  error: string
+}
+
+export async function getAgentLogs(limit = 30, full = false): Promise<{ logs: LLMCallLog[] }> {
+  return req(`/agent/logs?limit=${limit}${full ? '&full=true' : ''}`)
 }
 
 /** 手动触发补偿：把 raw/indexed 积压事件重新入队走 Agent 管线 */

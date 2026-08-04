@@ -404,6 +404,23 @@ def test_llm_logging_records_calls():
     clear_llm_logs()
 
 
+def test_llm_logs_full_returns_untruncated():
+    from core.llm import clear_llm_logs, get_llm_logs, log_llm_call
+
+    clear_llm_logs()
+    long_input = "入" * 3000
+    long_output = "出" * 3000
+    log_llm_call("cr", "m", long_input, long_output)
+    preview = get_llm_logs()
+    assert len(preview[0]["input_preview"]) == 2000
+    assert len(preview[0]["output"]) == 2000
+    full = get_llm_logs(full=True)
+    assert full[0]["input"] == long_input
+    assert full[0]["output"] == long_output
+    assert "input_preview" not in full[0]
+    clear_llm_logs()
+
+
 async def test_ingest_pipeline_retry_gr_then_pass(
     db, event_store, graph_store, enable_ai, monkeypatch
 ):

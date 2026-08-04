@@ -52,11 +52,25 @@
       <div class="it-card-title it-log-title">AI 调用日志（最近 {{ llmLogs.length }} 条）</div>
       <div v-if="llmLogs.length === 0" class="it-log-empty">暂无调用记录</div>
       <div v-for="(log, i) in llmLogs" :key="i" class="it-log-row">
-        <n-tag size="tiny" :bordered="false" :type="log.error ? 'error' : 'info'">{{ log.role }}</n-tag>
-        <span class="it-log-model mono">{{ log.model }}</span>
-        <span class="it-log-time">{{ fmtLogTime(log.timestamp) }}</span>
-        <div class="it-log-body">
+        <div class="it-log-head">
+          <n-tag size="tiny" :bordered="false" :type="log.error ? 'error' : 'info'">{{ log.role }}</n-tag>
+          <span class="it-log-model mono">{{ log.model }}</span>
+          <span class="it-log-time">{{ fmtLogTime(log.timestamp) }}</span>
+          <n-button text size="tiny" class="it-log-toggle" @click="toggleLog(i)">
+            {{ expandedLogs.has(i) ? '收起 ▲' : '展开 ▼' }}
+          </n-button>
+        </div>
+        <div v-if="expandedLogs.has(i)" class="it-log-body">
           <div v-if="log.error" class="it-log-error">✗ {{ log.error }}</div>
+          <template v-else>
+            <div class="it-log-label">输入</div>
+            <pre class="it-log-text mono">{{ log.input || '' }}</pre>
+            <div class="it-log-label">输出</div>
+            <pre class="it-log-text mono">{{ log.output }}</pre>
+          </template>
+        </div>
+        <div v-else class="it-log-body">
+          <div v-if="log.error" class="it-log-error">✗ {{ shortLog(log.error) }}</div>
           <div v-else class="it-log-out mono">{{ shortLog(log.output) }}</div>
         </div>
       </div>
@@ -84,8 +98,9 @@ interface HistoryItem {
 const STORAGE_KEY = 'dpim_ingest_history'
 const MAX_HISTORY = 10
 const POLL_INTERVAL = 5000
-// 本地模型处理慢：轮询窗口放宽到 120s（24 次），避免未完成被误标 timeout
-const MAX_POLL_ATTEMPTS = 24
+// 本地模型慢：管线单事件最多 ~8 次 LLM 调用（Cr1+In1+Gr≤3+Meta≤3），
+// 每次最长 666s，轮询窗口放宽到 90 分钟（1080 次 × 5s），避免被误标 timeout
+const MAX_POLL_ATTEMPTS = 1080
 
 const content = ref('')
 const eventType = ref('auto')
@@ -99,11 +114,19 @@ let healthTimer: number | null = null
 let pollTimer: number | null = null
 let logTimer: number | null = null
 
-const llmLogs = ref<Array<{ role: string; timestamp: number; model: string; input_preview: string; output: string; error: string }>>([])
+const llmLogs = ref<Array<{ role: string; timestamp: number; model: string; input_preview: string; input?: string; output: string; error: string }>>([])
+const expandedLogs = ref<Set<number>>(new Set())
+
+function toggleLog(i: number) {
+  const next = new Set(expandedLogs.value)
+  if (next.has(i)) next.delete(i)
+  else next.add(i)
+  expandedLogs.value = next
+}
 
 async function loadLogs() {
   try {
-    const r = await api.getAgentLogs(30)
+    const r = await api.getAgentLogs(30, true)
     llmLogs.value = r.logs
   } catch { /* 忽略 */ }
 }
@@ -303,10 +326,14 @@ onUnmounted(() => {
 .it-log-empty { font-size: 12px; color: var(--dpim-text-3, #7c8694); padding: 12px 0; text-align: center; }
 .it-log-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 2px; font-size: 12px; border-bottom: 1px dashed var(--dpim-border, rgba(255,255,255,0.07)); flex-wrap: wrap; }
 .it-log-row:last-child { border-bottom: none; }
+.it-log-head { display: flex; align-items: center; gap: 8px; width: 100%; }
 .it-log-model { color: var(--dpim-text-3, #7c8694); flex-shrink: 0; }
 .it-log-time { color: var(--dpim-text-3, #7c8694); font-size: 11px; flex-shrink: 0; }
+.it-log-toggle { margin-left: auto; flex-shrink: 0; color: var(--dpim-primary, #5b8cff); }
 .it-log-body { width: 100%; }
-.it-log-error { color: #f08080; word-break: break-all; }
+.it-log-error { color: #f08080; word-break: break-all; white-space: pre-wrap; }
 .it-log-out { color: var(--dpim-text-2, #aab4c0); word-break: break-all; white-space: pre-wrap; }
+.it-log-label { font-size: 11px; color: var(--dpim-text-3, #7c8694); margin: 6px 0 2px; letter-spacing: 0.5px; }
+.it-log-text { color: var(--dpim-text-2, #aab4c0); font-size: 11.5px; line-height: 1.55; margin: 0; padding: 6px 8px; background: rgba(0,0,0,0.22); border-radius: 6px; word-break: break-all; white-space: pre-wrap; max-height: 40vh; overflow-y: auto; }
 .mono { font-family: 'Cascadia Code', Consolas, monospace; }
 </style>

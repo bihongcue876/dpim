@@ -103,28 +103,47 @@ class LLMCallLog:
     role: str
     timestamp: float
     model: str
-    input_preview: str
+    input: str
     output: str
     error: str = ""
 
 
 _llm_logs: deque[LLMCallLog] = deque(maxlen=50)
+_LOG_PREVIEW_LEN = 2000
 
 
 def log_llm_call(role: str, model: str, user: str, output: str, error: str = "") -> None:
+    # 完整内容入缓冲；是否截断由读取侧（get_llm_logs）按需决定
     _llm_logs.appendleft(LLMCallLog(
         role=role,
         timestamp=time(),
         model=model,
-        input_preview=user[:2000],
-        output=output[:2000],
-        error=error[:2000],
+        input=user,
+        output=output,
+        error=error,
     ))
 
 
-def get_llm_logs(limit: int = 30) -> list[dict[str, Any]]:
-    """返回最近 LLM 调用日志（新→旧）。"""
-    return [log.__dict__ for log in list(_llm_logs)[:limit]]
+def get_llm_logs(limit: int = 30, full: bool = False) -> list[dict[str, Any]]:
+    """返回最近 LLM 调用日志（新→旧）。
+
+    full=False（默认）：截断为 input_preview/output/error（各 ≤2000 字符），
+    兼容旧客户端与协议；full=True：返回完整 input/output/error。
+    """
+    logs = list(_llm_logs)[:limit]
+    if full:
+        return [log.__dict__ for log in logs]
+    return [
+        {
+            "role": log.role,
+            "timestamp": log.timestamp,
+            "model": log.model,
+            "input_preview": log.input[:_LOG_PREVIEW_LEN],
+            "output": log.output[:_LOG_PREVIEW_LEN],
+            "error": log.error[:_LOG_PREVIEW_LEN],
+        }
+        for log in logs
+    ]
 
 
 def clear_llm_logs() -> None:
