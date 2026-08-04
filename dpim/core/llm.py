@@ -237,7 +237,8 @@ class LLMGateway:
     async def embed(self, texts: list[str], role: str = "cr") -> list[list[float]]:
         """文本向量化（OpenAI 兼容 /v1/embeddings，Ollama/SiliconFlow 等可用）。
 
-        使用活动 provider 的 base_url/api_key；模型取 provider 条目/全局
+        嵌入服务独立配置：embedding_base_url/api_key（全局 env 或 provider 条目），
+        未配置时跟随活动 provider 的 base_url/api_key；模型取 provider 条目/全局
         embedding_model。未配置模型或请求失败时抛异常，由调用方静默降级回退。
         返回向量列表，顺序与输入 texts 一致。
         """
@@ -245,7 +246,12 @@ class LLMGateway:
         model = conf.embedding_model or settings.embedding_model
         if not model:
             raise RuntimeError("embedding_model 未配置，语义检索不可用")
-        resp = await self.client(role).embeddings.create(model=model, input=texts)
+        embed_client = AsyncOpenAI(
+            base_url=conf.embedding_base_url or conf.base_url,
+            api_key=conf.embedding_api_key or conf.api_key,
+            timeout=conf.timeout,
+        )
+        resp = await embed_client.embeddings.create(model=model, input=texts)
         ordered = sorted(resp.data, key=lambda d: d.index)
         return [d.embedding for d in ordered]
 

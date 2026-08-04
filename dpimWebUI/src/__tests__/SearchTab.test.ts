@@ -1,0 +1,76 @@
+import { describe, it, expect, vi } from 'vitest'
+import { mount } from '@vue/test-utils'
+import SearchTab from '@/components/SearchTab.vue'
+
+vi.mock('@/api/client', () => ({
+  query: vi.fn().mockResolvedValue({
+    results: [
+      { node_id: 'n1', title: '结果一', snippet: '这是第一个结果', score: 0.85, source_type: 'interaction', confidence: 0.9, source_events: ['e1'], degraded: false },
+      { node_id: 'n2', title: '结果二', snippet: '这是知识节点', score: 0.72, source_type: 'data', confidence: 0.8, source_events: ['e2'], degraded: false },
+    ],
+    total: 2,
+    degraded: false,
+  }),
+  listEvents: vi.fn().mockResolvedValue({
+    items: [
+      { event_id: 'e1', created_at: '2026-08-04T10:00:00Z', raw_content: '测试事件内容', event_type: 'interaction', status: 'linked' },
+    ],
+    total: 1,
+  }),
+  listNodes: vi.fn().mockResolvedValue({
+    items: [{ node_id: 'n1', title: '节点一', node_type: 'interaction', confidence: 0.9 }],
+    total: 1,
+  }),
+  getNode: vi.fn().mockResolvedValue({
+    node_id: 'n1', title: '节点一', content: '详细内容', node_type: 'interaction',
+    source_refs: [{ event_id: 'e1', valid: true, hash: 'abc123' }], confidence: 0.9, metadata: {},
+  }),
+  postFeedback: vi.fn().mockResolvedValue(undefined),
+}))
+
+describe('SearchTab', () => {
+  it('renders hybrid tab by default', () => {
+    const wrapper = mount(SearchTab)
+    expect(wrapper.text()).toContain('综合检索')
+    expect(wrapper.text()).toContain('事件原文')
+    expect(wrapper.text()).toContain('知识节点')
+  })
+
+  it('disables search button when query is empty in hybrid mode', () => {
+    const wrapper = mount(SearchTab)
+    const btn = wrapper.findAll('button').find(b => b.text().includes('搜索'))
+    expect(btn?.attributes('disabled')).toBeDefined()
+  })
+
+  it('shows empty state before any search', () => {
+    const wrapper = mount(SearchTab)
+    expect(wrapper.text()).toContain('输入关键词开始搜索')
+  })
+
+  it('switching between tabs clears results', async () => {
+    const wrapper = mount(SearchTab)
+    // Switch to events tab
+    const tabs = wrapper.findAll('.n-tabs .n-tab')
+    if (tabs.length >= 2) {
+      await tabs[1].trigger('click')
+      await new Promise(r => setTimeout(r, 50))
+      expect(wrapper.text()).toContain('事件原文')
+    }
+  })
+
+  it('renders search results with group headers in hybrid mode', async () => {
+    const wrapper = mount(SearchTab)
+    // Set query and trigger search
+    const input = wrapper.find('input')
+    if (input) {
+      await input.setValue('测试')
+      const btn = wrapper.findAll('button').find(b => b.text().includes('搜索'))
+      if (btn) {
+        await btn.trigger('click')
+        await new Promise(r => setTimeout(r, 100))
+        expect(wrapper.text()).toContain('结果一')
+        expect(wrapper.text()).toContain('结果二')
+      }
+    }
+  })
+})

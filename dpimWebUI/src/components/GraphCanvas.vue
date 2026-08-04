@@ -128,15 +128,16 @@ function render() {
 
   if (simulation) simulation.stop()
 
-  // 力导向参数：保留一点弹性（平滑铺开/落定），但不过度回弹
+  // 力导向参数：低弹性 + 弱中心牵引，孤立节点不会堆叠在一起
   simulation = d3.forceSimulation<SimNode>(simNodes)
     .force('link', d3.forceLink<SimNode, SimLink>(simLinks)
       .id(d => d.id).distance(120).strength(0.25))
-    .force('charge', d3.forceManyBody().strength(-280))
-    .force('center', d3.forceCenter(w / 2, h / 2))
-    .force('collision', d3.forceCollide(d => nodeRadius(d as SimNode) + 8).strength(0.8))
-    .alphaDecay(0.045)      // 稍快冷却，缩短初始摆动时长
-    .velocityDecay(0.5)     // 更高摩擦阻尼，减少弹性震荡
+    .force('charge', d3.forceManyBody().strength(-300))
+    .force('x', d3.forceX(w / 2).strength(0.04))
+    .force('y', d3.forceY(h / 2).strength(0.04))
+    .force('collision', d3.forceCollide(d => nodeRadius(d as SimNode) + 20).strength(0.9))
+    .alphaDecay(0.06)
+    .velocityDecay(0.7)
 
   // ---- Edges with curvature ----
   // 按无向对分组（A|B 和 B|A 视为同一组），双向边自动错开弯曲

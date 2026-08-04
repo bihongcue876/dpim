@@ -130,6 +130,8 @@ export interface SettingsResponse {
   log_level: string
   embedding_model: string
   embedding_dim: number | null
+  embedding_base_url: string
+  embedding_api_key: string
 }
 
 // ── API functions ──
@@ -308,6 +310,8 @@ export async function putSettings(body: {
   log_level?: string
   embedding_model?: string
   embedding_dim?: number | null
+  embedding_base_url?: string
+  embedding_api_key?: string
 }): Promise<void> {
   await req('/settings', {
     method: 'PUT',

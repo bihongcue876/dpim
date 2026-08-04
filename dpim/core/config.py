@@ -43,6 +43,8 @@ class ProviderConfig:
     structured_mode: str | None = None
     embedding_model: str | None = None
     embedding_dim: int | None = None
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
 
 
 def _parse_bool_or_none(raw: str) -> bool | None:
@@ -105,9 +107,19 @@ class Settings:
         )
         # ── 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（超限截断）──
         self.max_raw_content = int(getenv("DPIM_MAX_RAW_CONTENT", "10000"))
-        # ── 语义检索（可选增强，空 = 禁用）：嵌入模型名 + 维度（0 = 首次响应自动检测）──
-        self.embedding_model = getenv("DPIM_EMBEDDING_MODEL", "")
-        self.embedding_dim = int(getenv("DPIM_EMBEDDING_DIM", "0")) or None
+        # ── 语义检索（可选增强，空 = 禁用）：嵌入模型名 + 维度（0 = 首次响应自动检测）
+        #    独立嵌入服务（空 = 跟随活动提供商 base_url/api_key；provider 条目可覆盖）
+        emb_cfg = cfg.get("embedding", {}) if isinstance(cfg, dict) else {}
+        self.embedding_model = getenv("DPIM_EMBEDDING_MODEL", str(emb_cfg.get("model", "")))
+        self.embedding_dim = (
+            int(getenv("DPIM_EMBEDDING_DIM", str(emb_cfg.get("dim", "0")))) or None
+        )
+        self.embedding_base_url = getenv(
+            "DPIM_EMBEDDING_BASE_URL", str(emb_cfg.get("base_url", ""))
+        )
+        self.embedding_api_key = getenv(
+            "DPIM_EMBEDDING_API_KEY", str(emb_cfg.get("api_key", ""))
+        )
         # ── 结构化输出模式：md_json（默认，兼容 llama.cpp）| json | tools ──
         self.llm_structured_mode = getenv("DPIM_LLM_STRUCTURED_MODE", "md_json")
         # ── 角色模型路由（空值 → 回退活动 provider 默认模型）──
@@ -168,6 +180,12 @@ class Settings:
             "active_provider": self.active_provider,
             "active_model": self.active_model,
             "providers": self.providers,
+            "embedding": {
+                "model": self.embedding_model,
+                "dim": self.embedding_dim,
+                "base_url": self.embedding_base_url,
+                "api_key": self.embedding_api_key,
+            },
             "agent": {
                 "mode": self.agent_mode,
                 "max_retries": self.agent_max_retries,
@@ -247,6 +265,18 @@ class Settings:
             if entry.get("embedding_dim")
             else self.embedding_dim
         )
+        # 独立嵌入服务：条目 embedding_base_url/api_key → 全局 env → 活动 provider 自身
+        # （解析后 conf.embedding_* 即最终生效值，embed() 直接使用）
+        conf.embedding_base_url = (
+            str(entry["embedding_base_url"])
+            if entry.get("embedding_base_url")
+            else (self.embedding_base_url or conf.base_url)
+        )
+        conf.embedding_api_key = (
+            str(entry["embedding_api_key"])
+            if entry.get("embedding_api_key")
+            else (self.embedding_api_key or conf.api_key)
+        )
         return conf
 
     def _resolve_model(self, name: str, entry: dict[str, Any] | None) -> str:
@@ -280,6 +310,8 @@ class Settings:
             structured_mode=conf.structured_mode,
             embedding_model=conf.embedding_model or self.embedding_model,
             embedding_dim=conf.embedding_dim or self.embedding_dim,
+            embedding_base_url=conf.embedding_base_url or self.embedding_base_url or conf.base_url,
+            embedding_api_key=conf.embedding_api_key or self.embedding_api_key or conf.api_key,
         )
 
     def embedding_enabled(self) -> bool:

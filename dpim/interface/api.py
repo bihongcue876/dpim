@@ -441,6 +441,8 @@ async def get_settings():
         log_level=settings.log_level,
         embedding_model=settings.embedding_model,
         embedding_dim=settings.embedding_dim,
+        embedding_base_url=settings.embedding_base_url,
+        embedding_api_key=settings.embedding_api_key,
     )
 
 

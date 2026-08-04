@@ -41,7 +41,7 @@ function fmtTime(iso: string): string {
 function icon(status: string): string {
   return {
     linked: '✅', indexed: '⏳', processing: '⟳',
-    failed: '❌', skipped: '⊘', timeout: '⚠',
+    failed: '❌', skipped: '⊘', timeout: '⚠', removed: '🗑',
   }[status] ?? '•'
 }
 
@@ -49,14 +49,14 @@ function label(h: HistoryItem): string {
   if (h.status === 'linked') return `已关联 (${h.node_count ?? 0}节点)`
   return {
     indexed: '已索引', processing: '处理中...', failed: '处理失败',
-    skipped: '已跳过', timeout: '处理超时',
+    skipped: '已跳过', timeout: '处理超时', removed: '事件已删除',
   }[h.status] ?? h.status
 }
 
 function tagType(status: string): 'success' | 'info' | 'warning' | 'error' | 'default' {
   return {
     linked: 'success', indexed: 'info', processing: 'warning',
-    failed: 'error', skipped: 'default', timeout: 'warning',
+    failed: 'error', skipped: 'default', timeout: 'warning', removed: 'default',
   }[status] as 'success' | 'info' | 'warning' | 'error' | 'default'
 }
 </script>

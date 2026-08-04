@@ -109,6 +109,74 @@ def test_embedding_provider_entry_override(monkeypatch):
     assert s2.provider_config().embedding_model == "global-model"
 
 
+def test_embedding_service_env_override(monkeypatch):
+    """独立嵌入服务：全局 env 配置生效并注入 ProviderConfig"""
+    monkeypatch.setenv("DPIM_EMBEDDING_MODEL", "BAAI/bge-m3")
+    monkeypatch.setenv("DPIM_EMBEDDING_BASE_URL", "https://api.embed.example/v1")
+    monkeypatch.setenv("DPIM_EMBEDDING_API_KEY", "emb-key")
+    s = Settings()
+    assert s.embedding_base_url == "https://api.embed.example/v1"
+    assert s.embedding_api_key == "emb-key"
+    conf = s.provider_config()
+    assert conf.embedding_base_url == "https://api.embed.example/v1"
+    assert conf.embedding_api_key == "emb-key"
+
+
+def test_embedding_service_fallback_to_active_provider(monkeypatch):
+    """未配独立嵌入服务 → 跟随活动提供商 base_url/api_key"""
+    monkeypatch.setenv("DPIM_EMBEDDING_MODEL", "m")
+    monkeypatch.setenv(
+        "DPIM_PROVIDERS",
+        '{"p1": {"base_url": "http://x/v1", "api_key": "k", "models": ["m1"]}}',
+    )
+    monkeypatch.setenv("DPIM_ACTIVE_PROVIDER", "p1")
+    s = Settings()
+    conf = s.provider_config()
+    assert conf.embedding_base_url == "http://x/v1"
+    assert conf.embedding_api_key == "k"
+
+
+def test_embedding_service_entry_override(monkeypatch):
+    """provider 条目级覆盖独立嵌入服务（未覆盖回退全局）"""
+    monkeypatch.setenv("DPIM_EMBEDDING_MODEL", "g")
+    monkeypatch.setenv("DPIM_EMBEDDING_BASE_URL", "https://global/v1")
+    monkeypatch.setenv(
+        "DPIM_PROVIDERS",
+        '{"p1": {"base_url": "http://x/v1", "api_key": "k", "models": ["m1"],'
+        ' "embedding_model": "entry", "embedding_base_url": "https://entry/v1",'
+        ' "embedding_api_key": "ek"}}',
+    )
+    monkeypatch.setenv("DPIM_ACTIVE_PROVIDER", "p1")
+    s = Settings()
+    conf = s.provider_config()
+    assert conf.embedding_base_url == "https://entry/v1"
+    assert conf.embedding_api_key == "ek"
+    monkeypatch.setenv("DPIM_ACTIVE_PROVIDER", "primary")
+    s2 = Settings()
+    conf2 = s2.provider_config()
+    assert conf2.embedding_base_url == "https://global/v1"  # 回退全局
+
+
+def test_embedding_persist_dpim_config(monkeypatch, tmp_path):
+    """嵌入配置随 dpim.json 持久化（前端配置重启保留）"""
+    monkeypatch.setenv("DPIM_CONFIG_FILE", str(tmp_path / "dpim.json"))
+    monkeypatch.setenv("DPIM_EMBEDDING_MODEL", "bge")
+    monkeypatch.setenv("DPIM_EMBEDDING_DIM", "1024")
+    monkeypatch.setenv("DPIM_EMBEDDING_BASE_URL", "https://e/v1")
+    monkeypatch.setenv("DPIM_EMBEDDING_API_KEY", "ek")
+    s = Settings()
+    s.save_dpim_config()
+    monkeypatch.delenv("DPIM_EMBEDDING_MODEL")
+    monkeypatch.delenv("DPIM_EMBEDDING_DIM")
+    monkeypatch.delenv("DPIM_EMBEDDING_BASE_URL")
+    monkeypatch.delenv("DPIM_EMBEDDING_API_KEY")
+    s2 = Settings()
+    assert s2.embedding_model == "bge"
+    assert s2.embedding_dim == 1024
+    assert s2.embedding_base_url == "https://e/v1"
+    assert s2.embedding_api_key == "ek"
+
+
 def test_vendor_env_override(monkeypatch):
     monkeypatch.setenv("DPIM_LLM_MAX_TOKENS", "4096")
     monkeypatch.setenv("DPIM_LLM_ENABLE_THINKING", "true")

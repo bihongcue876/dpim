@@ -7,12 +7,15 @@
           <span class="section-count">{{ sec.fields.length }}</span>
         </header>
         <div class="section-body">
-          <div v-for="field in sec.fields" :key="field.key" class="config-row">
+          <div v-for="field in sec.fields" :key="field.key" class="config-row" :class="{ 'config-row-info': field.readonly }">
             <span class="cf-name">{{ field.label }}</span>
-            <span class="cf-current" :title="currentTitle(field)">{{ currentText(field) }}</span>
+            <span v-if="!field.readonly" class="cf-current" :title="currentTitle(field)">{{ currentText(field) }}</span>
             <div class="cf-edit">
               <template v-if="field.key === 'backend_url'">
                 <n-input v-model:value="backendUrl" size="small" placeholder="http://localhost:8000" />
+              </template>
+              <template v-else-if="field.readonly">
+                <span class="cf-info">{{ infoText(field.key) }}</span>
               </template>
               <template v-else-if="field.type === 'text'">
                 <n-input v-model:value="edits[field.key]" size="small" :placeholder="String(orig(field.key) ?? '')" />
@@ -20,7 +23,7 @@
               <n-input v-else-if="field.type === 'password'" v-model:value="edits[field.key]" type="password" size="small" placeholder="••••••" />
               <n-input-number v-else-if="field.type === 'number'" v-model:value="edits[field.key]" size="small" style="width:100%" :min="field.min ?? 0" :max="field.max ?? 9999" />
               <n-select v-else-if="field.type === 'select'" v-model:value="edits[field.key]" :options="field.options" size="small" />
-              <n-input v-else-if="field.type === 'json'" v-model:value="edits[field.key]" type="textarea" :rows="5" size="small" placeholder='{"provider名": {"base_url": "...", "api_key": "...", "models": ["模型1", "模型2"], "timeout": 120}}' style="font-family: Consolas, monospace" />
+              <n-input v-else-if="field.type === 'json'" v-model:value="edits[field.key]" type="textarea" :rows="5" size="small" placeholder='{"provider名": {"base_url": "...", "api_key": "...", "models": ["模型1", "模型2"], "embedding_model": "嵌入模型（可选）", "embedding_dim": 1024, "timeout": 120}}' style="font-family: Consolas, monospace" />
             </div>
           </div>
         </div>
@@ -57,6 +60,7 @@ const original = ref<SettingsResponse>({
   max_graph_hops: 2, rrf_k: 60,
   jaccard_threshold: 0.85, health_check_interval: 60, health_check_timeout: 60, compensate_batch_size: 20, log_level: 'INFO',
   embedding_model: '', embedding_dim: null,
+  embedding_base_url: '', embedding_api_key: '',
 })
 const edits = reactive<Record<string, any>>({})
 
@@ -96,6 +100,7 @@ interface ConfigField {
   min?: number
   max?: number
   placeholder?: string
+  readonly?: boolean
   options?: Array<{ label: string; value: string }>
 }
 
@@ -139,12 +144,58 @@ watch(
   },
 )
 
+/** 语义检索生效值解析：provider 条目级覆盖 → 全局 → 活动提供商（与后端 config.py 一致） */
+const embeddingEffective = computed(() => {
+  const provider = String(edits['active_provider'] ?? original.value.active_provider ?? 'primary')
+  let model = String(original.value.embedding_model ?? '')
+  let dim: number | null = original.value.embedding_dim ?? null
+  let baseUrl = String(original.value.embedding_base_url ?? '')
+  let apiKey = String(original.value.embedding_api_key ?? '')
+  let providerBaseUrl = String(original.value.llm_base_url ?? '')
+  if (provider !== 'primary') {
+    let parsed: Record<string, any> | null = null
+    try { parsed = JSON.parse(String(edits['providers'] ?? '{}')) } catch { parsed = null }
+    const entry = parsed && parsed[provider]
+    if (entry) {
+      if (entry.embedding_model) model = String(entry.embedding_model)
+      if (entry.embedding_dim) dim = Number(entry.embedding_dim) || null
+      if (entry.embedding_base_url) baseUrl = String(entry.embedding_base_url)
+      if (entry.embedding_api_key) apiKey = String(entry.embedding_api_key)
+      if (entry.base_url) providerBaseUrl = String(entry.base_url)
+    }
+  }
+  if (!baseUrl) baseUrl = providerBaseUrl
+  return { provider, model, dim, baseUrl, apiKey }
+})
+
+function infoText(key: string): string {
+  if (key === 'embedding_hint') {
+    const e = embeddingEffective.value
+    const where = e.baseUrl ? `${e.baseUrl}` : e.provider
+    const endpoint = e.apiKey ? `（已配置 Key）` : `（跟随提供商 Key）`
+    return `嵌入服务：${where}${endpoint}；填写「嵌入模型」即启用语义检索，模型/地址/Key 均可在提供商注册表内按条目覆盖`
+  }
+  if (key === 'embedding_effective') {
+    const e = embeddingEffective.value
+    if (!e.model) return '未启用（嵌入模型为空）'
+    const dim = e.dim ? `维度 ${e.dim}` : '维度自动检测'
+    return `启用中：${e.model}（${dim}，服务 ${e.baseUrl || e.provider}）`
+  }
+  return ''
+}
+
 const fields = computed<ConfigField[]>(() => [
   { key: 'memory_db_path', label: '记忆库路径', type: 'text', section: '存储' },
   { key: 'graph_json_path', label: '图谱文件路径', type: 'text', section: '存储' },
   { key: 'providers', label: '提供商注册表(JSON)', type: 'json', section: '模型与提供商' },
   { key: 'active_provider', label: '活动提供商', type: 'select', options: providerOptions.value, section: '模型与提供商' },
   { key: 'active_model', label: '使用模型', type: 'select', options: modelOptions.value, section: '模型与提供商' },
+  { key: 'embedding_hint', label: '嵌入服务', type: 'text', readonly: true, section: '模型与提供商' },
+  { key: 'embedding_effective', label: '语义检索状态', type: 'text', readonly: true, section: '模型与提供商' },
+  { key: 'embedding_model', label: '嵌入模型（空=禁用语义检索）', type: 'text', section: '模型与提供商', placeholder: '如 BAAI/bge-m3 或 ollama 的嵌入模型名' },
+  { key: 'embedding_dim', label: '嵌入维度（0=自动检测）', type: 'number', min: 0, max: 4096, section: '模型与提供商' },
+  { key: 'embedding_base_url', label: '嵌入 API 地址（空=跟随活动提供商）', type: 'text', section: '模型与提供商', placeholder: '如 https://api.siliconflow.cn/v1' },
+  { key: 'embedding_api_key', label: '嵌入 API Key（空=跟随活动提供商）', type: 'password', section: '模型与提供商' },
   { key: 'llm_max_tokens', label: '输出上限 tokens（0=服务端默认）', type: 'number', min: 0, max: 32768, section: '模型与提供商' },
   { key: 'llm_thinking_budget', label: '思考预算 tokens（0=不设）', type: 'number', min: 0, max: 32768, section: '模型与提供商' },
   { key: 'agent_mode', label: 'Agent 管线模式', type: 'select', section: 'Agent 管线', options: [
@@ -159,8 +210,6 @@ const fields = computed<ConfigField[]>(() => [
   { key: 'max_graph_hops', label: '图谱最大跳数', type: 'number', min: 1, max: 5, section: '检索' },
   { key: 'rrf_k', label: 'RRF 参数 K', type: 'number', min: 1, max: 200, section: '检索' },
   { key: 'jaccard_threshold', label: '杰卡德阈值', type: 'number', min: 0, max: 1, section: '检索' },
-  { key: 'embedding_model', label: '嵌入模型（空=禁用语义检索）', type: 'text', section: '语义检索', placeholder: '如 BAAI/bge-m3 或 ollama 的嵌入模型名' },
-  { key: 'embedding_dim', label: '嵌入维度（0=自动检测）', type: 'number', min: 0, max: 4096, section: '语义检索' },
   { key: 'health_check_interval', label: '健康检查间隔（秒）', type: 'number', min: 10, max: 600, section: '系统' },
   { key: 'health_check_timeout', label: '健康检查超时（秒）', type: 'number', min: 10, max: 600, section: '系统' },
   { key: 'compensate_batch_size', label: '补偿批处理大小', type: 'number', min: 5, max: 100, section: '系统' },
@@ -173,7 +222,7 @@ const fields = computed<ConfigField[]>(() => [
 
 // 按板块分组渲染，保持固定顺序
 const sections = computed(() => {
-  const order = ['存储', '模型与提供商', 'Agent 管线', '检索', '语义检索', '系统', '前端']
+  const order = ['存储', '模型与提供商', 'Agent 管线', '检索', '系统', '前端']
   const groups: Record<string, ConfigField[]> = {}
   for (const f of fields.value) {
     const s = f.section ?? '其他'
@@ -195,6 +244,7 @@ async function load() {
   // 初次加载 / 提交成功后：刷新基准并初始化编辑框
   await refreshOriginal()
   for (const f of fields.value) {
+    if (f.readonly) continue
     if (f.key === 'backend_url') continue
     if (f.type === 'json') {
       edits[f.key] = JSON.stringify(original.value[f.key as keyof SettingsResponse] ?? {}, null, 2)
@@ -223,6 +273,7 @@ async function onSubmit() {
   try {
     const changed: Record<string, any> = {}
     for (const f of fields.value) {
+      if (f.readonly) continue
       if (f.key === 'backend_url') {
         // 前端本地配置，不提交到后端 API
         const newUrl = backendUrl.value.trim()
@@ -294,6 +345,8 @@ async function onSubmit() {
   font-size: 13px;
 }
 .config-row:last-child { border-bottom: none; }
+.config-row-info { border-bottom-color: transparent; }
+.cf-info { font-size: 12px; color: var(--dpim-text-3, #7c8694); line-height: 1.6; padding: 2px 0; }
 .cf-name { flex: 0 0 200px; color: var(--dpim-text-2, #aab4c0); }
 .cf-current {
   flex: 0 1 300px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
