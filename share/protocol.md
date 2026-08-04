@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.6
+> 版本：1.7
 > 日期：2026-08-04
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 清理遗留空 stub
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 语义检索（embedding 三路融合）
 
 ---
 
@@ -281,9 +281,12 @@ raw → indexed → linked
 **流程**：
 
 1. 关键词召回：events_fts 和 node_fts 同时 FTS5 匹配，各取 top-100，合并去重得 C1
-2. 图扩散：以 C1 为种子，2 跳扩散，得分 = 1/(hop+1)，取 top-200 得 C2
-3. RRF 融合：`Σ 1/(60 + rank_i)`，交互类乘以时间衰减 `1/(1+days×0.05)`
-4. 降级模式：仅执行步骤 1
+2. 向量召回（可选增强）：配置 `EMBEDDING_MODEL` 后启用，查询文本嵌入后与事件/节点向量做余弦 top-100，得 C3（嵌入不可用/未配置 → 跳过，行为与两路一致）
+3. 图扩散：以 C1 为种子，2 跳扩散，得分 = 1/(hop+1)，取 top-200 得 C2
+4. RRF 融合：`Σ 1/(60 + rank_i)`（三路时叠加 C3 项），交互类乘以时间衰减 `1/(1+days×0.05)`
+5. 降级模式：仅执行步骤 1
+
+**向量存储**：`event_embeddings` / `node_embeddings` 表（SQLite），float32 BLOB + 余弦相似度，纯标准库实现（无向量数据库依赖）。嵌入在管线写入成功（linked）后生成，失败静默回退不影响事件状态。
 
 **检索结果**：
 
@@ -502,6 +505,8 @@ content
 | **ACTIVE_MODEL** | (空) | 使用中的模型（活动 provider 模型列表内；空 → provider 首个/默认） |
 | **LLM_STRUCTURED_MODE** | md_json | 结构化输出模式：md_json（默认，兼容 llama.cpp）\| json \| tools |
 | **MAX_RAW_CONTENT** | 10000 | 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（超限截断） |
+| **EMBEDDING_MODEL** | (空) | 语义检索嵌入模型名（OpenAI 兼容 /v1/embeddings；空 = 禁用向量路） |
+| **EMBEDDING_DIM** | (空) | 嵌入维度（0/空 = 首次响应自动检测） |
 | **AGENT_CR_MODEL** | (空) | Cr 角色模型覆盖（空 → 回退活动 provider） |
 | **AGENT_IN_MODEL** | (空) | In 角色模型覆盖 |
 | **AGENT_GR_MODEL** | (空) | Gr 角色模型覆盖 |
@@ -519,6 +524,7 @@ content
 > 2026-08-03：厂商适配（LLM_MAX_TOKENS / LLM_ENABLE_THINKING / LLM_THINKING_BUDGET + provider 条目 thinking_style/extra_body/structured_mode）；provider 条目字段可在前端「提供商注册表(JSON)」编辑。
 > 2026-08-04：规约升级至 v1.6。补全 API 端点清单至 22 个（新增 POST /nodes、DELETE /graph、GET /agent/logs、POST /agent/compensate 的说明与请求/响应结构）；图谱 JSON 加载增加容错（损坏时从 .bak 恢复或空图启动）。
 > 2026-08-04：超时放宽（本地模型宽容）：LLM_TIMEOUT 默认 300→666、HEALTH_CHECK_TIMEOUT 60→120；`GET /agent/logs` 新增 `full=true` 参数返回完整 input/output/error（前端折叠查看）。
+> 2026-08-04：规约升级至 v1.7。新增语义检索（embedding）：EMBEDDING_MODEL / EMBEDDING_DIM 配置项 + provider 条目级覆盖；检索三路 RRF（FTS5 + 向量 + 图扩散）；向量表 event_embeddings / node_embeddings；`SettingsResponse/UpdateRequest` 新增 embedding_model / embedding_dim 字段。
 
 ---
 

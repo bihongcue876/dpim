@@ -101,6 +101,19 @@ def _stores():
     return event_store, graph_store
 
 
+async def _clear_embedding(es: EventStore, kind: str, key: str) -> None:
+    """删除向量（静默失败，不影响主流程）。"""
+    try:
+        from core.embeddings import EmbeddingStore
+        estore = EmbeddingStore(es.db)
+        if kind == "event":
+            await estore.delete_event(key)
+        else:
+            await estore.delete_node(key)
+    except Exception:
+        pass
+
+
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(body: IngestRequest):
     es, gs = _stores()
@@ -130,6 +143,7 @@ async def delete_event(event_id: str):
             detail=f"Cannot delete event: node {result['node_id']} ({result['node_type']})"
                    " would lose all source references",
         )
+    await _clear_embedding(es, "event", event_id)
     refresh_key()
     return _ok(message="Event deleted")
 
@@ -150,6 +164,7 @@ async def delete_node(node_id: str, body: DeleteNodeRequest = DeleteNodeRequest(
     await gs.delete_node_fts(node_id)
     if gs.dirty:
         await gs.save()
+    await _clear_embedding(es, "node", node_id)
     refresh_key()
     return _ok(message="Node deleted")
 
@@ -283,6 +298,11 @@ async def clear_graph():
     es, gs = _stores()
     gs.clear_all()
     await gs.flush()
+    try:
+        from core.embeddings import EmbeddingStore
+        await EmbeddingStore(es.db).clear_all()
+    except Exception:
+        pass
     refresh_key()
     return _ok(message="Graph cleared")
 
@@ -419,6 +439,8 @@ async def get_settings():
         health_check_timeout=settings.health_check_timeout,
         compensate_batch_size=settings.compensate_batch_size,
         log_level=settings.log_level,
+        embedding_model=settings.embedding_model,
+        embedding_dim=settings.embedding_dim,
     )
 
 

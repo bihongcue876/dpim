@@ -72,6 +72,43 @@ def test_vendor_defaults(monkeypatch):
     assert s.llm_thinking_budget is None
 
 
+def test_embedding_defaults_disabled(monkeypatch):
+    """默认 embedding_model 为空 → 语义检索禁用"""
+    monkeypatch.delenv("DPIM_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("DPIM_EMBEDDING_DIM", raising=False)
+    s = Settings()
+    assert s.embedding_model == ""
+    assert s.embedding_dim is None
+    assert s.embedding_enabled() is False
+
+
+def test_embedding_env_override(monkeypatch):
+    monkeypatch.setenv("DPIM_EMBEDDING_MODEL", "BAAI/bge-m3")
+    monkeypatch.setenv("DPIM_EMBEDDING_DIM", "1024")
+    s = Settings()
+    assert s.embedding_model == "BAAI/bge-m3"
+    assert s.embedding_dim == 1024
+    assert s.embedding_enabled() is True
+
+
+def test_embedding_provider_entry_override(monkeypatch):
+    """provider 条目级 embedding 配置覆盖全局（未配则回退全局）"""
+    monkeypatch.setenv("DPIM_EMBEDDING_MODEL", "global-model")
+    monkeypatch.setenv(
+        "DPIM_PROVIDERS",
+        '{"p1": {"base_url": "http://x/v1", "api_key": "k", "models": ["m1"],'
+        ' "embedding_model": "entry-model", "embedding_dim": 768}}',
+    )
+    monkeypatch.setenv("DPIM_ACTIVE_PROVIDER", "p1")
+    s = Settings()
+    conf = s.provider_config()
+    assert conf.embedding_model == "entry-model"
+    assert conf.embedding_dim == 768
+    monkeypatch.setenv("DPIM_ACTIVE_PROVIDER", "primary")
+    s2 = Settings()
+    assert s2.provider_config().embedding_model == "global-model"
+
+
 def test_vendor_env_override(monkeypatch):
     monkeypatch.setenv("DPIM_LLM_MAX_TOKENS", "4096")
     monkeypatch.setenv("DPIM_LLM_ENABLE_THINKING", "true")

@@ -240,12 +240,15 @@ class GraphStore:
         await self.db.conn.commit()
 
     async def search_node_fts(self, query: str, limit: int = 100) -> list[dict]:
-        cursor = await self.db.conn.execute(
-            "SELECT node_id,title,content,rank FROM node_fts"
-            " WHERE node_fts MATCH ? ORDER BY rank LIMIT ?",
-            (query, limit),
-        )
-        rows = await cursor.fetchall()
+        try:
+            cursor = await self.db.conn.execute(
+                "SELECT node_id,title,content,rank FROM node_fts"
+                " WHERE node_fts MATCH ? ORDER BY rank LIMIT ?",
+                (query, limit),
+            )
+            rows = await cursor.fetchall()
+        except Exception:
+            rows = []  # MATCH 语法错误（如含 - : " 等）→ 降级 LIKE
         if rows:
             return [dict(r) for r in rows]
         # FTS5 不命中（如中文），遍历内存图数据做 LIKE 匹配，按标题/内容位置计分排序

@@ -41,6 +41,8 @@ class ProviderConfig:
     thinking_style: str = "auto"
     extra_body: dict | None = None
     structured_mode: str | None = None
+    embedding_model: str | None = None
+    embedding_dim: int | None = None
 
 
 def _parse_bool_or_none(raw: str) -> bool | None:
@@ -103,6 +105,9 @@ class Settings:
         )
         # ── 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（超限截断）──
         self.max_raw_content = int(getenv("DPIM_MAX_RAW_CONTENT", "10000"))
+        # ── 语义检索（可选增强，空 = 禁用）：嵌入模型名 + 维度（0 = 首次响应自动检测）──
+        self.embedding_model = getenv("DPIM_EMBEDDING_MODEL", "")
+        self.embedding_dim = int(getenv("DPIM_EMBEDDING_DIM", "0")) or None
         # ── 结构化输出模式：md_json（默认，兼容 llama.cpp）| json | tools ──
         self.llm_structured_mode = getenv("DPIM_LLM_STRUCTURED_MODE", "md_json")
         # ── 角色模型路由（空值 → 回退活动 provider 默认模型）──
@@ -231,6 +236,17 @@ class Settings:
         conf.structured_mode = (
             str(entry["structured_mode"]) if entry.get("structured_mode") else None
         )
+        # 语义检索：provider 条目可覆盖全局 embedding 配置（空 → 回退全局）
+        conf.embedding_model = (
+            str(entry["embedding_model"])
+            if entry.get("embedding_model")
+            else (self.embedding_model or None)
+        )
+        conf.embedding_dim = (
+            int(entry["embedding_dim"])
+            if entry.get("embedding_dim")
+            else self.embedding_dim
+        )
         return conf
 
     def _resolve_model(self, name: str, entry: dict[str, Any] | None) -> str:
@@ -262,7 +278,13 @@ class Settings:
             thinking_style=conf.thinking_style,
             extra_body=conf.extra_body,
             structured_mode=conf.structured_mode,
+            embedding_model=conf.embedding_model or self.embedding_model,
+            embedding_dim=conf.embedding_dim or self.embedding_dim,
         )
+
+    def embedding_enabled(self) -> bool:
+        """语义检索可用性：配置了嵌入模型名即视为启用（连接失败由调用方回退）。"""
+        return bool(self.embedding_model)
 
     def available_models(self) -> list[str]:
         """活动 provider 的可用模型列表（供前端「使用」选择）。"""

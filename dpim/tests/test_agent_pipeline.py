@@ -697,3 +697,96 @@ def test_prompt_loader_missing_role_returns_skeleton(tmp_path):
     loader = PromptLoader(prompts_dir=tmp_path)
     content = loader.load("cr")
     assert "骨架" in content
+
+# ── 语义检索 sidecar（嵌入生成）──
+
+
+async def test_ingest_pipeline_embed_sidecar(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """管线成功 → 自动生成事件/节点嵌入并入库"""
+    from core.config import settings
+    from core.embeddings import EmbeddingStore
+
+    monkeypatch.setattr(settings, "embedding_model", "test-model")
+    embed_calls: list[list[str]] = []
+
+    async def fake_embed(texts, role="cr"):
+        embed_calls.append(texts)
+        return [[1.0, 0.0, 0.0] for _ in texts]
+    monkeypatch.setattr(core.llm.gateway, "embed", fake_embed)
+
+    raw = "用户询问了Python异步编程的实现方式"
+    fake = FakeLLM(
+        chunks=make_chunks(raw),
+        proposal=make_proposal(),
+        verdict=make_verdict(pass_=True),
+    )
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    eid, _ = await event_store.insert_event(raw, "interaction")
+    await orch._handle_ingest_pipeline(eid)
+
+    event = await event_store.get(eid)
+    assert event["status"] == "linked"
+    # 嵌入被调用：事件 + 1 个节点
+    assert len(embed_calls) == 1
+    assert len(embed_calls[0]) == 2
+    estore = EmbeddingStore(db)
+    event_hits = await estore.search_event([1.0, 0.0, 0.0])
+    node_hits = await estore.search_node([1.0, 0.0, 0.0])
+    assert any(k == eid for k, _ in event_hits)
+    assert len(node_hits) == 1
+
+
+async def test_ingest_pipeline_embed_failure_silent(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """嵌入失败 → 静默回退，事件仍为 linked（不判失败）"""
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "embedding_model", "test-model")
+
+    async def boom_embed(texts, role="cr"):
+        raise RuntimeError("embedding service down")
+    monkeypatch.setattr(core.llm.gateway, "embed", boom_embed)
+
+    raw = "用户询问了Python异步编程的实现方式"
+    fake = FakeLLM(
+        chunks=make_chunks(raw),
+        proposal=make_proposal(),
+        verdict=make_verdict(pass_=True),
+    )
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    eid, _ = await event_store.insert_event(raw, "interaction")
+    await orch._handle_ingest_pipeline(eid)
+    event = await event_store.get(eid)
+    assert event["status"] == "linked"
+
+
+async def test_ingest_pipeline_embed_disabled_skipped(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """未配置 embedding_model → 不调用嵌入接口"""
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "embedding_model", "")
+    embed_calls: list[str] = []
+
+    async def fake_embed(texts, role="cr"):
+        embed_calls.append("x")
+        return []
+    monkeypatch.setattr(core.llm.gateway, "embed", fake_embed)
+
+    raw = "用户询问了Python异步编程的实现方式"
+    fake = FakeLLM(
+        chunks=make_chunks(raw),
+        proposal=make_proposal(),
+        verdict=make_verdict(pass_=True),
+    )
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    eid, _ = await event_store.insert_event(raw, "interaction")
+    await orch._handle_ingest_pipeline(eid)
+    assert embed_calls == []
