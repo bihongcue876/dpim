@@ -60,3 +60,44 @@ def test_provider_registry_primary_override(monkeypatch):
     s = Settings()
     assert s.provider_config().base_url == "http://localhost:6000/v1"
     assert s.role_model("cr") == "m"
+
+
+def test_vendor_defaults(monkeypatch):
+    monkeypatch.delenv("DPIM_LLM_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("DPIM_LLM_ENABLE_THINKING", raising=False)
+    monkeypatch.delenv("DPIM_LLM_THINKING_BUDGET", raising=False)
+    s = Settings()
+    assert s.llm_max_tokens is None
+    assert s.llm_enable_thinking is None
+    assert s.llm_thinking_budget is None
+
+
+def test_vendor_env_override(monkeypatch):
+    monkeypatch.setenv("DPIM_LLM_MAX_TOKENS", "4096")
+    monkeypatch.setenv("DPIM_LLM_ENABLE_THINKING", "true")
+    monkeypatch.setenv("DPIM_LLM_THINKING_BUDGET", "2048")
+    s = Settings()
+    assert s.llm_max_tokens == 4096
+    assert s.llm_enable_thinking is True
+    assert s.llm_thinking_budget == 2048
+
+
+def test_provider_entry_vendor_fields(monkeypatch):
+    monkeypatch.setenv(
+        "DPIM_PROVIDERS",
+        '{"sf": {"base_url": "https://api.siliconflow.cn/v1", "api_key": "k",'
+        ' "models": ["m1"], "max_tokens": 8192, "enable_thinking": false,'
+        ' "thinking_budget": 1024, "thinking_style": "top_level",'
+        ' "extra_body": {"reasoning_effort": "high"}, "structured_mode": "tools"}}',
+    )
+    monkeypatch.setenv("DPIM_ACTIVE_PROVIDER", "sf")
+    s = Settings()
+    conf = s.provider_config()
+    assert conf.max_tokens == 8192
+    assert conf.enable_thinking is False
+    assert conf.thinking_budget == 1024
+    assert conf.thinking_style == "top_level"
+    assert conf.extra_body == {"reasoning_effort": "high"}
+    assert conf.structured_mode == "tools"
+    assert conf.timeout == s.llm_timeout  # 未显式声明 timeout → 回退全局
+    assert s.role_provider("cr").max_tokens == 8192  # 角色透传厂商参数
