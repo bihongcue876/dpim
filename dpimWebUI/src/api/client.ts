@@ -128,6 +128,8 @@ export interface SettingsResponse {
   health_check_timeout: number
   compensate_batch_size: number
   log_level: string
+  embedding_model: string
+  embedding_dim: number | null
 }
 
 // ── API functions ──
@@ -304,6 +306,8 @@ export async function putSettings(body: {
   health_check_timeout?: number
   compensate_batch_size?: number
   log_level?: string
+  embedding_model?: string
+  embedding_dim?: number | null
 }): Promise<void> {
   await req('/settings', {
     method: 'PUT',

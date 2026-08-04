@@ -94,6 +94,7 @@ interface ConfigField {
   section?: string
   min?: number
   max?: number
+  placeholder?: string
   options?: Array<{ label: string; value: string }>
 }
 
@@ -157,6 +158,8 @@ const fields = computed<ConfigField[]>(() => [
   { key: 'max_graph_hops', label: '图谱最大跳数', type: 'number', min: 1, max: 5, section: '检索' },
   { key: 'rrf_k', label: 'RRF 参数 K', type: 'number', min: 1, max: 200, section: '检索' },
   { key: 'jaccard_threshold', label: '杰卡德阈值', type: 'number', min: 0, max: 1, section: '检索' },
+  { key: 'embedding_model', label: '嵌入模型（空=禁用语义检索）', type: 'text', section: '语义检索', placeholder: '如 BAAI/bge-m3 或 ollama 的嵌入模型名' },
+  { key: 'embedding_dim', label: '嵌入维度（0=自动检测）', type: 'number', min: 0, max: 4096, section: '语义检索' },
   { key: 'health_check_interval', label: '健康检查间隔（秒）', type: 'number', min: 10, max: 600, section: '系统' },
   { key: 'health_check_timeout', label: '健康检查超时（秒）', type: 'number', min: 10, max: 600, section: '系统' },
   { key: 'compensate_batch_size', label: '补偿批处理大小', type: 'number', min: 5, max: 100, section: '系统' },
@@ -169,7 +172,7 @@ const fields = computed<ConfigField[]>(() => [
 
 // 按板块分组渲染，保持固定顺序
 const sections = computed(() => {
-  const order = ['存储', '模型与提供商', 'Agent 管线', '检索', '系统', '前端']
+  const order = ['存储', '模型与提供商', 'Agent 管线', '检索', '语义检索', '系统', '前端']
   const groups: Record<string, ConfigField[]> = {}
   for (const f of fields.value) {
     const s = f.section ?? '其他'
