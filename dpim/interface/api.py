@@ -3,6 +3,7 @@
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
@@ -42,6 +43,18 @@ from core.search import search as hybrid_search
 from core.state import ai_state, get_key, refresh_key
 
 logger = logging.getLogger(__name__)
+
+# 事件状态转换白名单：raw→linked 等绕过管线的转换一律拒绝
+ALLOWED_EVENT_TRANSITIONS = {
+    ("raw", "indexed"),
+    ("indexed", "linked"),
+    ("indexed", "failed"),
+    ("indexed", "skipped"),
+    ("failed", "indexed"),
+    ("failed", "skipped"),
+    ("skipped", "indexed"),
+    ("skipped", "failed"),
+}
 
 
 def _ok(**extra: str) -> dict[str, str]:
@@ -135,6 +148,8 @@ async def delete_node(node_id: str, body: DeleteNodeRequest = DeleteNodeRequest(
         )
     gs.remove_node(node_id)
     await gs.delete_node_fts(node_id)
+    if gs.dirty:
+        await gs.save()
     refresh_key()
     return _ok(message="Node deleted")
 
@@ -163,11 +178,9 @@ async def modify_event_status(event_id: str, body: ModifyEventStatusRequest):
     event = await es.get(event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Event not found")
-    allowed = {("failed", "indexed"), ("skipped", "indexed"), ("indexed", "skipped"),
-               ("skipped", "indexed"), ("failed", "skipped"), ("skipped", "failed")}
     current = event["status"]
     new = body.status.value
-    if (current, new) not in allowed and current != "indexed" and new != "linked":
+    if (current, new) not in ALLOWED_EVENT_TRANSITIONS:
         raise HTTPException(
             status_code=400,
             detail=f"Status transition {current} -> {new} not allowed",
@@ -448,7 +461,7 @@ async def health():
 
 
 @app.get("/agent/logs")
-async def agent_logs(limit: int = 30, full: bool = False):
+async def agent_logs(limit: int = 30, full: bool = False) -> dict[str, Any]:
     """返回最近 AI 调用日志（环形缓冲，新→旧），供前端观测 LLM 输入/输出。
 
     full=true 时返回完整 input/output/error（不做 2000 字符截断），供前端折叠查看。
@@ -457,14 +470,17 @@ async def agent_logs(limit: int = 30, full: bool = False):
 
 
 @app.post("/agent/compensate")
-async def agent_compensate():
-    """手动触发补偿：把 raw/indexed 事件重新入队走 Agent 管线（处理积压事件）。"""
+async def agent_compensate() -> dict[str, Any]:
+    """手动触发补偿：把 raw/indexed 事件重新入队走 Agent 管线（处理积压事件）。
+
+    force=true：补偿退避暂停中也可强制执行并重置失败计数。
+    """
     if orchestrator is None:
         raise HTTPException(status_code=503, detail="Orchestrator not initialized")
     await orchestrator.enqueue(
         QueueMessage(
             type="compensate",
-            payload={},
+            payload={"force": True},
             timestamp=datetime.now(timezone.utc).timestamp(),
         )
     )

@@ -2,19 +2,34 @@ function base(): string {
   return localStorage.getItem('dpim_backend_url') || ''
 }
 
+function formatErrorDetail(detail: unknown): string {
+  if (typeof detail === 'string') return detail
+  // FastAPI 422 校验错误的 detail 是数组 [{loc,msg,type},...]
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d: any) => (d && typeof d.msg === 'string' ? d.msg : String(d)))
+      .join('; ')
+  }
+  if (detail && typeof detail === 'object') {
+    try { return JSON.stringify(detail) } catch { return String(detail) }
+  }
+  return String(detail)
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(base() + url, {
     headers: { 'Content-Type': 'application/json', ...init?.headers },
     ...init,
   })
   if (!res.ok) {
-    // FastAPI 错误信封为 {detail: "..."}，兼容 {message} / {error:{message}} 两种
-    let detail = res.statusText
+    // FastAPI 错误信封为 {detail: "..."}，兼容 {message} / {error:{message}} 两种；
+    // detail 可能是数组（422 校验错误），序列化为可读文本避免 "[object Object]"
+    let detail: unknown = res.statusText
     try {
       const body = await res.json()
       detail = body?.detail ?? body?.message ?? body?.error?.message ?? res.statusText
     } catch { /* 非 JSON 响应，使用 statusText */ }
-    throw new Error(detail)
+    throw new Error(formatErrorDetail(detail))
   }
   return res.json()
 }

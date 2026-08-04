@@ -81,13 +81,16 @@ async def search(
     sorted_c1 = sorted(c1.keys(), key=lambda x: c1[x], reverse=True)
     sorted_c2 = sorted(c2.keys(), key=lambda x: c2[x], reverse=True)
     max_rank = max(len(sorted_c1), len(sorted_c2)) + 1
+    # 预构建 rank 字典：O(1) 查找，避免每次 .index() 的 O(n) 遍历
+    rank1_map = {key: i + 1 for i, key in enumerate(sorted_c1)}
+    rank2_map = {key: i + 1 for i, key in enumerate(sorted_c2)}
 
     rrf_scores: dict[str, float] = {}
     all_keys = set(c1.keys()) | set(c2.keys())
 
     for key in all_keys:
-        rank1 = sorted_c1.index(key) + 1 if key in c1 else max_rank
-        rank2 = sorted_c2.index(key) + 1 if key in c2 else max_rank
+        rank1 = rank1_map.get(key, max_rank)
+        rank2 = rank2_map.get(key, max_rank)
         rrf_scores[key] = (1.0 / (k + rank1)) + (1.0 / (k + rank2))
 
     # Apply time decay

@@ -26,7 +26,7 @@ export type ChunkType = 'interaction' | 'data' | 'source' | 'ignore';
 export interface SourceRef {
   event_id: string;
   valid: boolean;
-  hash: string;           // BLAKE3 前 16 位
+  hash: string;           // BLAKE2s-8B（16 字符十六进制）
 }
 
 /** 图节点元数据 */
@@ -468,7 +468,7 @@ export interface SettingsResponse {
 }
 
 /** 配置更新请求 (PUT /settings) 只下发需要修改的字段即可 */
-export interface SettingsRequest {
+export interface SettingsUpdateRequest {
   llm_base_url?: string;
   llm_api_key?: string;
   llm_model_name?: string;

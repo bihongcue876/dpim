@@ -89,19 +89,26 @@ def delete_event(event_id: str):
             typer.echo(f"Event {event_id} not found")
             return
         refs = event.get("graph_refs", [])
+        # 预检：任一受保护节点（system/data 且失去本事件后无其他有效源证）即拒绝，不做任何修改
         for nid in refs:
             node = gs.get_node(nid)
             if node is None:
                 continue
+            has_other = any(sr.valid for sr in node.source_refs if sr.event_id != event_id)
+            if not has_other and node.node_type.value in ("system", "data"):
+                typer.echo(
+                    f"Warning: node {nid} ({node.node_type.value}) protected,"
+                    " keeping event"
+                )
+                return
+        if refs:
             gs.invalidate_source_ref(event_id)
-            has_valid = any(sr.valid for sr in node.source_refs if sr.event_id != event_id)
-            if not has_valid:
-                if node.node_type.value in ("system", "data"):
-                    typer.echo(
-                        f"Warning: node {nid} ({node.node_type.value}) protected,"
-                        " keeping event"
-                    )
-                    return
+        for nid in refs:
+            node = gs.get_node(nid)
+            if node is None:
+                continue
+            has_other = any(sr.valid for sr in node.source_refs if sr.event_id != event_id)
+            if not has_other:
                 gs.remove_node(nid)
                 await gs.delete_node_fts(nid)
         await es.delete(event_id)

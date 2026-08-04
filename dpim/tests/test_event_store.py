@@ -32,6 +32,35 @@ class TestContentHash:
         assert len(h) == 16
 
 
+class TestLikeRank:
+    """like_rank 相关性计分：标题优先、位置靠前加权、大小写不敏感"""
+
+    def test_title_beats_content(self):
+        from core.event_store import like_rank
+        title_hit = like_rank("异步", "异步编程入门", "无相关内容")
+        content_hit = like_rank("异步", "其他标题", "我学习异步编程")
+        assert title_hit < content_hit  # rank 越小越相关
+
+    def test_position_weights(self):
+        from core.event_store import like_rank
+        early = like_rank("学习", "", "我学习异步编程")
+        late = like_rank("学习", "", "异步编程我学习")
+        assert early < late
+
+    def test_no_match_returns_zero(self):
+        from core.event_store import like_rank
+        assert like_rank("不存在", "标题", "内容") == 0.0
+
+    def test_case_insensitive(self):
+        from core.event_store import like_rank
+        assert like_rank("PYTHON", "Python 编程", "c") == \
+            like_rank("python", "Python 编程", "c")
+
+    def test_empty_query(self):
+        from core.event_store import like_rank
+        assert like_rank("", "abc", "def") == 0.0
+
+
 class TestEventStoreInsert:
     @pytest.mark.asyncio
     async def test_insert_returns_id_and_status(self, event_store: EventStore):
@@ -225,6 +254,20 @@ class TestEventStoreFTS:
         results = await event_store.search_fts("java")
         assert len(results) == 1
 
+    @pytest.mark.asyncio
+    async def test_like_fallback_ranks_by_position(self, event_store: EventStore):
+        """对照：中文 LIKE 降级结果按命中位置排序（靠前得分高）"""
+        e1, _ = await event_store.insert("我学习异步编程")
+        await event_store.insert_fts(e1, "我学习异步编程")
+        e2, _ = await event_store.insert("异步编程我学习")
+        await event_store.insert_fts(e2, "异步编程我学习")
+        results = await event_store.search_fts("学习")
+        # FTS5 对中文整串不命中 → 走 LIKE 降级
+        assert len(results) == 2
+        assert results[0]["event_id"] == e1  # 命中位置靠前
+        assert results[1]["event_id"] == e2
+        assert results[0]["rank"] < results[1]["rank"]
+
 
 class TestEventStoreControlledVariables:
     """控制变量：状态机、删除保护、类型筛选"""
@@ -267,6 +310,101 @@ class TestEventStoreControlledVariables:
         r2 = await event_store.delete_with_protection(e_data, graph_store)
         assert r2["status"] == "protected"
         assert r2["node_type"] == "data"
+
+    @pytest.mark.asyncio
+    async def test_delete_protection_precheck_partial(self, event_store, graph_store):
+        """对照：事件同时关联 interaction + system 节点时，预检整体拒绝，
+        不做任何图修改（interaction 节点不得被误删、源证不得被提前失效）"""
+        from core.models import NodeType
+        from tests.factories import make_event, make_node
+        eid = await make_event(event_store, "mixed refs", "interaction")
+        await make_node(graph_store, "mix_inter", "MixInter", "c",
+                        NodeType.interaction, event_id=eid)
+        await make_node(graph_store, "mix_sys", "MixSys", "c",
+                        NodeType.system, event_id=eid)
+        await event_store.update_status(eid, "linked", graph_refs=["mix_inter", "mix_sys"])
+        r = await event_store.delete_with_protection(eid, graph_store)
+        assert r["status"] == "protected"
+        assert r["node_type"] == "system"
+        # 预检拒绝后：两节点仍在、事件仍在、源证仍有效
+        assert graph_store.get_node("mix_inter") is not None
+        assert graph_store.get_node("mix_sys") is not None
+        ev = await event_store.get(eid)
+        assert ev is not None and ev["status"] == "linked"
+        for sr in graph_store.get_node("mix_sys").source_refs:
+            assert sr.valid is True
+
+    @pytest.mark.asyncio
+    async def test_delete_protection_system_with_other_ref_allowed(
+        self, event_store, graph_store
+    ):
+        """对照：system 节点还有其他有效源证 → 允许删除事件，节点保留且本事件 ref 失效"""
+        from core.models import NodeType, SourceRef
+        from tests.factories import make_event, make_node
+        e1 = await make_event(event_store, "first ref", "interaction")
+        e2 = await make_event(event_store, "second ref", "interaction")
+        await make_node(graph_store, "sys_dual", "SysDual", "c",
+                        NodeType.system, event_id=e1)
+        # 给 system 节点追加第二个事件的源证
+        node = graph_store.get_node("sys_dual")
+        node.source_refs.append(SourceRef(event_id=e2, valid=True, hash="h"))
+        graph_store.graph.nodes["sys_dual"]["data"] = node
+        await event_store.update_status(e1, "linked", graph_refs=["sys_dual"])
+        await event_store.update_status(e2, "linked", graph_refs=["sys_dual"])
+        r = await event_store.delete_with_protection(e1, graph_store)
+        assert r["status"] == "ok"
+        # 事件已删、节点保留、e1 的 ref 失效而 e2 的仍有效
+        assert await event_store.get(e1) is None
+        node = graph_store.get_node("sys_dual")
+        assert node is not None
+        refs = {sr.event_id: sr.valid for sr in node.source_refs}
+        assert refs[e1] is False
+        assert refs[e2] is True
+
+    @pytest.mark.asyncio
+    async def test_delete_protection_all_interaction_cleared(
+        self, event_store, graph_store
+    ):
+        """对照：多个 interaction 节点且无他证 → 删除事件后节点全部清空"""
+        from core.models import NodeType
+        from tests.factories import make_event, make_node
+        eid = await make_event(event_store, "multi interaction", "interaction")
+        for i in range(3):
+            await make_node(graph_store, f"int_{i}", f"Int{i}", "c",
+                            NodeType.interaction, event_id=eid)
+        await event_store.update_status(
+            eid, "linked", graph_refs=["int_0", "int_1", "int_2"])
+        r = await event_store.delete_with_protection(eid, graph_store)
+        assert r["status"] == "ok"
+        for i in range(3):
+            assert graph_store.get_node(f"int_{i}") is None
+        assert graph_store.total_nodes() == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_protection_no_refs(self, event_store, graph_store):
+        """对照：事件无关联节点 → 直接删除"""
+        from tests.factories import make_event
+        eid = await make_event(event_store, "no refs")
+        r = await event_store.delete_with_protection(eid, graph_store)
+        assert r["status"] == "ok"
+        assert await event_store.get(eid) is None
+
+    @pytest.mark.asyncio
+    async def test_delete_protection_event_not_found(self, event_store, graph_store):
+        """对照：事件不存在 → not_found，不抛异常"""
+        r = await event_store.delete_with_protection("ghost-event", graph_store)
+        assert r["status"] == "not_found"
+
+    @pytest.mark.asyncio
+    async def test_delete_protection_ref_to_missing_node_ok(
+        self, event_store, graph_store
+    ):
+        """对照：graph_refs 指向已不存在的节点（脏引用）→ 跳过该引用正常删除"""
+        from tests.factories import make_event
+        eid = await make_event(event_store, "dirty ref")
+        await event_store.update_status(eid, "linked", graph_refs=["vanished_node"])
+        r = await event_store.delete_with_protection(eid, graph_store)
+        assert r["status"] == "ok"
 
     @pytest.mark.asyncio
     async def test_event_type_filtering(self, event_store):

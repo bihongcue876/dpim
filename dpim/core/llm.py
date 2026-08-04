@@ -47,18 +47,25 @@ def _client_for(conf: ProviderConfig) -> AsyncOpenAI:
 def is_transient_error(e: Exception) -> bool:
     """瞬时错误判定：超时 / 断连 / 5xx 服务端错误（可重试）。
 
-    这类错误重试可能成功（本地模型慢、加载中、单槽忙碌），
-    不应将事件判死为 failed，而应回到 indexed 等待补偿重试。
-    4xx 客户端错误（401/402/403/400 等）不可自愈 → 不判瞬时，直接 failed。
+    遍历异常链（__cause__/__context__）：instructor 等重试包装异常（如
+    InstructorRetryException）重试用尽后抛出，其底层 cause 可能仍是瞬时错误，
+    不能因包装层而把事件判死。4xx 客户端错误（401/402/403/400 等）不可自愈
+    → 链上遇到即判定非瞬时。
     """
-    if isinstance(e, (APITimeoutError, APIConnectionError)):
-        return True
-    if isinstance(e, APIStatusError):
-        return 500 <= e.status_code <= 599 or e.status_code in (408, 429)
-    import httpx
-    # httpx 底层传输错误：ReadTimeout / ConnectError / ReadError 等
-    if isinstance(e, httpx.TransportError):
-        return True
+    seen: set[int] = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, (APITimeoutError, APIConnectionError)):
+            return True
+        if isinstance(e, APIStatusError):
+            if 500 <= e.status_code <= 599 or e.status_code in (408, 429):
+                return True
+            return False  # 4xx 客户端错误：不可自愈，终止链遍历
+        import httpx
+        # httpx 底层传输错误：ReadTimeout / ConnectError / ReadError 等
+        if isinstance(e, httpx.TransportError):
+            return True
+        e = e.__cause__ or e.__context__
     return False
 
 

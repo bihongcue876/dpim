@@ -87,6 +87,11 @@ class GraphStore:
             raise
         self._dirty = False
         self._dirty_count = 0
+        # 保存成功后同步留存快照：下次加载损坏时可从最近一次成功保存恢复
+        try:
+            shutil.copy(path, path.with_suffix(".json.bak"))
+        except OSError as exc:
+            logger.warning("备份 graph.json 失败（不影响运行）: %s", exc)
 
     def _mark_dirty(self) -> None:
         """标记脏位并触发防抖式自动保存阈值计数。"""
@@ -243,23 +248,25 @@ class GraphStore:
         rows = await cursor.fetchall()
         if rows:
             return [dict(r) for r in rows]
-        # FTS5 不命中（如中文），遍历内存图数据做 LIKE 匹配
+        # FTS5 不命中（如中文），遍历内存图数据做 LIKE 匹配，按标题/内容位置计分排序
+        from core.event_store import like_rank
+
         results: list[dict] = []
+        q = query.lower()
         for nid, ndata in self.graph.nodes(data=True):
             data = ndata.get("data")
             if data is None:
                 continue
-            if query.lower() in (data.title or "").lower() or \
-               query.lower() in (data.content or "").lower():
+            if q in (data.title or "").lower() or \
+               q in (data.content or "").lower():
                 results.append({
                     "node_id": nid,
                     "title": data.title,
                     "content": data.content,
-                    "rank": 0.0,
+                    "rank": like_rank(query, data.title, data.content),
                 })
-                if len(results) >= limit:
-                    break
-        return results
+        results.sort(key=lambda x: x["rank"])
+        return results[:limit]
 
     @property
     def dirty(self) -> bool:

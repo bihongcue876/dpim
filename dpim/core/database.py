@@ -45,6 +45,7 @@ class Database:
                 title,
                 content
             );
+            PRAGMA user_version = 1;
         """)
         await self.conn.commit()
 

@@ -208,6 +208,43 @@ class TestModifyEventStatusEndpoint:
         )
         assert resp.status_code == 404
 
+    @pytest.mark.parametrize("start,target,expected", [
+        # ── 允许（白名单内）──
+        ("raw", "indexed", 200),
+        ("indexed", "linked", 200),
+        ("indexed", "failed", 200),
+        ("indexed", "skipped", 200),
+        ("failed", "indexed", 200),
+        ("failed", "skipped", 200),
+        ("skipped", "indexed", 200),
+        ("skipped", "failed", 200),
+        # ── 拒绝（白名单外：绕过管线 / 终态回退 / 非法跳转）──
+        ("raw", "linked", 400),
+        ("raw", "failed", 400),
+        ("raw", "skipped", 400),
+        ("indexed", "raw", 400),
+        ("failed", "raw", 400),
+        ("failed", "linked", 400),
+        ("skipped", "raw", 400),
+        ("skipped", "linked", 400),
+        ("linked", "raw", 400),
+        ("linked", "indexed", 400),
+        ("linked", "failed", 400),
+        ("linked", "skipped", 400),
+    ])
+    def test_status_transition_matrix(self, test_app, event_store, start, target, expected):
+        """白名单全矩阵：8 种合法转换放行，13 种非法转换拒绝（400）"""
+        import asyncio
+
+        from tests.factories import make_event
+        eid = asyncio.run(make_event(event_store, "matrix", status="raw"))
+        if start != "raw":
+            asyncio.run(event_store.update_status(eid, start))
+        resp = test_app.put(
+            f"/events/{eid}/status", json={"status": target},
+        )
+        assert resp.status_code == expected, f"{start}->{target}"
+
 
 class TestModifyEventEndpoint:
     """PUT /events/{event_id} 事件内容修改"""

@@ -58,10 +58,13 @@ def tool_rrf_merge(
     s1 = sorted(c1.keys(), key=lambda x: c1[x], reverse=True)
     s2 = sorted(c2.keys(), key=lambda x: c2[x], reverse=True)
     max_rank = max(len(s1), len(s2)) + 1
+    # 预构建 rank 字典：O(1) 查找
+    r1_map = {key: i + 1 for i, key in enumerate(s1)}
+    r2_map = {key: i + 1 for i, key in enumerate(s2)}
     scores: dict[str, float] = {}
     for key in keys:
-        r1 = s1.index(key) + 1 if key in c1 else max_rank
-        r2 = s2.index(key) + 1 if key in c2 else max_rank
+        r1 = r1_map.get(key, max_rank)
+        r2 = r2_map.get(key, max_rank)
         scores[key] = (1.0 / (k + r1)) + (1.0 / (k + r2))
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 

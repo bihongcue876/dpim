@@ -51,16 +51,16 @@
     <div class="it-card">
       <div class="it-card-title it-log-title">AI 调用日志（最近 {{ llmLogs.length }} 条）</div>
       <div v-if="llmLogs.length === 0" class="it-log-empty">暂无调用记录</div>
-      <div v-for="(log, i) in llmLogs" :key="i" class="it-log-row">
+      <div v-for="log in llmLogs" :key="log.timestamp + log.role" class="it-log-row">
         <div class="it-log-head">
           <n-tag size="tiny" :bordered="false" :type="log.error ? 'error' : 'info'">{{ log.role }}</n-tag>
           <span class="it-log-model mono">{{ log.model }}</span>
           <span class="it-log-time">{{ fmtLogTime(log.timestamp) }}</span>
-          <n-button text size="tiny" class="it-log-toggle" @click="toggleLog(i)">
-            {{ expandedLogs.has(i) ? '收起 ▲' : '展开 ▼' }}
+          <n-button text size="tiny" class="it-log-toggle" @click="toggleLog(log)">
+            {{ expandedLogs.has(log.timestamp) ? '收起 ▲' : '展开 ▼' }}
           </n-button>
         </div>
-        <div v-if="expandedLogs.has(i)" class="it-log-body">
+        <div v-if="expandedLogs.has(log.timestamp)" class="it-log-body">
           <div v-if="log.error" class="it-log-error">✗ {{ log.error }}</div>
           <template v-else>
             <div class="it-log-label">输入</div>
@@ -81,7 +81,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { createDiscreteApi } from 'naive-ui'
-import type { HealthResponse } from '@/api/client'
+import type { HealthResponse, LLMCallLog } from '@/api/client'
 import * as api from '@/api/client'
 import AIStatusBar from '@/components/AIStatusBar.vue'
 import IngestHistory from '@/components/IngestHistory.vue'
@@ -114,13 +114,14 @@ let healthTimer: number | null = null
 let pollTimer: number | null = null
 let logTimer: number | null = null
 
-const llmLogs = ref<Array<{ role: string; timestamp: number; model: string; input_preview: string; input?: string; output: string; error: string }>>([])
+const llmLogs = ref<LLMCallLog[]>([])
+// 展开状态以日志时间戳为键：5s 轮询刷新后索引会位移，时间戳保持稳定
 const expandedLogs = ref<Set<number>>(new Set())
 
-function toggleLog(i: number) {
+function toggleLog(log: LLMCallLog) {
   const next = new Set(expandedLogs.value)
-  if (next.has(i)) next.delete(i)
-  else next.add(i)
+  if (next.has(log.timestamp)) next.delete(log.timestamp)
+  else next.add(log.timestamp)
   expandedLogs.value = next
 }
 
