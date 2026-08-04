@@ -468,7 +468,7 @@ export interface SettingsResponse {
 }
 
 /** 配置更新请求 (PUT /settings) 只下发需要修改的字段即可 */
-export interface SettingsRequest {
+export interface SettingsUpdateRequest {
   llm_base_url?: string;
   llm_api_key?: string;
   llm_model_name?: string;
