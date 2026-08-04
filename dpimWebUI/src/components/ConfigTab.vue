@@ -35,7 +35,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import type { SettingsResponse, HealthResponse } from '@/api/client'
 import * as api from '@/api/client'
 
@@ -47,7 +47,8 @@ const props = defineProps<{
 
 const original = ref<SettingsResponse>({
   memory_db_path: '', graph_json_path: '', llm_base_url: '', llm_api_key: '',
-  llm_model_name: '', llm_timeout: 30, available_providers: ['primary'],
+  llm_model_name: '', llm_timeout: 30, llm_max_tokens: null, llm_enable_thinking: null, llm_thinking_budget: null,
+  available_providers: ['primary'],
   providers: {},
   active_provider: 'primary',
   available_models: [], active_model: '',
@@ -104,9 +105,36 @@ const providerOptions = computed(() =>
   })),
 )
 
-// 使用模型下拉选项：来自后端 available_models（活动 provider 的模型列表）
-const modelOptions = computed(() =>
-  (original.value.available_models ?? []).map(m => ({ label: m, value: m })),
+// 使用模型下拉选项：按「用户当前选择的提供商」从 providers JSON 解析模型列表
+// （这样切换提供商或编辑 providers JSON 后立即生效，不依赖后端旧缓存）；
+// primary 回退环境变量主模型；解析不到时用后端 available_models 兜底
+const modelOptions = computed(() => {
+  const provider = String(edits['active_provider'] ?? original.value.active_provider ?? 'primary')
+  let models: string[] = []
+  if (provider === 'primary') {
+    models = [original.value.llm_model_name].filter(Boolean)
+  } else {
+    let parsed: Record<string, any> | null = null
+    try { parsed = JSON.parse(String(edits['providers'] ?? '{}')) } catch { parsed = null }
+    const entry = parsed && parsed[provider]
+    if (entry) {
+      const list = Array.isArray(entry.models) ? entry.models : (entry.model ? [entry.model] : [])
+      models = list.map(String).filter(Boolean)
+    }
+  }
+  if (models.length === 0) models = (original.value.available_models ?? []).slice()
+  return models.map(m => ({ label: m, value: m }))
+})
+
+// 切换提供商时：若当前「使用模型」不在新提供商列表内则清空，避免提交陈旧值
+watch(
+  () => edits['active_provider'],
+  () => {
+    const cur = String(edits['active_model'] ?? '')
+    if (cur && !modelOptions.value.some(o => o.value === cur)) {
+      edits['active_model'] = ''
+    }
+  },
 )
 
 const fields = computed<ConfigField[]>(() => [
@@ -115,6 +143,8 @@ const fields = computed<ConfigField[]>(() => [
   { key: 'providers', label: '提供商注册表(JSON)', type: 'json', section: '模型与提供商' },
   { key: 'active_provider', label: '活动提供商', type: 'select', options: providerOptions.value, section: '模型与提供商' },
   { key: 'active_model', label: '使用模型', type: 'select', options: modelOptions.value, section: '模型与提供商' },
+  { key: 'llm_max_tokens', label: '输出上限 tokens（0=服务端默认）', type: 'number', min: 0, max: 32768, section: '模型与提供商' },
+  { key: 'llm_thinking_budget', label: '思考预算 tokens（0=不设）', type: 'number', min: 0, max: 32768, section: '模型与提供商' },
   { key: 'agent_mode', label: 'Agent 管线模式', type: 'select', section: 'Agent 管线', options: [
     { label: 'disabled（默认）', value: 'disabled' },
     { label: 'pipeline（四 Agent 管线）', value: 'pipeline' },

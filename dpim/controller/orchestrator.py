@@ -148,6 +148,8 @@ class Orchestrator:
                     )
                     tm.created_node_ids = created
                     logger.info("Event %s linked with %d nodes", event_id, len(created))
+                    # 管线写入后强制落盘，避免防抖阈值内崩溃丢数据（P0-2）
+                    await self.graph_store.save()
                     return
                 tm.last_feedback = issues_text(verdict.issues)
                 tm.attempts += 1

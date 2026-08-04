@@ -92,6 +92,9 @@ export interface SettingsResponse {
   llm_api_key: string
   llm_model_name: string
   llm_timeout: number
+  llm_max_tokens: number | null
+  llm_enable_thinking: boolean | null
+  llm_thinking_budget: number | null
   available_providers: string[]
   providers: Record<string, { base_url: string; api_key: string; model?: string; models?: string[]; timeout?: number }>
   active_provider: string
@@ -122,8 +125,18 @@ export async function getHealth(): Promise<HealthResponse> {
   return req('/health')
 }
 
-export async function getAgentLogs(limit = 30): Promise<{ logs: Array<{ role: string; timestamp: number; model: string; input_preview: string; output: string; error: string }> }> {
-  return req(`/agent/logs?limit=${limit}`)
+export interface LLMCallLog {
+  role: string
+  timestamp: number
+  model: string
+  input_preview: string
+  input?: string
+  output: string
+  error: string
+}
+
+export async function getAgentLogs(limit = 30, full = false): Promise<{ logs: LLMCallLog[] }> {
+  return req(`/agent/logs?limit=${limit}${full ? '&full=true' : ''}`)
 }
 
 /** 手动触发补偿：把 raw/indexed 积压事件重新入队走 Agent 管线 */
@@ -257,6 +270,9 @@ export async function putSettings(body: {
   llm_api_key?: string
   llm_model_name?: string
   llm_timeout?: number
+  llm_max_tokens?: number | null
+  llm_enable_thinking?: boolean | null
+  llm_thinking_budget?: number | null
   providers?: Record<string, unknown>
   active_provider?: string
   active_model?: string

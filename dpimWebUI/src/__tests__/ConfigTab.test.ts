@@ -6,7 +6,8 @@ vi.mock('@/api/client', () => ({
   getSettings: vi.fn().mockResolvedValue({
     memory_db_path: './data/memory.db', graph_json_path: './data/graph.json',
     llm_base_url: 'http://localhost:11434/v1', llm_api_key: '',
-    llm_model_name: 'llama3:8b', llm_timeout: 30, available_providers: ['primary'],
+    llm_model_name: 'llama3:8b', llm_timeout: 30, llm_max_tokens: null, llm_enable_thinking: null, llm_thinking_budget: null,
+    available_providers: ['primary'],
     active_provider: 'primary',
     agent_mode: 'disabled', agent_max_retries: 2, agent_cr_model: '',
     agent_in_model: '', agent_gr_model: '', agent_meta_model: '',

@@ -1,4 +1,4 @@
-"""FastAPI 应用，15 个 REST 端点"""
+"""FastAPI 应用，22 个 REST 端点"""
 
 import logging
 from contextlib import asynccontextmanager
@@ -385,6 +385,9 @@ async def get_settings():
         llm_api_key=settings.llm_api_key,
         llm_model_name=settings.llm_model_name,
         llm_timeout=settings.llm_timeout,
+        llm_max_tokens=settings.llm_max_tokens,
+        llm_enable_thinking=settings.llm_enable_thinking,
+        llm_thinking_budget=settings.llm_thinking_budget,
         available_providers=["primary", *settings.providers.keys()],
         providers=settings.providers,
         active_provider=settings.active_provider,
@@ -413,6 +416,9 @@ async def update_settings(body: SettingsUpdateRequest):
             setattr(settings, field, value)
     settings.save_dpim_config()  # 持久化 BYOK/Agent 配置到 dpim.json，重启保留
     refresh_key()
+    # 配置变更后立即健康检查一次：切换 provider/模型即刻生效，无需重启
+    if compensator is not None:
+        await compensator._check_llm()
     return _ok(message="Settings updated and persisted to dpim.json")
 
 
@@ -442,9 +448,12 @@ async def health():
 
 
 @app.get("/agent/logs")
-async def agent_logs(limit: int = 30):
-    """返回最近 AI 调用日志（环形缓冲，新→旧），供前端观测 LLM 输入/输出。"""
-    return {"logs": get_llm_logs(limit=min(limit, 100))}
+async def agent_logs(limit: int = 30, full: bool = False):
+    """返回最近 AI 调用日志（环形缓冲，新→旧），供前端观测 LLM 输入/输出。
+
+    full=true 时返回完整 input/output/error（不做 2000 字符截断），供前端折叠查看。
+    """
+    return {"logs": get_llm_logs(limit=min(limit, 100), full=full)}
 
 
 @app.post("/agent/compensate")

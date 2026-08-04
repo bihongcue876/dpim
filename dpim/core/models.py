@@ -303,6 +303,9 @@ class SettingsResponse(BaseModel):
     llm_api_key: str
     llm_model_name: str
     llm_timeout: int
+    llm_max_tokens: int | None = None
+    llm_enable_thinking: bool | None = None
+    llm_thinking_budget: int | None = None
     available_providers: list[str]
     providers: dict[str, dict[str, Any]] = Field(default_factory=dict,
                                                  description="BYOK 提供商注册表")
@@ -329,6 +332,9 @@ class SettingsUpdateRequest(BaseModel):
     llm_api_key: str | None = None
     llm_model_name: str | None = None
     llm_timeout: int | None = None
+    llm_max_tokens: int | None = None
+    llm_enable_thinking: bool | None = None
+    llm_thinking_budget: int | None = None
     providers: dict[str, dict[str, Any]] | None = None
     active_provider: str | None = None
     active_model: str | None = None

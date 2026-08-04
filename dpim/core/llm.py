@@ -45,18 +45,55 @@ def _client_for(conf: ProviderConfig) -> AsyncOpenAI:
 
 
 def is_transient_error(e: Exception) -> bool:
-    """瞬时错误判定：超时 / 断连 / 5xx 服务端错误。
+    """瞬时错误判定：超时 / 断连 / 5xx 服务端错误（可重试）。
 
     这类错误重试可能成功（本地模型慢、加载中、单槽忙碌），
     不应将事件判死为 failed，而应回到 indexed 等待补偿重试。
+    4xx 客户端错误（401/402/403/400 等）不可自愈 → 不判瞬时，直接 failed。
     """
-    if isinstance(e, (APITimeoutError, APIConnectionError, APIStatusError)):
+    if isinstance(e, (APITimeoutError, APIConnectionError)):
         return True
+    if isinstance(e, APIStatusError):
+        return 500 <= e.status_code <= 599 or e.status_code in (408, 429)
     import httpx
     # httpx 底层传输错误：ReadTimeout / ConnectError / ReadError 等
     if isinstance(e, httpx.TransportError):
         return True
     return False
+
+
+# ── 厂商适配：按 provider 组装 OpenAI 请求的额外参数 ──
+
+def _is_local_host(base_url: str) -> bool:
+    """本地地址判定：llama.cpp / Ollama 等本机服务。"""
+    from urllib.parse import urlparse
+
+    host = (urlparse(base_url).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1") or host.endswith(".local")
+
+
+def _request_extra(conf: ProviderConfig) -> dict[str, Any]:
+    """把 provider 的厂商适配参数合成为请求 extra_body。
+
+    - enable_thinking：SiliconFlow/DeepSeek 用顶层字段；llama.cpp 用 chat_template_kwargs；
+      auto 模式下本地地址自动选 chat_template_kwargs。
+    - thinking_budget：顶层字段（SiliconFlow 等支持）。
+    - extra_body：provider 声明的任意厂商参数透传（如 reasoning_effort），最后合并、优先级最高。
+    """
+    body: dict[str, Any] = {}
+    if conf.enable_thinking is not None:
+        use_template = conf.thinking_style == "chat_template_kwargs" or (
+            conf.thinking_style == "auto" and _is_local_host(conf.base_url)
+        )
+        if use_template:
+            body["chat_template_kwargs"] = {"enable_thinking": conf.enable_thinking}
+        else:
+            body["enable_thinking"] = conf.enable_thinking
+    if conf.thinking_budget:
+        body["thinking_budget"] = conf.thinking_budget
+    if conf.extra_body:
+        body.update(conf.extra_body)
+    return body
 
 
 # ── AI 调用日志（环形缓冲，供前端观测 LLM 发了什么）──
@@ -66,28 +103,47 @@ class LLMCallLog:
     role: str
     timestamp: float
     model: str
-    input_preview: str
+    input: str
     output: str
     error: str = ""
 
 
 _llm_logs: deque[LLMCallLog] = deque(maxlen=50)
+_LOG_PREVIEW_LEN = 2000
 
 
 def log_llm_call(role: str, model: str, user: str, output: str, error: str = "") -> None:
+    # 完整内容入缓冲；是否截断由读取侧（get_llm_logs）按需决定
     _llm_logs.appendleft(LLMCallLog(
         role=role,
         timestamp=time(),
         model=model,
-        input_preview=user[:2000],
-        output=output[:2000],
-        error=error[:2000],
+        input=user,
+        output=output,
+        error=error,
     ))
 
 
-def get_llm_logs(limit: int = 30) -> list[dict[str, Any]]:
-    """返回最近 LLM 调用日志（新→旧）。"""
-    return [log.__dict__ for log in list(_llm_logs)[:limit]]
+def get_llm_logs(limit: int = 30, full: bool = False) -> list[dict[str, Any]]:
+    """返回最近 LLM 调用日志（新→旧）。
+
+    full=False（默认）：截断为 input_preview/output/error（各 ≤2000 字符），
+    兼容旧客户端与协议；full=True：返回完整 input/output/error。
+    """
+    logs = list(_llm_logs)[:limit]
+    if full:
+        return [log.__dict__ for log in logs]
+    return [
+        {
+            "role": log.role,
+            "timestamp": log.timestamp,
+            "model": log.model,
+            "input_preview": log.input[:_LOG_PREVIEW_LEN],
+            "output": log.output[:_LOG_PREVIEW_LEN],
+            "error": log.error[:_LOG_PREVIEW_LEN],
+        }
+        for log in logs
+    ]
 
 
 def clear_llm_logs() -> None:
@@ -111,11 +167,16 @@ class LLMGateway:
         return self._client_cache[key]
 
     def instructed(self, role: str = "cr") -> Any:
-        """按角色返回 instructor 包装客户端（支持 response_model 结构化输出）。"""
+        """按角色返回 instructor 包装客户端（支持 response_model 结构化输出）。
+
+        缓存键含结构化模式：不同 provider 可声明不同 structured_mode。
+        """
         conf = settings.role_provider(role)
-        key = (conf.base_url, conf.api_key)
+        mode = _STRUCTURED_MODES.get(
+            conf.structured_mode or settings.llm_structured_mode, instructor.Mode.MD_JSON
+        )
+        key = (conf.base_url, conf.api_key, mode)
         if key not in self._instructed_cache:
-            mode = _STRUCTURED_MODES.get(settings.llm_structured_mode, instructor.Mode.MD_JSON)
             self._instructed_cache[key] = instructor.from_openai(
                 self.client(role), mode=mode
             )
@@ -134,9 +195,19 @@ class LLMGateway:
         """一次有效调用：system + user 打包进单次 messages，返回结构化结果。
 
         max_retries：instructor 在结构化校验失败时自动重问的次数（降低 JSON 解析失败率）。
+        厂商适配：按 provider 组装 max_tokens 与 extra_body（思考开关/预算/任意透传）。
         """
+        conf = settings.role_provider(role)
         client = self.instructed(role)
-        model = settings.role_model(role)
+        model = conf.model
+        request_kwargs = dict(kwargs)
+        if conf.max_tokens:
+            request_kwargs.setdefault("max_tokens", conf.max_tokens)
+        extra = _request_extra(conf)
+        if extra:
+            merged = dict(request_kwargs.get("extra_body") or {})
+            merged.update(extra)
+            request_kwargs["extra_body"] = merged
         try:
             result = await client.chat.completions.create(
                 model=model,
@@ -147,7 +218,7 @@ class LLMGateway:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                **kwargs,
+                **request_kwargs,
             )
             log_llm_call(role, model, user, str(result))
             return cast(M, result)
