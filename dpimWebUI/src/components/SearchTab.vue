@@ -211,9 +211,9 @@
 import { ref, reactive, computed } from 'vue'
 import * as api from '@/api/client'
 import type { SearchResult } from '@/api/client'
-import { useMessage } from 'naive-ui'
+import { createDiscreteApi } from 'naive-ui'
 
-const message = useMessage()
+const { message } = createDiscreteApi(['message'])
 
 // ── 状态 ──
 const searchMode = ref<'hybrid' | 'events' | 'nodes'>('hybrid')

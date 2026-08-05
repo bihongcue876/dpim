@@ -199,7 +199,7 @@ async function loadHealth() {
 // ── 状态轮询 ──
 
 async function refreshPending() {
-  const terminal = new Set(['linked', 'failed', 'skipped', 'timeout'])
+  const terminal = new Set(['linked', 'failed', 'skipped', 'timeout', 'removed'])
   let changed = false
   for (const h of history.value) {
     if (terminal.has(h.status)) continue
@@ -224,7 +224,13 @@ async function refreshPending() {
       } else {
         h.status = 'indexed'
       }
-    } catch { /* 网络错误，保持当前状态继续轮询 */ }
+    } catch (e: any) {
+      if (e?.message === 'Not Found') {
+        h.status = 'removed'
+        changed = true
+      }
+      /* 其他错误（网络等）保持状态继续轮询 */
+    }
   }
   if (changed) persist()
 }

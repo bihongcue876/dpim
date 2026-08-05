@@ -76,7 +76,7 @@ async def search(
     seeds = [k for k in c1 if graph_store.get_node(k) is not None]
     c2 = graph_store.ego_graph(seeds, hops=request.max_hops)
 
-    # Step 3: RRF fusion
+    # Step 3: RRF fusion（两路：FTS5 + 图扩散）
     k = settings.rrf_k
     sorted_c1 = sorted(c1.keys(), key=lambda x: c1[x], reverse=True)
     sorted_c2 = sorted(c2.keys(), key=lambda x: c2[x], reverse=True)
@@ -91,7 +91,9 @@ async def search(
     for key in all_keys:
         rank1 = rank1_map.get(key, max_rank)
         rank2 = rank2_map.get(key, max_rank)
-        rrf_scores[key] = (1.0 / (k + rank1)) + (1.0 / (k + rank2))
+        rrf_scores[key] = (
+            (1.0 / (k + rank1)) + (1.0 / (k + rank2))
+        )
 
     # Apply time decay
     for key in rrf_scores:
@@ -140,7 +142,7 @@ async def _build_results(
                 confidence=conf,
                 degraded=False,
             ))
-        elif key in event_node_map:
+        elif key in event_node_map or True:
             ev = await event_store.get(key)
             if ev:
                 results.append(SearchResult(

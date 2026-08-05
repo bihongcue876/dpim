@@ -20,7 +20,7 @@ DPIM 是一个双区智能贮存系统，同时承担两个角色：
 - 事件写入与 FTS5 全文索引，支持 interaction / data / source 三种类型，原子写入接口（insert_event）
 - 事件状态机：raw → indexed → linked（终态），failed / skipped 异常路径
 - 知识图谱节点与边的人工增删改查，JSON 文件持久化（防抖自动保存，5 次修改阈值）
-- 混合检索：FTS5 召回 → 2 跳图扩散 → RRF 融合排序（无 Agent 默认仅 FTS5）
+- 混合检索：FTS5 关键词召回 + 图扩散两路 RRF 融合排序（无 Agent 默认仅 FTS5）
 - **Agent 管线（方案A，硬编码编排）**：Cr/In/Gr/Meta 四 Agent，ingest 并行拆分与查图、
   Gr 修正循环（仅重试 Gr）、Meta 硬关卡审核；检索意图分析 + Meta 复核
 - **BYOK 多模型网关**：多 provider 注册（DeepSeek/SiliconFlow/Ollama/llama.cpp…），按角色路由模型，
@@ -28,9 +28,9 @@ DPIM 是一个双区智能贮存系统，同时承担两个角色：
   SiliconFlow 顶层字段、llama.cpp chat_template_kwargs 自动适配）、输出上限 max_tokens、任意参数 extra_body 透传
 - 事件源证锚定：每条图节点必含 source_refs 与 evidence_quote，杜绝幻觉
 - 删除保护：system 和 data 类型节点失去所有源证时禁止删除
-- 降级与补偿：LLM 不可用时自动降级，恢复后批量补偿积压事件；WebUI/CLI 可手动触发补偿
-- 超时包容：生成请求超时默认 300s（provider 可覆盖）、健康检查独立超时 60s；超时/断连等瞬时错误不判死事件，自动回到 indexed 等待补偿重试
-- AI 调用日志：每次 LLM 调用的输入/输出/错误环形缓冲（GET /agent/logs），前端「信息传入」页实时观测
+- 降级与补偿：LLM 不可用时自动降级，恢复后批量补偿积压事件；WebUI/CLI 可手动触发补偿；补偿带退避（首条试探 + 指数退避 + 连续失败暂停）
+- 超时包容：生成请求超时默认 666s（provider 可覆盖）、健康检查独立超时 120s；超时/断连等瞬时错误不判死事件，自动回到 indexed 等待补偿重试
+- AI 调用日志：每次 LLM 调用的输入/输出/错误环形缓冲（GET /agent/logs，支持 full 参数返回全文），前端「信息传入」页实时观测、可折叠展开
 - 线程安全的 AI 可用性状态管理（AIState 单例封装）
 - 启动时配置校验：LLM 地址格式 + API Key 空值警告
 - FastAPI REST 接口层，22 个端点
@@ -128,11 +128,11 @@ dpim-webui 提供五个标签页管理 DPIM 系统的全部功能：
 
 | 标签页 | 功能 |
 |--------|------|
-| **配置** | 12 项系统参数可视化编辑（LLM 地址/Key/模型/超时、RRF_K、图跳数等），状态校验密钥锁保护 |
+| **配置** | 系统参数可视化编辑（存储/模型与提供商/Agent 管线/检索/系统/前端 6 板块），状态校验密钥锁保护 |
 | **信息列表** | 事件分页展示、类型/状态筛选、行内编辑、删除确认、新建事件、失败重试 |
 | **信息图** | D3.js 力导向知识图谱，节点按类型着色（data=浅蓝/interaction=绿/system=蓝），边带箭头标记，双向边弯曲错开；点击节点查看/编辑详情面板，面板可向下收起释放画布空间 |
 | **检索** | 三维度搜索：综合检索（分组展示◆事件原文/■知识节点/▲系统事件）/ 事件原文 / 知识节点；高级可折叠筛选面板（来源类型、图扩散跳数、最低置信度、结果数量）；翻页功能（服务端 offset 分页） |
-| **信息传入** | 人工写入事件（内容 + 类型 auto/interaction/data/source）+ AI 状态监控（就绪/未连接，30s 轮询）+ 处理历史（localStorage 10 条，5s 轮询状态，60s 超时）+ 补偿积压事件按钮 + AI 调用日志面板（5s 轮询） |
+| **信息传入** | 人工写入事件（内容 + 类型 auto/interaction/data/source）+ AI 状态监控（就绪/未连接，30s 轮询）+ 处理历史（localStorage 10 条，5s 轮询状态）+ 补偿积压事件按钮 + AI 调用日志面板（5s 轮询，可展开看全文） |
 
 核心交互：检索结果可跳转到信息图定位节点；信息传入历史可跳转到信息列表定位事件；所有写操作受状态校验密钥保护。组件库：Naive UI（暗色模式）。
 
@@ -219,6 +219,6 @@ dpim shell
 - 前端技术栈：Vue 3 + TypeScript + Vite + Naive UI + D3.js
 - CLI 技术栈：Python + httpx + prompt-toolkit + tabulate + PyYAML
 - 包管理：后端 uv（64 依赖）/ 前端 pnpm / CLI pip
-- 测试：pytest 149 用例 + vitest 24 用例，全部通过
+- 测试：pytest 257 用例 + vitest 24 用例，全部通过
 - 代码质量：ruff + mypy（后端）/ vue-tsc（前端）
 - 存储文件：data/memory.db（SQLite）和 data/graph.json（JSON），位于 dpim/data/

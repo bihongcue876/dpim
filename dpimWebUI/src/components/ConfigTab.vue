@@ -94,6 +94,7 @@ interface ConfigField {
   section?: string
   min?: number
   max?: number
+  placeholder?: string
   options?: Array<{ label: string; value: string }>
 }
 
@@ -196,7 +197,10 @@ async function load() {
       edits[f.key] = JSON.stringify(original.value[f.key as keyof SettingsResponse] ?? {}, null, 2)
       continue
     }
-    edits[f.key] = original.value[f.key as keyof SettingsResponse] ?? ''
+    // number 字段用 null 表示「未设置」（后端可空数字），避免空串 '' 提交后触发 422
+    edits[f.key] = f.type === 'number'
+      ? (original.value[f.key as keyof SettingsResponse] ?? null)
+      : (original.value[f.key as keyof SettingsResponse] ?? '')
   }
 }
 

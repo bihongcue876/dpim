@@ -34,6 +34,15 @@ describe('ConfigTab', () => {
     expect(wrapper.text()).toContain('Meta 模型')
   })
 
+  it('does not render embedding fields after removal', async () => {
+    const wrapper = mount(ConfigTab, {
+      props: { health: null, validate: validateOk, onCommitted },
+    })
+    await new Promise(r => setTimeout(r, 50))
+    expect(wrapper.text()).not.toContain('嵌入式模型')
+    expect(wrapper.text()).not.toContain('语义检索')
+  })
+
   it('shows submit button at bottom', async () => {
     const wrapper = mount(ConfigTab, {
       props: { health: null, validate: validateOk, onCommitted },

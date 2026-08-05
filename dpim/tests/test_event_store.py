@@ -268,6 +268,15 @@ class TestEventStoreFTS:
         assert results[1]["event_id"] == e2
         assert results[0]["rank"] < results[1]["rank"]
 
+    @pytest.mark.asyncio
+    async def test_fts_special_char_query_falls_back(self, event_store: EventStore):
+        """对照：查询串含 FTS5 特殊字符（语法错误）→ 降级 LIKE，不抛异常"""
+        eid, _ = await event_store.insert("hello world")
+        await event_store.insert_fts(eid, "hello world")
+        results = await event_store.search_fts("hello-world")
+        assert isinstance(results, list)  # 不抛异常
+        assert results == []
+
 
 class TestEventStoreControlledVariables:
     """控制变量：状态机、删除保护、类型筛选"""

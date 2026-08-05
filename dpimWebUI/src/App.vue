@@ -12,19 +12,19 @@
           class="app-tabs"
           :tabs-padding="16"
         >
-          <n-tab-pane name="config" tab="配置">
+          <n-tab-pane name="config" tab="配置" :display-directive="'show'">
             <ConfigTab :health="healthData" :validate="validate" :on-committed="onCommitted" />
           </n-tab-pane>
-          <n-tab-pane name="events" tab="信息列表">
+          <n-tab-pane name="events" tab="信息列表" :display-directive="'show'">
             <EventListTab :validate="validate" :on-committed="onCommitted" />
           </n-tab-pane>
-          <n-tab-pane name="graph" tab="信息图">
+          <n-tab-pane name="graph" tab="信息图" :display-directive="'show'">
             <GraphTab :key-status="keyStatus" />
           </n-tab-pane>
-          <n-tab-pane name="search" tab="检索">
+          <n-tab-pane name="search" tab="检索" :display-directive="'show'">
             <SearchTab />
           </n-tab-pane>
-          <n-tab-pane name="ingest" tab="信息传入">
+          <n-tab-pane name="ingest" tab="信息传入" :display-directive="'show'">
             <IngestTab />
           </n-tab-pane>
         </n-tabs>

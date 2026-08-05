@@ -7,7 +7,14 @@ function formatErrorDetail(detail: unknown): string {
   // FastAPI 422 校验错误的 detail 是数组 [{loc,msg,type},...]
   if (Array.isArray(detail)) {
     return detail
-      .map((d: any) => (d && typeof d.msg === 'string' ? d.msg : String(d)))
+      .map((d: any) => {
+        // loc 形如 ['body','llm_timeout']，过滤 'body' 后取字段路径，让报错可定位到具体字段
+        const loc = Array.isArray(d?.loc)
+          ? (d.loc as unknown[]).filter(x => typeof x === 'string').join('.')
+          : ''
+        const msg = d && typeof d.msg === 'string' ? d.msg : String(d)
+        return loc ? `${loc}: ${msg}` : msg
+      })
       .join('; ')
   }
   if (detail && typeof detail === 'object') {

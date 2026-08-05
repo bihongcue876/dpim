@@ -697,3 +697,4 @@ def test_prompt_loader_missing_role_returns_skeleton(tmp_path):
     loader = PromptLoader(prompts_dir=tmp_path)
     content = loader.load("cr")
     assert "骨架" in content
+

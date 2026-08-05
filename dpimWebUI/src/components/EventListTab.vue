@@ -94,12 +94,11 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useDialog, createDiscreteApi } from 'naive-ui'
+import { createDiscreteApi } from 'naive-ui'
 import type { EventListItem } from '@/api/client'
 import * as api from '@/api/client'
 
-const dialog = useDialog()
-const { message } = createDiscreteApi(['message'])
+const { message, dialog } = createDiscreteApi(['message', 'dialog'])
 
 const props = defineProps<{
   validate: () => Promise<boolean>

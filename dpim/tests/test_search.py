@@ -222,3 +222,4 @@ class TestSearchControlledVariables:
         resp = await search(req, es, gs, degraded=False)
         for r in resp.results:
             assert r.source_type == "interaction", f"{r.node_id} is {r.source_type}"
+

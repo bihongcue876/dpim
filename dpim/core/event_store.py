@@ -173,13 +173,16 @@ class EventStore:
         await self.db.conn.commit()
 
     async def search_fts(self, query: str, limit: int = 100) -> list[dict]:
-        """FTS5 搜索，中文不命中时自动降级为 LIKE 查询"""
-        cursor = await self.db.conn.execute(
-            "SELECT e.*, rank FROM events_fts f JOIN events e ON f.event_id = e.event_id "
-            "WHERE events_fts MATCH ? ORDER BY rank LIMIT ?",
-            (query, limit),
-        )
-        rows = await cursor.fetchall()
+        """FTS5 搜索，中文不命中或查询串含特殊字符（语法错误）时降级为 LIKE 查询"""
+        try:
+            cursor = await self.db.conn.execute(
+                "SELECT e.*, rank FROM events_fts f JOIN events e ON f.event_id = e.event_id "
+                "WHERE events_fts MATCH ? ORDER BY rank LIMIT ?",
+                (query, limit),
+            )
+            rows = await cursor.fetchall()
+        except Exception:
+            rows = []  # MATCH 语法错误（如含 - : " 等）→ 降级 LIKE
         if rows:
             return [dict(r) for r in rows]
         # FTS5 不命中（如中文），降级为 LIKE：按标题/内容命中位置计分排序

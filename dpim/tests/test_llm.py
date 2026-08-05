@@ -128,3 +128,5 @@ def test_llm_logs_error_recorded_in_full_mode():
     preview = get_llm_logs()
     assert len(preview[0]["error"]) == 2000
     clear_llm_logs()
+
+
