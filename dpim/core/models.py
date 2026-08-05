@@ -239,7 +239,7 @@ class HealthResponse(BaseModel):
     ai_available: bool
     layers: dict[str, Any]
     last_event_at: str = ""
-    version: str = "0.1.0"
+    version: str = "0.2.0"
 
 
 # ── dpim-webui 新增模型 ────────────────────

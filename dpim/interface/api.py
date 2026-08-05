@@ -92,7 +92,7 @@ async def lifespan(app: FastAPI):
         await db.close()
 
 
-app = FastAPI(title="DPIM", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="DPIM", version="0.2.0", lifespan=lifespan)
 
 
 def _stores():

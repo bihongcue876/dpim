@@ -4,11 +4,11 @@ import StatusBar from '@/components/StatusBar.vue'
 
 describe('StatusBar', () => {
   const healthOn = {
-    status: 'ok', ai_available: true, last_event_at: '2026-07-24T10:00:00Z', version: '0.1.0',
+    status: 'ok', ai_available: true, last_event_at: '2026-07-24T10:00:00Z', version: '0.2.0',
     layers: { event_line: { total_events: 42 }, knowledge_graph: { total_nodes: 7 } },
   }
   const healthOff = {
-    status: 'degraded', ai_available: false, last_event_at: '', version: '0.1.0',
+    status: 'degraded', ai_available: false, last_event_at: '', version: '0.2.0',
     layers: { event_line: {}, knowledge_graph: {} },
   }
 

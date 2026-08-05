@@ -1,6 +1,6 @@
 [project]
 name = "dpim-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "DPIM 命令行交互工具 — 通过 HTTP API 管理双区智能内存"
 requires-python = ">=3.12"
 dependencies = [

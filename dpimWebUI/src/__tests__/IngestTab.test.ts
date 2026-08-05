@@ -9,7 +9,7 @@ vi.mock('@/api/client', () => ({
       event_line: { total_events: 10 },
       knowledge_graph: { total_nodes: 3 },
     },
-    last_event_at: '', version: '0.1.0',
+    last_event_at: '', version: '0.2.0',
   }),
   getSettings: vi.fn().mockResolvedValue({
     llm_base_url: 'http://localhost:11434/v1', llm_model_name: 'llama3:8b',
@@ -54,7 +54,7 @@ describe('IngestTab', () => {
     ;(api.getHealth as any).mockResolvedValue({
       status: 'degraded', ai_available: false,
       layers: { event_line: {}, knowledge_graph: {} },
-      last_event_at: '', version: '0.1.0',
+      last_event_at: '', version: '0.2.0',
     })
     const wrapper = mount(IngestTab)
     await new Promise(r => setTimeout(r, 50))
