@@ -6,6 +6,9 @@
         :refresh-epoch="refreshEpoch"
         @select-node="onSelectNode" @double-click-node="onDbl"
         @select-edge="onSelectEdge" />
+      <div class="canvas-toolbar">
+        <n-button size="tiny" quaternary circle @click="refreshGraph" title="重新布局">↻</n-button>
+      </div>
     </div>
     <!-- 面板：向下滑出画布（translateY），canvas 尺寸不变 -->
     <div :class="['panel-slider', panelOpen ? 'open' : 'closed']">
@@ -186,9 +189,14 @@ function getHighlightNodeTitle(): string {
   return n ? n.title : ''
 }
 
+async function refreshGraph() {
+  await loadGraph()
+  refreshEpoch.value++
+}
+
 async function loadGraph() {
   try {
-    const all = await api.listNodes({ limit: 200 })
+    const all = await api.listNodes({ limit: 400 })
     graphNodes.value = all.items
     nodeItems.value = all.items
     const edgeMap = new Map<string, EdgeInfo>()
@@ -420,6 +428,7 @@ async function onDeleteSelNodes() {
 <style scoped>
 .graph-tab { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; position: relative; }
 .graph-canvas-area { flex: 1; width: 100%; min-height: 0; position: relative; background: var(--dpim-bg, #0e1217); }
+.canvas-toolbar { position: absolute; top: 8px; right: 8px; z-index: 5; display: flex; gap: 4px; }
 
 /* 面板：absolute 定位 + translateY 向下滑出画布，canvas 始终 100% */
 .panel-slider {
