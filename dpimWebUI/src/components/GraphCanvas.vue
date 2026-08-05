@@ -8,6 +8,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import * as d3 from 'd3'
+import Graph from 'graphology'
+import forceatlas2 from 'graphology-layout-forceatlas2'
 import type { NodeListItem, EdgeInfo } from '@/api/client'
 
 const props = defineProps<{
@@ -128,16 +130,87 @@ function render() {
 
   if (simulation) simulation.stop()
 
-  // 力导向参数：低弹性 + 弱中心牵引，孤立节点不会堆叠在一起
+  // --- ForceAtlas2 初始布局（连通分量天然分离） ---
+  let fa2Positions: Record<string, { x: number; y: number }> = {}
+  try {
+    const g = new Graph()
+    for (const n of simNodes) g.addNode(n.id, { x: Math.random() * 100 - 50, y: Math.random() * 100 - 50 })
+    for (const link of simLinks) {
+      try { g.addEdge(link.source as string, link.target as string) } catch { /* 重复边跳过 */ }
+    }
+    const settings = forceatlas2.inferSettings(g)
+    fa2Positions = forceatlas2(g, {
+      iterations: 100,
+      settings: { ...settings, gravity: 2, barnesHutOptimize: true },
+    })
+  } catch { /* FA2 回退 */ }
+
+  // 将 FA2 位置缩放到画布范围
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+  let hasPos = false
+  for (const n of simNodes) {
+    const pos = fa2Positions[n.id]
+    if (pos && isFinite(pos.x) && isFinite(pos.y)) {
+      minX = Math.min(minX, pos.x); maxX = Math.max(maxX, pos.x)
+      minY = Math.min(minY, pos.y); maxY = Math.max(maxY, pos.y)
+      hasPos = true
+    }
+  }
+  const scale = hasPos
+    ? Math.min((w - 80) / (maxX - minX || 1), (h - 80) / (maxY - minY || 1))
+    : 1
+  const cx = hasPos ? (minX + maxX) / 2 : 0
+  const cy = hasPos ? (minY + maxY) / 2 : 0
+  for (const n of simNodes) {
+    const pos = fa2Positions[n.id]
+    if (pos && isFinite(pos.x) && isFinite(pos.y)) {
+      n.x = (pos.x - cx) * scale + w / 2
+      n.y = (pos.y - cy) * scale + h / 2
+    } else {
+      n.x = w / 2 + (Math.random() - 0.5) * 60
+      n.y = h / 2 + (Math.random() - 0.5) * 60
+    }
+  }
+
+  // --- 连通分量检测 + 各分量独立定心 ---
+  const adj = new Map<string, string[]>()
+  for (const n of simNodes) adj.set(n.id, [])
+  for (const link of simLinks) {
+    const s = typeof link.source === 'string' ? link.source : (link.source as SimNode).id
+    const t = typeof link.target === 'string' ? link.target : (link.target as SimNode).id
+    adj.get(s)?.push(t); adj.get(t)?.push(s)
+  }
+  const visited = new Set<string>()
+  const compCenters = new Map<string, { x: number; y: number }>()
+  for (const n of simNodes) {
+    if (visited.has(n.id)) continue
+    const comp: string[] = [n.id]; visited.add(n.id)
+    const queue = [n.id]
+    while (queue.length) {
+      const id = queue.shift()!
+      for (const nb of adj.get(id) || []) {
+        if (!visited.has(nb)) { visited.add(nb); queue.push(nb); comp.push(nb) }
+      }
+    }
+    let cx2 = 0, cy2 = 0, cnt = 0
+    for (const id of comp) {
+      const node = simNodes.find(n => n.id === id)
+      if (node && node.x != null && node.y != null) { cx2 += node.x; cy2 += node.y; cnt++ }
+    }
+    const center = cnt > 0 ? { x: cx2 / cnt, y: cy2 / cnt } : { x: w / 2, y: h / 2 }
+    for (const id of comp) compCenters.set(id, center)
+  }
+
+  // FA2 定好位置后，D3 仅负责交互与轻微碰撞避让
   simulation = d3.forceSimulation<SimNode>(simNodes)
     .force('link', d3.forceLink<SimNode, SimLink>(simLinks)
-      .id(d => d.id).distance(120).strength(0.25))
-    .force('charge', d3.forceManyBody().strength(-300))
-    .force('x', d3.forceX(w / 2).strength(0.04))
-    .force('y', d3.forceY(h / 2).strength(0.04))
-    .force('collision', d3.forceCollide(d => nodeRadius(d as SimNode) + 20).strength(0.9))
-    .alphaDecay(0.06)
-    .velocityDecay(0.7)
+      .id(d => d.id).distance(120).strength(0.12))
+    .force('collision', d3.forceCollide<SimNode>(d => nodeRadius(d) + 20).strength(0.5))
+    .force('x', d3.forceX<SimNode>(d => (compCenters.get(d.id)?.x ?? w / 2)).strength(0.01))
+    .force('y', d3.forceY<SimNode>(d => (compCenters.get(d.id)?.y ?? h / 2)).strength(0.01))
+    .alpha(0.12)
+    .alphaDecay(0.15)
+    .velocityDecay(0.5)
 
   // ---- Edges with curvature ----
   // 按无向对分组（A|B 和 B|A 视为同一组），双向边自动错开弯曲
@@ -278,8 +351,8 @@ function render() {
   // Drag：拖动固定节点；松手后停留在拖放位置（不弹回），邻接节点仅轻微跟随（一点弹性）
   nodeG.call(d3.drag<SVGGElement, SimNode>()
     .on('start', (event, d) => {
-      // 轻微回温，让邻接节点有一点弹性跟随，但不剧烈
-      if (!event.active && simulation) simulation.alphaTarget(0.12).restart()
+      // 微量回温，让邻接节点轻微跟随但不弹跳
+      if (!event.active && simulation) simulation.alphaTarget(0.05).restart()
       d.fx = d.x; d.fy = d.y
     })
     .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y })
