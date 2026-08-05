@@ -1,14 +1,10 @@
 """LLM 网关厂商适配层测试（SiliconFlow / DeepSeek / llama.cpp 透传）"""
 
-import asyncio
-from types import SimpleNamespace
-
 import httpx
 from openai import APIStatusError
 
-import core.llm as llm_mod
 from core.config import ProviderConfig
-from core.llm import LLMGateway, _client_for, _is_local_host, _request_extra, is_transient_error
+from core.llm import _client_for, _is_local_host, _request_extra, is_transient_error
 
 
 def make_conf(**kw):
@@ -134,73 +130,3 @@ def test_llm_logs_error_recorded_in_full_mode():
     clear_llm_logs()
 
 
-def test_embed_uses_independent_service(monkeypatch):
-    """embed() 使用独立嵌入服务配置（base_url/api_key），不跟随主 LLM 提供商"""
-    captured: dict = {}
-
-    class FakeClient:
-        def __init__(self, base_url, api_key, timeout):
-            captured["base_url"] = base_url
-            captured["api_key"] = api_key
-            captured["timeout"] = timeout
-
-        @property
-        def embeddings(self):
-            return self
-
-        async def create(self, model, input):
-            captured["model"] = model
-            captured["input"] = input
-            return SimpleNamespace(
-                data=[SimpleNamespace(index=0, embedding=[1.0, 0.0])]
-            )
-
-    conf = ProviderConfig(
-        name="sf",
-        base_url="https://api.llm.example/v1",
-        api_key="llm-key",
-        model="m",
-        timeout=123,
-        embedding_model="bge-m3",
-        embedding_base_url="https://api.embed.example/v1",
-        embedding_api_key="emb-key",
-    )
-    monkeypatch.setattr(llm_mod.settings, "role_provider", lambda role: conf)
-    monkeypatch.setattr(llm_mod, "AsyncOpenAI", FakeClient)
-    out = asyncio.run(LLMGateway().embed(["hello"], role="cr"))
-    assert captured["base_url"] == "https://api.embed.example/v1"
-    assert captured["api_key"] == "emb-key"
-    assert captured["model"] == "bge-m3"
-    assert captured["input"] == ["hello"]
-    assert out == [[1.0, 0.0]]
-
-
-def test_embed_follows_active_provider_when_no_service(monkeypatch):
-    """未配独立嵌入服务 → 跟随活动提供商 base_url/api_key"""
-    captured: dict = {}
-
-    class FakeClient:
-        def __init__(self, base_url, api_key, timeout):
-            captured["base_url"] = base_url
-            captured["api_key"] = api_key
-
-        @property
-        def embeddings(self):
-            return self
-
-        async def create(self, model, input):
-            return SimpleNamespace(data=[SimpleNamespace(index=0, embedding=[0.5])])
-
-    conf = ProviderConfig(
-        name="sf",
-        base_url="https://api.llm.example/v1",
-        api_key="llm-key",
-        model="m",
-        timeout=30,
-        embedding_model="bge-m3",
-    )
-    monkeypatch.setattr(llm_mod.settings, "role_provider", lambda role: conf)
-    monkeypatch.setattr(llm_mod, "AsyncOpenAI", FakeClient)
-    asyncio.run(LLMGateway().embed(["x"], role="cr"))
-    assert captured["base_url"] == "https://api.llm.example/v1"
-    assert captured["api_key"] == "llm-key"

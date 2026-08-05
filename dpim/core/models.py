@@ -325,10 +325,6 @@ class SettingsResponse(BaseModel):
     health_check_timeout: int
     compensate_batch_size: int
     log_level: str
-    embedding_model: str = ""
-    embedding_dim: int | None = None
-    embedding_base_url: str = ""
-    embedding_api_key: str = ""
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -355,7 +351,3 @@ class SettingsUpdateRequest(BaseModel):
     health_check_timeout: int | None = None
     compensate_batch_size: int | None = None
     log_level: str | None = None
-    embedding_model: str | None = None
-    embedding_dim: int | None = None
-    embedding_base_url: str | None = None
-    embedding_api_key: str | None = None

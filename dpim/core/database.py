@@ -45,21 +45,7 @@ class Database:
                 title,
                 content
             );
-            CREATE TABLE IF NOT EXISTS event_embeddings (
-                event_id TEXT PRIMARY KEY,
-                vector BLOB NOT NULL,
-                dim INTEGER NOT NULL,
-                model TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS node_embeddings (
-                node_id TEXT PRIMARY KEY,
-                vector BLOB NOT NULL,
-                dim INTEGER NOT NULL,
-                model TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            PRAGMA user_version = 2;
+            PRAGMA user_version = 1;
         """)
         await self.conn.commit()
 

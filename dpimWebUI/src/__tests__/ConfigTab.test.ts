@@ -13,8 +13,6 @@ vi.mock('@/api/client', () => ({
     agent_in_model: '', agent_gr_model: '', agent_meta_model: '',
     max_graph_hops: 2, rrf_k: 60, jaccard_threshold: 0.85,
     health_check_interval: 60, health_check_timeout: 60, compensate_batch_size: 20, log_level: 'INFO',
-    embedding_model: 'bge-m3', embedding_dim: 1024,
-    embedding_base_url: 'https://api.siliconflow.cn/v1', embedding_api_key: 'sk-emb',
   }),
   putSettings: vi.fn().mockResolvedValue(undefined),
 }))
@@ -36,18 +34,13 @@ describe('ConfigTab', () => {
     expect(wrapper.text()).toContain('Meta 模型')
   })
 
-  it('renders embedding config inside model section', async () => {
+  it('does not render embedding fields after removal', async () => {
     const wrapper = mount(ConfigTab, {
       props: { health: null, validate: validateOk, onCommitted },
     })
     await new Promise(r => setTimeout(r, 50))
-    expect(wrapper.text()).toContain('嵌入模型（空=禁用语义检索）')
-    expect(wrapper.text()).toContain('嵌入维度（0=自动检测）')
-    expect(wrapper.text()).toContain('嵌入 API 地址（空=跟随活动提供商）')
-    expect(wrapper.text()).toContain('嵌入 API Key（空=跟随活动提供商）')
-    expect(wrapper.text()).toContain('嵌入服务')
-    expect(wrapper.text()).toContain('语义检索状态')
-    expect(wrapper.text()).toContain('启用中：bge-m3')
+    expect(wrapper.text()).not.toContain('嵌入式模型')
+    expect(wrapper.text()).not.toContain('语义检索')
   })
 
   it('shows submit button at bottom', async () => {

@@ -154,8 +154,6 @@ class Orchestrator:
                     logger.info("Event %s linked with %d nodes", event_id, len(created))
                     # 管线写入后强制落盘，避免防抖阈值内崩溃丢数据（P0-2）
                     await self.graph_store.save()
-                    # 语义检索：生成嵌入（可选增强，失败静默回退不判事件失败）
-                    await self._embed_sidecar(event_id, created)
                     return
                 tm.last_feedback = issues_text(verdict.issues)
                 tm.attempts += 1
@@ -227,49 +225,11 @@ class Orchestrator:
             tm.attempts += 1
         return SearchResponse(results=paged, total=total, degraded=False)
 
-    async def _embed_sidecar(self, event_id: str, node_ids: list[str]) -> None:
-        """管线写入后生成嵌入（可选增强）：失败静默回退，不影响事件状态。"""
-        if not settings.embedding_enabled():
-            return
-        try:
-            from core.embeddings import EmbeddingStore
-            from core.llm import gateway as llm_gateway
-
-            estore = EmbeddingStore(self.db)
-            texts: list[str] = []
-            keys: list[tuple[str, str]] = []
-            event = await self.event_store.get(event_id)
-            if event and event["raw_content"].strip():
-                texts.append(event["raw_content"])
-                keys.append(("event", event_id))
-            for nid in node_ids:
-                node = self.graph_store.get_node(nid)
-                if node:
-                    texts.append(f"{node.title}\n{node.content}")
-                    keys.append(("node", nid))
-            if not texts:
-                return
-            vectors = await llm_gateway.embed(texts)
-            model = settings.embedding_model
-            for (kind, key), vec in zip(keys, vectors):
-                if kind == "event":
-                    await estore.upsert_event(key, vec, model)
-                else:
-                    await estore.upsert_node(key, vec, model)
-            logger.info("Embedded %d vectors for event %s", len(keys), event_id)
-        except Exception:
-            logger.info("Embedding sidecar skipped for event %s", event_id)
-
     async def _handle_delete_event(self, payload: dict):
         event_id = payload["event_id"]
         result = await self.event_store.delete_with_protection(event_id, self.graph_store)
         if result["status"] == "ok":
             logger.info("Event %s deleted", event_id)
-            try:
-                from core.embeddings import EmbeddingStore
-                await EmbeddingStore(self.db).delete_event(event_id)
-            except Exception:
-                pass
         elif result["status"] == "protected":
             logger.warning("Event %s protected by node %s", event_id, result.get("node_id"))
         elif result["status"] == "not_found":
@@ -288,11 +248,6 @@ class Orchestrator:
         self.graph_store.remove_node(node_id)
         await self.graph_store.delete_node_fts(node_id)
         await self.graph_store.flush()
-        try:
-            from core.embeddings import EmbeddingStore
-            await EmbeddingStore(self.db).delete_node(node_id)
-        except Exception:
-            pass
         logger.info("Node %s deleted", node_id)
 
     async def _handle_modify_node(self, payload: dict):

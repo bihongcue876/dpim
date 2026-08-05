@@ -72,47 +72,27 @@ async def search(
         paged = sorted_results[request.offset : request.offset + request.limit]
         return SearchResponse(results=paged, total=total, degraded=True)
 
-    # Step 1.5: 向量召回（可选增强）：嵌入不可用/未配置 → c_vec 空，行为与两路一致
-    c_vec: dict[str, float] = {}
-    if settings.embedding_enabled():
-        try:
-            from core.embeddings import EmbeddingStore
-            from core.llm import gateway as llm_gateway
-            q_vec = (await llm_gateway.embed([request.query]))[0]
-            estore = EmbeddingStore(event_store.db)
-            for eid, score in await estore.search_event(q_vec, limit=100):
-                if score > 0:
-                    c_vec[eid] = score
-            for nid, score in await estore.search_node(q_vec, limit=100):
-                if score > 0:
-                    c_vec[nid] = score
-        except Exception:
-            c_vec = {}  # 语义路不可用 → 静默回退
-
     # Step 2: Graph diffusion
     seeds = [k for k in c1 if graph_store.get_node(k) is not None]
     c2 = graph_store.ego_graph(seeds, hops=request.max_hops)
 
-    # Step 3: RRF fusion（三路：FTS5 + 向量 + 图扩散）
+    # Step 3: RRF fusion（两路：FTS5 + 图扩散）
     k = settings.rrf_k
     sorted_c1 = sorted(c1.keys(), key=lambda x: c1[x], reverse=True)
     sorted_c2 = sorted(c2.keys(), key=lambda x: c2[x], reverse=True)
-    sorted_cvec = sorted(c_vec.keys(), key=lambda x: c_vec[x], reverse=True)
-    max_rank = max(len(sorted_c1), len(sorted_c2), len(sorted_cvec)) + 1
+    max_rank = max(len(sorted_c1), len(sorted_c2)) + 1
     # 预构建 rank 字典：O(1) 查找，避免每次 .index() 的 O(n) 遍历
     rank1_map = {key: i + 1 for i, key in enumerate(sorted_c1)}
     rank2_map = {key: i + 1 for i, key in enumerate(sorted_c2)}
-    rank3_map = {key: i + 1 for i, key in enumerate(sorted_cvec)}
 
     rrf_scores: dict[str, float] = {}
-    all_keys = set(c1.keys()) | set(c2.keys()) | set(c_vec.keys())
+    all_keys = set(c1.keys()) | set(c2.keys())
 
     for key in all_keys:
         rank1 = rank1_map.get(key, max_rank)
         rank2 = rank2_map.get(key, max_rank)
-        rank3 = rank3_map.get(key, max_rank)
         rrf_scores[key] = (
-            (1.0 / (k + rank1)) + (1.0 / (k + rank2)) + (1.0 / (k + rank3))
+            (1.0 / (k + rank1)) + (1.0 / (k + rank2))
         )
 
     # Apply time decay

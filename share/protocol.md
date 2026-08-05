@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.8
+> 版本：1.9
 > 日期：2026-08-04
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 语义检索（embedding 三路融合 + 独立嵌入服务）
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）
 
 ---
 
@@ -281,12 +281,9 @@ raw → indexed → linked
 **流程**：
 
 1. 关键词召回：events_fts 和 node_fts 同时 FTS5 匹配，各取 top-100，合并去重得 C1
-2. 向量召回（可选增强）：配置 `EMBEDDING_MODEL` 后启用，查询文本嵌入后与事件/节点向量做余弦 top-100，得 C3（嵌入不可用/未配置 → 跳过，行为与两路一致）
-3. 图扩散：以 C1 为种子，2 跳扩散，得分 = 1/(hop+1)，取 top-200 得 C2
-4. RRF 融合：`Σ 1/(60 + rank_i)`（三路时叠加 C3 项），交互类乘以时间衰减 `1/(1+days×0.05)`
-5. 降级模式：仅执行步骤 1
-
-**向量存储**：`event_embeddings` / `node_embeddings` 表（SQLite），float32 BLOB + 余弦相似度，纯标准库实现（无向量数据库依赖）。嵌入在管线写入成功（linked）后生成，失败静默回退不影响事件状态。
+2. 图扩散：以 C1 为种子，2 跳扩散，得分 = 1/(hop+1)，取 top-200 得 C2
+3. RRF 融合：`Σ 1/(60 + rank_i)`（两路），交互类乘以时间衰减 `1/(1+days×0.05)`
+4. 降级模式：仅执行步骤 1
 
 **检索结果**：
 
@@ -498,17 +495,13 @@ content
 | **LLM_MAX_TOKENS** | (空) | 输出 token 上限（0/空 = 服务端默认；provider 条目可覆盖） |
 | **LLM_ENABLE_THINKING** | (空) | 思考开关（true/false/空 = 服务端默认；provider 条目可覆盖） |
 | **LLM_THINKING_BUDGET** | (空) | 思考预算 tokens（0/空 = 不设；provider 条目可覆盖） |
-| **PROVIDERS** | (空 JSON) | BYOK 多 provider 注册（JSON dict：name → {base_url, api_key, model, timeout, max_tokens, enable_thinking, thinking_budget, thinking_style, extra_body, structured_mode, embedding_model, embedding_dim, embedding_base_url, embedding_api_key}） |
+| **PROVIDERS** | (空 JSON) | BYOK 多 provider 注册（JSON dict：name → {base_url, api_key, model, timeout, max_tokens, enable_thinking, thinking_budget, thinking_style, extra_body, structured_mode}） |
 | **ACTIVE_PROVIDER** | primary | 活动 provider（primary = LLM_* 主配置） |
 | **AGENT_MODE** | disabled | Agent 管线开关：disabled \| pipeline |
 | **AGENT_MAX_RETRIES** | 2 | Meta 驳回时的最大修正轮次 |
 | **ACTIVE_MODEL** | (空) | 使用中的模型（活动 provider 模型列表内；空 → provider 首个/默认） |
 | **LLM_STRUCTURED_MODE** | md_json | 结构化输出模式：md_json（默认，兼容 llama.cpp）\| json \| tools |
 | **MAX_RAW_CONTENT** | 10000 | 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（超限截断） |
-| **EMBEDDING_MODEL** | (空) | 语义检索嵌入模型名（OpenAI 兼容 /v1/embeddings；空 = 禁用向量路） |
-| **EMBEDDING_DIM** | (空) | 嵌入维度（0/空 = 首次响应自动检测） |
-| **EMBEDDING_BASE_URL** | (空) | 独立嵌入服务地址（空 = 跟随活动提供商 base_url；provider 条目可覆盖） |
-| **EMBEDDING_API_KEY** | (空) | 独立嵌入服务 API Key（空 = 跟随活动提供商 api_key） |
 | **AGENT_CR_MODEL** | (空) | Cr 角色模型覆盖（空 → 回退活动 provider） |
 | **AGENT_IN_MODEL** | (空) | In 角色模型覆盖 |
 | **AGENT_GR_MODEL** | (空) | Gr 角色模型覆盖 |
@@ -528,6 +521,7 @@ content
 > 2026-08-04：超时放宽（本地模型宽容）：LLM_TIMEOUT 默认 300→666、HEALTH_CHECK_TIMEOUT 60→120；`GET /agent/logs` 新增 `full=true` 参数返回完整 input/output/error（前端折叠查看）。
 > 2026-08-04：规约升级至 v1.7。新增语义检索（embedding）：EMBEDDING_MODEL / EMBEDDING_DIM 配置项 + provider 条目级覆盖；检索三路 RRF（FTS5 + 向量 + 图扩散）；向量表 event_embeddings / node_embeddings；`SettingsResponse/UpdateRequest` 新增 embedding_model / embedding_dim 字段。
 > 2026-08-04：规约升级至 v1.8。嵌入服务独立化：EMBEDDING_BASE_URL / EMBEDDING_API_KEY 配置项（空 = 跟随活动提供商），provider 条目级覆盖 embedding_base_url / embedding_api_key；嵌入配置随 dpim.json 持久化（重启保留）；`SettingsResponse/UpdateRequest` 新增 embedding_base_url / embedding_api_key 字段。
+> 2026-08-04：规约升级至 v1.9。移除语义检索（embedding）整链：EMBEDDING_* 配置项、向量表 event_embeddings / node_embeddings、`LLMGateway.embed()`、检索向量路（三路 RRF 回到两路：FTS5 + 图扩散）；`SettingsResponse/UpdateRequest` 移除 embedding_* 字段。
 
 ---
 

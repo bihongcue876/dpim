@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.8 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 补全 22 端点类型 + 语义检索 embedding + 独立嵌入服务)
+// 版本 1.9 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 补全 22 端点类型；已移除语义检索 embedding)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -465,14 +465,6 @@ export interface SettingsResponse {
   health_check_interval: number;
   compensate_batch_size: number;
   log_level: string;
-  /** 语义检索嵌入模型名（OpenAI 兼容 /v1/embeddings；空 = 禁用向量路） */
-  embedding_model: string;
-  /** 嵌入维度（null/0 = 首次响应自动检测） */
-  embedding_dim: number | null;
-  /** 独立嵌入服务地址（空 = 跟随活动提供商 base_url） */
-  embedding_base_url: string;
-  /** 独立嵌入服务 API Key（空 = 跟随活动提供商 api_key） */
-  embedding_api_key: string;
 }
 
 /** 配置更新请求 (PUT /settings) 只下发需要修改的字段即可 */
@@ -499,14 +491,6 @@ export interface SettingsUpdateRequest {
   health_check_interval?: number;
   compensate_batch_size?: number;
   log_level?: string;
-  /** 语义检索嵌入模型名（空 = 禁用向量路） */
-  embedding_model?: string;
-  /** 嵌入维度（0/空 = 首次响应自动检测） */
-  embedding_dim?: number | null;
-  /** 独立嵌入服务地址（空 = 跟随活动提供商 base_url） */
-  embedding_base_url?: string;
-  /** 独立嵌入服务 API Key（空 = 跟随活动提供商 api_key） */
-  embedding_api_key?: string;
 }
 
 // ==================== 配置项（类型参考）====================
