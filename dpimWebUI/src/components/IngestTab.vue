@@ -225,7 +225,7 @@ async function refreshPending() {
         h.status = 'indexed'
       }
     } catch (e: any) {
-      if (e?.message === 'Not Found') {
+      if (e?.message === 'Event not found' || e?.message === 'Not Found') {
         h.status = 'removed'
         changed = true
       }
@@ -315,7 +315,7 @@ onUnmounted(() => {
 
 <style scoped>
 .ingest-tab {
-  height: 100%; overflow-y: auto; padding: 16px 24px;
+  flex: 1; min-height: 0; overflow-y: auto; padding: 16px 24px;
   display: flex; flex-direction: column; gap: 14px;
 }
 .it-card {

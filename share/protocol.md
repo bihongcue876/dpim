@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.9
-> 日期：2026-08-04
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）
+> 版本：1.10
+> 日期：2026-08-14
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏放宽（MAX_RAW_CONTENT 默认 10000 → 600000）
 
 ---
 
@@ -501,7 +501,7 @@ content
 | **AGENT_MAX_RETRIES** | 2 | Meta 驳回时的最大修正轮次 |
 | **ACTIVE_MODEL** | (空) | 使用中的模型（活动 provider 模型列表内；空 → provider 首个/默认） |
 | **LLM_STRUCTURED_MODE** | md_json | 结构化输出模式：md_json（默认，兼容 llama.cpp）\| json \| tools |
-| **MAX_RAW_CONTENT** | 10000 | 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（超限截断） |
+| **MAX_RAW_CONTENT** | 600000 | 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（超限截断） |
 | **AGENT_CR_MODEL** | (空) | Cr 角色模型覆盖（空 → 回退活动 provider） |
 | **AGENT_IN_MODEL** | (空) | In 角色模型覆盖 |
 | **AGENT_GR_MODEL** | (空) | Gr 角色模型覆盖 |
@@ -522,6 +522,7 @@ content
 > 2026-08-04：规约升级至 v1.7。新增语义检索（embedding）：EMBEDDING_MODEL / EMBEDDING_DIM 配置项 + provider 条目级覆盖；检索三路 RRF（FTS5 + 向量 + 图扩散）；向量表 event_embeddings / node_embeddings；`SettingsResponse/UpdateRequest` 新增 embedding_model / embedding_dim 字段。
 > 2026-08-04：规约升级至 v1.8。嵌入服务独立化：EMBEDDING_BASE_URL / EMBEDDING_API_KEY 配置项（空 = 跟随活动提供商），provider 条目级覆盖 embedding_base_url / embedding_api_key；嵌入配置随 dpim.json 持久化（重启保留）；`SettingsResponse/UpdateRequest` 新增 embedding_base_url / embedding_api_key 字段。
 > 2026-08-04：规约升级至 v1.9。移除语义检索（embedding）整链：EMBEDDING_* 配置项、向量表 event_embeddings / node_embeddings、`LLMGateway.embed()`、检索向量路（三路 RRF 回到两路：FTS5 + 图扩散）；`SettingsResponse/UpdateRequest` 移除 embedding_* 字段。
+> 2026-08-14：规约升级至 v1.10。上下文护栏放宽：MAX_RAW_CONTENT 默认 10000 → 600000 字符（避免长输入被截断）。
 
 ---
 

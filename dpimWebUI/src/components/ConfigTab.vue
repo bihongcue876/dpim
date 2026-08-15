@@ -265,7 +265,7 @@ async function onSubmit() {
 </script>
 
 <style scoped>
-.config-tab { height: 100%; display: flex; flex-direction: column; padding: 16px 24px 12px; }
+.config-tab { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 16px 24px 12px; }
 .config-scroll { flex: 1; overflow-y: auto; min-height: 0; padding-right: 4px; }
 
 .config-section {

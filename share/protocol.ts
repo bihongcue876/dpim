@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.9 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 补全 22 端点类型；已移除语义检索 embedding)
+// 版本 1.10 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 补全 22 端点类型；已移除语义检索 embedding；MAX_RAW_CONTENT 默认 600000)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -510,7 +510,7 @@ export interface DPIMConfig {
   // Agent 管线
   AGENT_MODE: AgentMode;        // 默认 'disabled'
   AGENT_MAX_RETRIES: number;    // 默认 2
-  MAX_RAW_CONTENT: number;      // 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（默认 10000）
+  MAX_RAW_CONTENT: number;      // 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（默认 600000）
   AGENT_CR_MODEL: string;
   AGENT_IN_MODEL: string;
   AGENT_GR_MODEL: string;

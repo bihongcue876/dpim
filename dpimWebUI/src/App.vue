@@ -173,8 +173,8 @@ onUnmounted(() => {
   --dpim-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
 }
 
-/* 全局盒模型：让 height:100% + padding、固定头高度与 calc(100vh-84px) 精确吻合，
-   修复配置/检索/信息传入等页底部按钮被裁切的问题 */
+/* 全局盒模型：让 height:100% + padding 与 flex 全高布局精确吻合，
+   修复配置/检索/信息传入等页底部被裁切的问题 */
 *, *::before, *::after { box-sizing: border-box; }
 
 html, body, #app { margin: 0; padding: 0; height: 100%; overflow: hidden; }
@@ -186,18 +186,35 @@ body {
   text-rendering: optimizeLegibility;
 }
 .app-root { height: 100vh; display: flex; flex-direction: column; background: var(--dpim-bg); }
+/* n-layout 内部有 .n-layout-scroll-container 中间层（普通 block，height:100%），
+   不转成 flex 容器的话，其子元素（TopBar/StatusBar/n-tabs）的 flex 约束全部失效，
+   n-tabs 高度退回内容高度 → 页面底部大面积空白不贴底 */
+.app-root > .n-layout-scroll-container {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 
-/* 主内容标签页：确定高度，子元素 height:100% 才能正确解析 */
+/* 主内容标签页：flex 全高自适应（不硬编码高度），子元素 flex:1 + min-height:0 才能正确解析 */
 .app-tabs {
-  height: calc(100vh - 84px);
+  flex: 1;
+  min-height: 0;
   display: flex; flex-direction: column; overflow: hidden;
   padding: 0;
 }
+/* Naive UI 内部链：n-tabs 根（即 .app-tabs 自身）→ n-tabs-nav → n-tabs-pane-wrapper → n-tab-pane
+   全部需要 flex + min-height:0 约束，否则内容超高时被 overflow:hidden 裁切且内层滚动失效 */
 .app-tabs > .n-tabs-nav {
   flex-shrink: 0;
   padding: 2px 20px 0;
   background: var(--dpim-surface);
   border-bottom: 1px solid var(--dpim-border);
+}
+.app-tabs .n-tabs-pane-wrapper {
+  flex: 1;
+  min-height: 0;
+  display: flex; flex-direction: column; overflow: hidden;
 }
 .app-tabs .n-tab-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .n-tabs { background: inherit !important; }

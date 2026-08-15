@@ -18,7 +18,7 @@ def test_default_values(monkeypatch):
     assert s.health_check_timeout == 120
     assert s.compensate_batch_size == 20
     assert s.log_level == "INFO"
-    assert s.max_raw_content == 10000
+    assert s.max_raw_content == 600000
 
 
 def test_env_override(monkeypatch):

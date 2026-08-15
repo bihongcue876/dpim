@@ -366,7 +366,7 @@ async function doCreate() {
 </script>
 
 <style scoped>
-.event-tab { display: flex; height: 100%; }
+.event-tab { flex: 1; display: flex; min-height: 0; }
 .event-left {
   width: 36%; display: flex; flex-direction: column;
   padding: 12px 14px; gap: 8px;
@@ -393,7 +393,7 @@ async function doCreate() {
 .ev-time { color: var(--dpim-text-3, #7c8694); width: 84px; flex-shrink: 0; font-family: 'Cascadia Code', Consolas, monospace; font-size: 11px; }
 .ev-content { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dpim-text-2, #aab4c0); }
 .event-right { flex: 1; display: flex; flex-direction: column; padding: 16px 20px; overflow: hidden; }
-.detail-scroll { overflow-y: auto; height: 100%; min-height: 0; }
+.detail-scroll { flex: 1; overflow-y: auto; min-height: 0; }
 .detail-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
 .raw-content {
   font-size: 13px; line-height: 1.7; white-space: pre-wrap; max-height: 320px; overflow-y: auto;

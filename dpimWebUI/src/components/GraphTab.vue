@@ -10,7 +10,7 @@
         <n-button size="tiny" quaternary circle @click="refreshGraph" title="重新布局">↻</n-button>
       </div>
     </div>
-    <!-- 面板：向下滑出画布（translateY），canvas 尺寸不变 -->
+    <!-- 面板：流式布局，展开时占底部空间，收起时折叠为 0，canvas 自动占满剩余 -->
     <div :class="['panel-slider', panelOpen ? 'open' : 'closed']">
       <div class="panel-body">
         <div class="panel-inner">
@@ -426,17 +426,18 @@ async function onDeleteSelNodes() {
 </script>
 
 <style scoped>
-.graph-tab { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; position: relative; }
-.graph-canvas-area { flex: 1; width: 100%; min-height: 0; position: relative; background: var(--dpim-bg, #0e1217); }
+.graph-tab { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.graph-canvas-area { flex: 1; min-height: 0; position: relative; background: var(--dpim-bg, #0e1217); }
 .canvas-toolbar { position: absolute; top: 8px; right: 8px; z-index: 5; display: flex; gap: 4px; }
 
-/* 面板：absolute 定位 + translateY 向下滑出画布，canvas 始终 100% */
+/* 面板：流式布局，高度由内容决定（上限 45%），收起时折叠为 0 */
 .panel-slider {
-  position: absolute; left: 0; right: 0; bottom: 32px; height: 40vh; z-index: 2;
-  transition: transform 0.25s ease;
+  flex-shrink: 0;
+  max-height: 45%;
+  overflow: hidden;
+  transition: max-height 0.25s ease;
 }
-.panel-slider.open { transform: translateY(0); }
-.panel-slider.closed { transform: translateY(calc(100% + 32px)); }
+.panel-slider.closed { max-height: 0; }
 
 .panel-body {
   height: 100%; display: flex; flex-direction: column;
@@ -456,9 +457,9 @@ async function onDeleteSelNodes() {
 .nd-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dpim-text-2, #aab4c0); }
 .nd-conf { color: var(--dpim-text-3, #7c8694); width: 40px; text-align: right; font-size: 12px; font-family: 'Cascadia Code', Consolas, monospace; }
 
-/* 底部操作栏：absolute 定在页面最底部 */
+/* 底部操作栏：流式常驻页面底部 */
 .toggle-row {
-  position: absolute; left: 0; right: 0; bottom: 0; height: 32px; z-index: 3;
+  flex-shrink: 0;
   display: flex; justify-content: space-between; align-items: center;
   padding: 3px 12px; background: var(--dpim-surface, #161b22);
   border-top: 1px solid var(--dpim-border, rgba(255,255,255,0.09));

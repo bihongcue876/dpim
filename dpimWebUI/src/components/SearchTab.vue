@@ -449,9 +449,10 @@ async function onFeedback(id: string, accepted: boolean) {
 
 <style scoped>
 .search-tab {
-  height: 100%;
+  flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   padding: 4px 24px 12px;
   overflow: hidden;
 }

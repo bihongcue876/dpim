@@ -102,7 +102,7 @@ class Settings:
             getenv("DPIM_AGENT_MAX_RETRIES", str(agent_cfg.get("max_retries", "2")))
         )
         # ── 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（超限截断）──
-        self.max_raw_content = int(getenv("DPIM_MAX_RAW_CONTENT", "10000"))
+        self.max_raw_content = int(getenv("DPIM_MAX_RAW_CONTENT", "600000"))
         # ── 结构化输出模式：md_json（默认，兼容 llama.cpp）| json | tools ──
         self.llm_structured_mode = getenv("DPIM_LLM_STRUCTURED_MODE", "md_json")
         # ── 角色模型路由（空值 → 回退活动 provider 默认模型）──
