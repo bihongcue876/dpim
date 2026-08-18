@@ -84,35 +84,17 @@ def delete_event(event_id: str):
     """删除事件"""
     async def _run():
         db, es, gs = await _stores()
-        event = await es.get(event_id)
-        if not event:
+        # 复用存储层删除保护逻辑（预检 + 源证失效 + interaction 节点清理）
+        result = await es.delete_with_protection(event_id, gs)
+        if result["status"] == "not_found":
             typer.echo(f"Event {event_id} not found")
-            return
-        refs = event.get("graph_refs", [])
-        # 预检：任一受保护节点（system/data 且失去本事件后无其他有效源证）即拒绝，不做任何修改
-        for nid in refs:
-            node = gs.get_node(nid)
-            if node is None:
-                continue
-            has_other = any(sr.valid for sr in node.source_refs if sr.event_id != event_id)
-            if not has_other and node.node_type.value in ("system", "data"):
-                typer.echo(
-                    f"Warning: node {nid} ({node.node_type.value}) protected,"
-                    " keeping event"
-                )
-                return
-        if refs:
-            gs.invalidate_source_ref(event_id)
-        for nid in refs:
-            node = gs.get_node(nid)
-            if node is None:
-                continue
-            has_other = any(sr.valid for sr in node.source_refs if sr.event_id != event_id)
-            if not has_other:
-                gs.remove_node(nid)
-                await gs.delete_node_fts(nid)
-        await es.delete(event_id)
-        typer.echo(f"Event {event_id} deleted")
+        elif result["status"] == "protected":
+            typer.echo(
+                f"Warning: node {result.get('node_id')} "
+                f"({result.get('node_type')}) protected, keeping event"
+            )
+        else:
+            typer.echo(f"Event {event_id} deleted")
         if gs.dirty:
             await gs.save()
         await db.close()

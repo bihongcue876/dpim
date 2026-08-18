@@ -142,7 +142,9 @@ async def _build_results(
                 confidence=conf,
                 degraded=False,
             ))
-        elif key in event_node_map or True:
+        else:
+            # 非图节点 key：可能是无图节点关联的事件（含 orchestrator 以空
+            # map 调用的场景），回退查事件表；查不到则跳过
             ev = await event_store.get(key)
             if ev:
                 results.append(SearchResult(

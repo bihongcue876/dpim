@@ -61,6 +61,32 @@ class TestLikeRank:
         assert like_rank("", "abc", "def") == 0.0
 
 
+class TestSearchMultiToken:
+    """多关键词 LIKE 降级：旧整串 LIKE 对多词查询基本全灭，现按词召回计分。"""
+
+    @pytest.mark.asyncio
+    async def test_multi_token_ranking(self, event_store: EventStore):
+        from tests.factories import make_event
+
+        eid_both = await make_event(event_store, "Python 异步编程教程", event_type="interaction")
+        await make_event(event_store, "异步编程概念", event_type="interaction")
+        # 查询含两个词；FTS5 中文不命中 → 降级多词 LIKE
+        results = await event_store.search_fts("异步 教程")
+        assert len(results) >= 2
+        # 两词都命中的事件（"异步编程教程" 含 异步 + 教程）排最前
+        assert results[0]["event_id"] == eid_both
+
+    @pytest.mark.asyncio
+    async def test_multi_token_no_overlap(self, event_store: EventStore):
+        """多词查询中仅部分词命中也应召回（旧整串 LIKE 会漏掉）。"""
+        from tests.factories import make_event
+
+        eid = await make_event(event_store, "今天学习了Python基础语法", event_type="interaction")
+        results = await event_store.search_fts("Python 网络爬虫")
+        assert len(results) == 1
+        assert results[0]["event_id"] == eid  # "Python" 命中即可召回
+
+
 class TestEventStoreInsert:
     @pytest.mark.asyncio
     async def test_insert_returns_id_and_status(self, event_store: EventStore):
@@ -270,12 +296,17 @@ class TestEventStoreFTS:
 
     @pytest.mark.asyncio
     async def test_fts_special_char_query_falls_back(self, event_store: EventStore):
-        """对照：查询串含 FTS5 特殊字符（语法错误）→ 降级 LIKE，不抛异常"""
+        """查询串含 FTS5 特殊字符（语法错误）→ 降级 LIKE，不抛异常。
+
+        切词后 "hello-world" 拆为 hello/world 两词，可召回 "hello world"
+        （旧实现整串 LIKE 全灭，属改进）。
+        """
         eid, _ = await event_store.insert("hello world")
         await event_store.insert_fts(eid, "hello world")
         results = await event_store.search_fts("hello-world")
         assert isinstance(results, list)  # 不抛异常
-        assert results == []
+        assert len(results) == 1
+        assert results[0]["event_id"] == eid
 
 
 class TestEventStoreControlledVariables:

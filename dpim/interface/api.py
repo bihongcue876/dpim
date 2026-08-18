@@ -1,6 +1,7 @@
 """FastAPI 应用，22 个 REST 端点"""
 
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -57,7 +58,7 @@ ALLOWED_EVENT_TRANSITIONS = {
 }
 
 
-def _ok(**extra: str) -> dict[str, str]:
+def _ok(**extra: Any) -> dict[str, Any]:
     """统一成功响应信封：所有简单端点返回 status=ok + message + 可选字段。"""
     return {"status": "ok", "message": "ok", **extra}
 
@@ -162,12 +163,10 @@ async def modify_node(node_id: str, body: ModifyNodeRequest):
         raise HTTPException(status_code=404, detail="Node not found")
     if node.node_type.value == "system":
         raise HTTPException(status_code=403, detail="System nodes cannot be modified")
-    node.content = body.content
-    node.confidence = 0.7
-    gs.graph.nodes[node_id]["data"] = node
-    await gs.upsert_node_fts(node_id, node.title, node.content)
-    if gs.dirty:
-        await gs.save()
+    # update_node 统一标记脏位：修改必须落盘，杜绝静默丢失
+    updated = gs.update_node(node_id, content=body.content, confidence=0.7)
+    await gs.upsert_node_fts(node_id, updated.title, updated.content)
+    await gs.flush()
     refresh_key()
     return _ok(node_id=node_id, message="Node updated")
 
@@ -249,18 +248,21 @@ async def delete_edge(source: str, target: str):
 
 @app.post("/nodes")
 async def create_node(body: CreateNodeRequest):
-    import uuid
-
     from core.models import GraphNode, NodeMetadata, SourceRef
     es, gs = _stores()
     node_id = uuid.uuid4().hex[:16]
 
     source_refs = []
     if body.source_event_id:
+        # SourceRef.hash 与事件 content_hash 一致，保证「hash 供核对」成立
+        c_hash = ""
+        ev = await es.get(body.source_event_id)
+        if ev:
+            c_hash = ev["content_hash"]
         source_refs.append(SourceRef(
             event_id=body.source_event_id,
             valid=True,
-            hash="",
+            hash=c_hash,
         ))
 
     node = GraphNode(
@@ -282,6 +284,8 @@ async def create_node(body: CreateNodeRequest):
 async def clear_graph():
     es, gs = _stores()
     gs.clear_all()
+    # 清空 node_fts：避免旧节点留在全文索引导致检索召回残留
+    await gs.rebuild_node_fts()
     await gs.flush()
     refresh_key()
     return _ok(message="Graph cleared")
@@ -307,9 +311,13 @@ async def feedback(body: FeedbackRequest):
         if node.node_type.value in ("system", "data"):
             return _ok(message="System/data nodes not affected by feedback")
         delta = 0.01 if body.accepted else -0.02
-        node.confidence = max(0.1, min(1.0, node.confidence + delta))
-        gs.graph.nodes[body.result_id]["data"] = node
-    return _ok(message="Feedback recorded")
+        new_conf = max(0.1, min(1.0, node.confidence + delta))
+        # update_node 标记脏位 + flush 落盘：反馈调整必须持久化
+        gs.update_node(body.result_id, confidence=new_conf)
+        await gs.flush()
+        return _ok(node_id=body.result_id, confidence=new_conf, message="Feedback recorded")
+    # 事件结果无置信度字段，反馈对事件不生效（保持兼容，不报错）
+    return _ok(message="Feedback recorded (event results have no confidence field)")
 
 
 # ── dpim-webui 新增端点 ────────────────────
@@ -485,3 +493,23 @@ async def agent_compensate() -> dict[str, Any]:
         )
     )
     return _ok(message="Compensation triggered")
+
+
+@app.post("/agent/maintain")
+async def agent_maintain() -> dict[str, Any]:
+    """手动触发图维护：扫描候选 → Gr 维护计划 → Meta 审核 → 执行。
+
+    支持图结构调整/合并/删改（调整合并已有节点、删除僵尸节点、修正内容、删错误边）；
+    写操作完成后刷新状态校验密钥（前端数据一致性）。
+    """
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail="Orchestrator not initialized")
+    await orchestrator.enqueue(
+        QueueMessage(
+            type="maintain_graph",
+            payload={},
+            timestamp=datetime.now(timezone.utc).timestamp(),
+        )
+    )
+    refresh_key()
+    return _ok(message="Graph maintenance triggered")

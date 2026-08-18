@@ -108,7 +108,7 @@ class TestCompensationControlledVariables:
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
         # 批次检查任务挂起（大间隔），不干扰退避断言
-        monkeypatch.setattr(settings, "health_check_interval", 999)
+        monkeypatch.setattr(settings, "compensate_check_interval", 999)
         sleeps: list[float] = []
         _real_sleep = asyncio.sleep
         async def fake_sleep(s):
@@ -135,7 +135,7 @@ class TestCompensationControlledVariables:
         from core.config import settings
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
-        monkeypatch.setattr(settings, "health_check_interval", 0.02)
+        monkeypatch.setattr(settings, "compensate_check_interval", 0.02)
         eid, _ = await event_store.insert("never links")
         await event_store.update_status(eid, "raw")
         orchestrator.enqueue = _null_enqueue
@@ -153,7 +153,7 @@ class TestCompensationControlledVariables:
         from tests.factories import make_event
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
-        monkeypatch.setattr(settings, "health_check_interval", 0.02)
+        monkeypatch.setattr(settings, "compensate_check_interval", 0.02)
         orchestrator._comp_fail_streak = 1
         eid = await make_event(event_store, "linked soon", status="raw")
         orchestrator.enqueue = _null_enqueue
@@ -170,7 +170,7 @@ class TestCompensationControlledVariables:
         from core.config import settings
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
-        monkeypatch.setattr(settings, "health_check_interval", 0.02)
+        monkeypatch.setattr(settings, "compensate_check_interval", 0.02)
         eid, _ = await event_store.insert("probe fail")
         await event_store.update_status(eid, "raw")
         orchestrator.enqueue = _null_enqueue
@@ -186,7 +186,7 @@ class TestCompensationControlledVariables:
         from core.config import settings
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
-        monkeypatch.setattr(settings, "health_check_interval", 0.02)
+        monkeypatch.setattr(settings, "compensate_check_interval", 0.02)
         orchestrator._comp_fail_streak = 1
         enqueued: list[dict] = []
         async def record_enqueue(msg):
@@ -209,7 +209,7 @@ class TestCompensationControlledVariables:
         from core.config import settings
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
-        monkeypatch.setattr(settings, "health_check_interval", 999)
+        monkeypatch.setattr(settings, "compensate_check_interval", 999)
         sleeps: list[float] = []
         _real_sleep = asyncio.sleep
         async def fake_sleep(s):
@@ -226,6 +226,45 @@ class TestCompensationControlledVariables:
         assert sleeps[-1] == 60.0
         if orchestrator._comp_batch_check:
             orchestrator._comp_batch_check.cancel()
+
+    @pytest.mark.asyncio
+    async def test_trigger_compensate_enqueues_maintain(
+        self, db, event_store, graph_store, monkeypatch
+    ):
+        """AI 恢复触发补偿时顺带自动入队图维护（AGENT_MAINTAIN_AUTO）。"""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "agent_maintain_auto", True)
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        enqueued: list[str] = []
+
+        async def rec(msg):
+            enqueued.append(msg.type)
+
+        orchestrator.enqueue = rec
+        compensator = Compensator(event_store, graph_store, orchestrator.enqueue)
+        await compensator._trigger_compensate()
+        assert "compensate" in enqueued
+        assert "maintain_graph" in enqueued  # 自动维护消息
+
+    @pytest.mark.asyncio
+    async def test_trigger_compensate_maintain_disabled(
+        self, db, event_store, graph_store, monkeypatch
+    ):
+        """AGENT_MAINTAIN_AUTO=false：恢复时不入队图维护。"""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "agent_maintain_auto", False)
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        enqueued: list[str] = []
+
+        async def rec(msg):
+            enqueued.append(msg.type)
+
+        orchestrator.enqueue = rec
+        compensator = Compensator(event_store, graph_store, orchestrator.enqueue)
+        await compensator._trigger_compensate()
+        assert "maintain_graph" not in enqueued
 
     @pytest.mark.asyncio
     async def test_no_pending_resets_state(

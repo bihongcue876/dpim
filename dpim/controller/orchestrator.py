@@ -7,7 +7,9 @@ from typing import Any
 
 from controller.task_memory import TaskMemory
 from controller.tools import (
+    scan_maintenance_candidates,
     tool_analyze_intent,
+    tool_apply_maintenance,
     tool_apply_to_store,
     tool_cr_summarize,
     tool_direct_search,
@@ -15,7 +17,9 @@ from controller.tools import (
     tool_graph_propose,
     tool_graph_query,
     tool_info_split,
+    tool_maintain_propose,
     tool_meta_review,
+    tool_meta_review_maintenance,
     tool_meta_review_search,
     tool_rrf_merge,
 )
@@ -89,6 +93,7 @@ class Orchestrator:
             "modify_edge": self._handle_modify_edge,
             "modify_event_status": self._handle_modify_event_status,
             "compensate": self._handle_compensate,
+            "maintain_graph": self._handle_maintain_graph,
         }
         handler_fn = handler.get(msg.type)
         if handler_fn:
@@ -148,7 +153,11 @@ class Orchestrator:
                 tm.meta_verdict = verdict
                 if verdict.verdict == "pass":
                     created = await tool_apply_to_store(
-                        self.event_store, self.graph_store, proposal, event_id
+                        self.event_store,
+                        self.graph_store,
+                        proposal,
+                        event_id,
+                        similar_nodes=tm.similar_nodes,
                     )
                     tm.created_node_ids = created
                     logger.info("Event %s linked with %d nodes", event_id, len(created))
@@ -256,10 +265,9 @@ class Orchestrator:
         node = self.graph_store.get_node(node_id)
         if node is None:
             return
-        node.content = new_content
-        node.confidence = 0.7
-        self.graph_store.graph.nodes[node_id]["data"] = node
-        await self.graph_store.upsert_node_fts(node_id, node.title, node.content)
+        # update_node 统一标记脏位：管线内修改同样必须落盘
+        updated = self.graph_store.update_node(node_id, content=new_content, confidence=0.7)
+        await self.graph_store.upsert_node_fts(node_id, updated.title, updated.content)
         await self.graph_store.flush()
 
     async def _handle_modify_edge(self, payload: dict):
@@ -283,6 +291,49 @@ class Orchestrator:
         event_id = payload["event_id"]
         new_status = payload["new_status"]
         await self.event_store.update_status(event_id, new_status)
+
+    async def _handle_maintain_graph(self, payload: dict) -> None:
+        """图维护任务：扫描候选 → Gr 维护计划 → Meta 审核 → 执行。
+
+        仅处理「调整/合并/删改」已有图结构；保守优先：
+        无候选或计划被 Meta 驳回即放弃本轮，不做修正循环。
+        自动触发（AI 恢复，payload.auto=True）受最小图规模约束，手动不受限。
+        """
+        if not ai_state.available or settings.agent_mode != "pipeline":
+            logger.info("Graph maintenance skipped (AI unavailable or pipeline inactive)")
+            return
+        if (
+            payload.get("auto")
+            and self.graph_store.total_nodes() < settings.agent_maintain_min_nodes
+        ):
+            logger.info(
+                "Graph maintenance skipped (auto, nodes=%d < min=%d)",
+                self.graph_store.total_nodes(),
+                settings.agent_maintain_min_nodes,
+            )
+            return
+        candidates = scan_maintenance_candidates(self.graph_store)
+        if not any([
+            candidates.get("merge_candidates"),
+            candidates.get("zombie_nodes"),
+            candidates.get("low_conf_isolated"),
+        ]):
+            logger.info("Graph maintenance: no candidates")
+            return
+        try:
+            plan = await tool_maintain_propose(self.graph_store, candidates)
+            verdict = await tool_meta_review_maintenance(
+                self.graph_store, plan, candidates
+            )
+            if verdict.verdict != "pass":
+                logger.warning(
+                    "Graph maintenance plan rejected: %s", issues_text(verdict.issues)
+                )
+                return
+            stats = await tool_apply_maintenance(self.event_store, self.graph_store, plan)
+            logger.info("Graph maintenance applied: %s", stats)
+        except Exception:
+            logger.exception("Graph maintenance error")
 
     async def _handle_compensate(self, payload: dict):
         raw_events = await self.event_store.list_by_status("raw")
@@ -332,7 +383,8 @@ class Orchestrator:
             return
 
         async def _check():
-            await asyncio.sleep(settings.health_check_interval)
+            # 批检查延迟独立于健康检查周期（默认 5s）：失败批次快速发现并退避
+            await asyncio.sleep(settings.compensate_check_interval)
             if self._comp_paused:
                 return
             if probe:

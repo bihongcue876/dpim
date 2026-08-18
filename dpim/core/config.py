@@ -102,7 +102,9 @@ class Settings:
             getenv("DPIM_AGENT_MAX_RETRIES", str(agent_cfg.get("max_retries", "2")))
         )
         # ── 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（超限截断）──
-        self.max_raw_content = int(getenv("DPIM_MAX_RAW_CONTENT", "600000"))
+        # 默认 200000 字符（≈5 万 token 输入）：足够容纳长文档，又不会像
+        # 600000 那样把内存/上下文撑爆；不依赖任何"默认模型"的上下文窗口
+        self.max_raw_content = int(getenv("DPIM_MAX_RAW_CONTENT", "200000"))
         # ── 结构化输出模式：md_json（默认，兼容 llama.cpp）| json | tools ──
         self.llm_structured_mode = getenv("DPIM_LLM_STRUCTURED_MODE", "md_json")
         # ── 角色模型路由（空值 → 回退活动 provider 默认模型）──
@@ -121,6 +123,19 @@ class Settings:
         # 健康检查超时（秒）：与生成超时分离，模型加载/单槽忙碌时不至于 3 连败假降级
         self.health_check_timeout = int(getenv("DPIM_HEALTH_CHECK_TIMEOUT", "120"))
         self.compensate_batch_size = int(getenv("DPIM_COMPENSATE_BATCH_SIZE", "20"))
+        # 补偿批次结果检查间隔（秒）：独立于健康检查周期（60s），失败批次
+        # 快速被发现并进入退避，避免积压迟迟不处理
+        self.compensate_check_interval = int(
+            getenv("DPIM_COMPENSATE_CHECK_INTERVAL", "5")
+        )
+        # ── 图维护自动触发：AI 恢复触发补偿时顺带整理图谱（手动触发不受限）──
+        # 默认开启；小图由 min_nodes 阈值拦截（避免空转）
+        self.agent_maintain_auto = (
+            _parse_bool_or_none(getenv("DPIM_AGENT_MAINTAIN_AUTO", "true")) is not False
+        )
+        self.agent_maintain_min_nodes = int(
+            getenv("DPIM_AGENT_MAINTAIN_MIN_NODES", "10")
+        )
         self.log_level = getenv("DPIM_LOG_LEVEL", "INFO")
         self._validate()
 

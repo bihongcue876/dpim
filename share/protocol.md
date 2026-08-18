@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.10
-> 日期：2026-08-14
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏放宽（MAX_RAW_CONTENT 默认 10000 → 600000）
+> 版本：1.12
+> 日期：2026-08-18
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改，POST /agent/maintain，23 端点）
 
 ---
 
@@ -212,6 +212,42 @@ raw → indexed → linked
 - 来源锚定：evidence_quote 是否出现在 raw_content 中，优先子串匹配
 - 空节点检查：content 不得为空
 
+#### 4.4 图维护任务（调整/合并/删改）
+
+**职责**：整理已有图结构——合并重合节点、删除僵尸节点、修正过时内容、删除错误边。与「4.2 图构建（存）」互补：构图是增，维护是改删。
+
+**触发**：
+- 手动：`POST /agent/maintain`（入队 `maintain_graph`，与写入共用串行队列）
+- 自动：AI 恢复触发补偿时顺带入队一次（`AGENT_MAINTAIN_AUTO` 默认开启；图节点数 < `AGENT_MAINTAIN_MIN_NODES` 时自动触发跳过，手动不受限）
+- AI 不可用或管线未启用时跳过
+
+**流程**：
+
+1. **候选扫描**（确定性，无 LLM）：同类型相似节点对（词重叠 Jaccard ≥ 0.6，词桶优化）、无有效源证的僵尸节点、低置信度（<0.4）且无边的孤立节点
+2. **Gr 维护计划**：一次 LLM 调用输出 GraphMaintenancePlan（merges / deletes / updates / edge_removes，每条带 reason）
+3. **Meta 审核**：本地硬规则（存在性/类型边界/删除保护）+ LLM 语义复核（合并是否真重合、删除是否安全、修改是否违背证据）
+4. **执行**：审核通过则执行（合并 = target 吸收 source 源证/内容/边迁移后删 source；删除/修改/删边各按规则），驳回即放弃本轮（无修正循环，保守优先）
+5. **空计划合法**：无必要整理时 Gr 输出空计划，不做任何改动
+
+**边界**（与删除保护对齐）：
+
+| 操作 | 允许范围 |
+|------|----------|
+| 合并 | 仅同类型（data-data / interaction-interaction）；system 永不参与；源证并集不丢失证据 |
+| 删除 | interaction 节点（Meta 审核）；data 仅当无有效源证；system 永不删除 |
+| 修改 | interaction 覆盖内容；data 只允许追加（不得概括）；system 禁改；修改须仍能被源证支撑 |
+| 删边 | 按 (source, target) 删除，须有依据 |
+
+**GraphMaintenancePlan**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| merges | MaintenanceMerge[] | 合并：target_id 吸收 source_ids（源证/内容/边）后删 source |
+| deletes | MaintenanceDelete[] | 删除节点（node_id + reason） |
+| updates | MaintenanceUpdate[] | 调整内容（node_id + content + reason） |
+| edge_removes | MaintenanceEdgeRemove[] | 删除边（source + target + reason） |
+| confidence | number | 计划整体置信度 0.0~1.0 |
+
 ---
 
 ### 五、工作流规范
@@ -373,7 +409,7 @@ content
 
 ### 八、API 端点
 
-> 当前共 22 个端点。查询同步返回；写操作在 Agent 管线启用时异步入队，否则同步确认。
+> 当前共 23 个端点。查询同步返回；写操作在 Agent 管线启用时异步入队，否则同步确认。
 
 #### 8.1 写入类
 
@@ -388,9 +424,10 @@ content
 | DELETE | /nodes/{node_id} | 删除节点（force=true 覆盖源证保护） | DeleteNodeRequest |
 | POST | /edges | 创建关联边 | CreateEdgeRequest |
 | DELETE | /edges | 删除关联边（query: source, target） | — |
-| DELETE | /graph | 清空图谱（节点 + 边） | — |
+| DELETE | /graph | 清空图谱（节点 + 边，同步清 node_fts） | — |
 | PUT | /settings | 批量更新配置项（持久化 dpim.json） | SettingsUpdateRequest |
 | POST | /agent/compensate | 手动触发补偿：积压 raw/indexed 事件重入队 | — |
+| POST | /agent/maintain | 手动触发图维护：扫描候选 → Gr 计划 → Meta 审核 → 执行（合并/删除/修改/删边） | — |
 
 #### 8.2 读取类
 
@@ -501,7 +538,7 @@ content
 | **AGENT_MAX_RETRIES** | 2 | Meta 驳回时的最大修正轮次 |
 | **ACTIVE_MODEL** | (空) | 使用中的模型（活动 provider 模型列表内；空 → provider 首个/默认） |
 | **LLM_STRUCTURED_MODE** | md_json | 结构化输出模式：md_json（默认，兼容 llama.cpp）\| json \| tools |
-| **MAX_RAW_CONTENT** | 600000 | 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（超限截断） |
+| **MAX_RAW_CONTENT** | 200000 | 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（超限截断；默认 200000 ≈ 5 万 token 输入，不依赖特定模型上下文） |
 | **AGENT_CR_MODEL** | (空) | Cr 角色模型覆盖（空 → 回退活动 provider） |
 | **AGENT_IN_MODEL** | (空) | In 角色模型覆盖 |
 | **AGENT_GR_MODEL** | (空) | Gr 角色模型覆盖 |
@@ -512,6 +549,9 @@ content
 | HEALTH_CHECK_INTERVAL | 60 | 健康检查间隔（秒） |
 | HEALTH_CHECK_TIMEOUT | 120 | 健康检查超时（秒，与生成超时分离） |
 | COMPENSATE_BATCH_SIZE | 20 | 补偿批次大小 |
+| **COMPENSATE_CHECK_INTERVAL** | 5 | 补偿批次结果检查间隔（秒，独立于健康检查周期，失败批次快速进入退避） |
+| **AGENT_MAINTAIN_AUTO** | true | 图维护自动触发：AI 恢复触发补偿时顺带整理图谱（合并/删除/修改/删边） |
+| **AGENT_MAINTAIN_MIN_NODES** | 10 | 自动维护最小图规模（节点数；小图跳过，手动触发不受限） |
 | LOG_LEVEL | INFO | 日志级别 |
 
 > 2026-08-01：新增 BYOK 多模型网关与 Agent 管线配置（PROVIDERS / ACTIVE_PROVIDER / AGENT_*）。
@@ -523,6 +563,8 @@ content
 > 2026-08-04：规约升级至 v1.8。嵌入服务独立化：EMBEDDING_BASE_URL / EMBEDDING_API_KEY 配置项（空 = 跟随活动提供商），provider 条目级覆盖 embedding_base_url / embedding_api_key；嵌入配置随 dpim.json 持久化（重启保留）；`SettingsResponse/UpdateRequest` 新增 embedding_base_url / embedding_api_key 字段。
 > 2026-08-04：规约升级至 v1.9。移除语义检索（embedding）整链：EMBEDDING_* 配置项、向量表 event_embeddings / node_embeddings、`LLMGateway.embed()`、检索向量路（三路 RRF 回到两路：FTS5 + 图扩散）；`SettingsResponse/UpdateRequest` 移除 embedding_* 字段。
 > 2026-08-14：规约升级至 v1.10。上下文护栏放宽：MAX_RAW_CONTENT 默认 10000 → 600000 字符（避免长输入被截断）。
+> 2026-08-18：规约升级至 v1.11。上下文护栏回调：MAX_RAW_CONTENT 默认 600000 → 200000 字符（≈5 万 token 输入，不依赖默认模型上下文，避免内存/上下文撑爆）；新增 COMPENSATE_CHECK_INTERVAL（默认 5s）：补偿批次结果检查间隔独立于健康检查周期（60s），失败批次快速进入退避。
+> 2026-08-18：规约升级至 v1.12。新增图维护任务（4.4 节）：调整/合并/删改已有图结构——候选扫描（相似对/僵尸节点/孤立低置信）→ Gr 维护计划（GraphMaintenancePlan）→ Meta 审核（本地硬规则 + LLM 语义复核）→ 执行；边界与删除保护对齐（system 永不参与、data 仅无有效源证可删、合并仅同类型、修改仅 interaction 覆盖/data 追加）；新增端点 POST /agent/maintain（22 → 23 端点）；自动触发：AI 恢复时顺带维护（AGENT_MAINTAIN_AUTO 默认开启，AGENT_MAINTAIN_MIN_NODES 默认 10 拦截小图）。
 
 ---
 

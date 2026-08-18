@@ -117,17 +117,20 @@ class LLMCallLog:
 
 _llm_logs: deque[LLMCallLog] = deque(maxlen=50)
 _LOG_PREVIEW_LEN = 2000
+# 单条日志 input/output/error 截断上限（字符）：配合 MAX_RAW_CONTENT 护栏，
+# 防止 50 条环形缓冲把长输入放大为数十 MB 常驻内存（full=true 返回的是截断后的全文）
+_LOG_MAX_LEN = 50000
 
 
 def log_llm_call(role: str, model: str, user: str, output: str, error: str = "") -> None:
-    # 完整内容入缓冲；是否截断由读取侧（get_llm_logs）按需决定
+    # 入缓冲前截断：完整内容仅保留前 _LOG_MAX_LEN；是否再截断由读取侧按需决定
     _llm_logs.appendleft(LLMCallLog(
         role=role,
         timestamp=time(),
         model=model,
-        input=user,
-        output=output,
-        error=error,
+        input=user[:_LOG_MAX_LEN],
+        output=output[:_LOG_MAX_LEN],
+        error=error[:_LOG_MAX_LEN],
     ))
 
 

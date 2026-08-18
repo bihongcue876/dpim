@@ -85,3 +85,12 @@ class Compensator:
             timestamp=__import__("time").time(),
         )
         await self.enqueue(msg)
+        # 自动图维护：AI 恢复后顺带整理图谱（合并冗余/清理僵尸/修正内容）；
+        # 扫描无候选即跳过；小图由 AGENT_MAINTAIN_MIN_NODES 拦截（orchestrator 侧）
+        if settings.agent_maintain_auto:
+            maint = QueueMessage(
+                type="maintain_graph",
+                payload={"auto": True},
+                timestamp=__import__("time").time(),
+            )
+            await self.enqueue(maint)

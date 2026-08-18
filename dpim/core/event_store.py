@@ -185,17 +185,23 @@ class EventStore:
             rows = []  # MATCH 语法错误（如含 - : " 等）→ 降级 LIKE
         if rows:
             return [dict(r) for r in rows]
-        # FTS5 不命中（如中文），降级为 LIKE：按标题/内容命中位置计分排序
+        # FTS5 不命中（如中文），降级为多关键词 LIKE：按命中词数/位置计分排序
+        from core.text_utils import like_rank_multi, tokenize_query
+
+        tokens = tokenize_query(query)
+        if not tokens:
+            tokens = [query]
+        like_sql = "SELECT e.* FROM events e WHERE " + " OR ".join(
+            ["e.raw_content LIKE ?"] * len(tokens)
+        )
         like_cursor = await self.db.conn.execute(
-            "SELECT e.* FROM events e "
-            "WHERE e.raw_content LIKE ?",
-            (f"%{query}%",),
+            like_sql, [f"%{t}%" for t in tokens]
         )
         rows = await like_cursor.fetchall()
         scored = []
         for r in rows:
             d = dict(r)
-            d["rank"] = like_rank(query, "", d["raw_content"])
+            d["rank"] = like_rank_multi(tokens, "", d["raw_content"])
             scored.append(d)
         scored.sort(key=lambda x: x["rank"])
         return scored[:limit]

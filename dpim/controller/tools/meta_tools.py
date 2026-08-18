@@ -73,3 +73,34 @@ async def tool_meta_review_search(
     })
     result = await gateway.chat_structured("meta", MetaCogVerdict, system, user)
     return result
+
+
+async def tool_meta_review_maintenance(
+    graph_store: Any, plan: Any, candidates: dict, feedback: str = ""
+) -> MetaCogVerdict:
+    """审核图维护计划（任务三 review_maintenance）。
+
+    本地硬规则（类型边界/存在性/删除保护）先行，通过后调 LLM 做语义复核
+    （合并是否真重合、删除是否过度、修改是否违背证据）。LLM 复核失败不阻塞
+    （本地已把关），按通过处理。
+    """
+    from .sys_tools import run_maintenance_local_checks
+
+    local_issues = run_maintenance_local_checks(graph_store, plan)
+    if local_issues:
+        return empty_verdict(local_issues)
+
+    system = prompt_loader.load("meta")
+    user = compact_json({
+        "task": "review_maintenance",
+        "plan": plan.model_dump(),
+        "candidates": candidates,
+        "previous_feedback": feedback or None,
+        "output_schema": MetaCogVerdict.model_json_schema(),
+    })
+    try:
+        result = await gateway.chat_structured("meta", MetaCogVerdict, system, user)
+        return result
+    except Exception:
+        # LLM 复核失败不阻塞执行（本地硬规则已通过）
+        return MetaCogVerdict(verdict="pass", issues=[])

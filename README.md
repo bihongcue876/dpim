@@ -30,11 +30,11 @@ DPIM 是一个双区智能贮存系统，同时承担两个角色：
 - 降级与补偿：LLM 不可用时自动降级，恢复后批量补偿积压事件；补偿带退避（首条试探 + 指数退避 + 连续失败暂停）
 - 超时包容：生成请求超时默认 666s（provider 可覆盖）、健康检查独立超时 120s；超时/断连等瞬时错误不判死事件，自动回到 indexed 等待补偿重试
 - AI 调用日志：每次 LLM 调用的输入/输出/错误环形缓冲（GET /agent/logs，支持 full 参数返回全文），前端「信息传入」页实时观测、可折叠展开
-- 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（默认 10000），超限截断
+- 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（默认 200000 ≈ 5 万 token 输入，不依赖默认模型上下文），超限截断
 - 状态校验密钥：UUID 机制保证前后端写操作一致性，冲突时自动提示刷新
 - 线程安全的 AI 可用性状态管理（AIState 单例封装）
 - 启动时配置校验：LLM 地址格式 + API Key 空值警告
-- FastAPI REST 接口层，22 个端点
+- FastAPI REST 接口层，23 个端点（含图维护 POST /agent/maintain）
 - 命令行管理：内置 Typer CLI + 独立 dpim-cli（推荐，支持 Shell/管道/JSON/YAML 输出）
 
 ---
@@ -189,7 +189,7 @@ dpim shell -c 'ingest "测试内容"'   # 单条命令后退出
 
 系统采用四层架构：
 
-- **接口层**：FastAPI 22 端点 + Typer CLI，对外统一 API
+- **接口层**：FastAPI 23 端点 + Typer CLI，对外统一 API
 - **中控层**：asyncio.Queue 调度 + 可选 Agent 管线（Cr/In/Gr/Meta 四角色，提示词在 `dpim/prompts/`）+ 补偿调度（退避/试探/暂停）
 - **信息线层**：SQLite + FTS5，不可变事件日志，完全独立于 AI
 - **信息图层**：NetworkX + JSON，知识图谱节点与边，双向溯源（source_refs / graph_refs）
@@ -216,7 +216,7 @@ dpim shell -c 'ingest "测试内容"'   # 单条命令后退出
 | 可视化 | D3.js + ForceAtlas2（graphology）|
 | 独立 CLI | httpx + prompt-toolkit + tabulate + PyYAML |
 | 代码质量 | ruff + mypy（后端）/ vue-tsc（前端）|
-| 测试 | pytest 235 用例 / vitest 41 用例，全部通过 |
+| 测试 | pytest 259 用例 / vitest 41 用例，全部通过 |
 
 ---
 
@@ -229,14 +229,14 @@ DPIM/
 │   ├── controller/           # 中控层（orchestrator / compensator / task_memory / prompt_loader / tools/）
 │   ├── interface/            # 接口层（api.py 22 端点 / cli.py）
 │   ├── prompts/              # 四角色提示词（已定稿）
-│   ├── tests/                # pytest 235 用例
+│   ├── tests/                # pytest 259 用例
 │   ├── data/                 # 运行时存储文件
 │   ├── main.py               # 程序入口
 │   ├── pyproject.toml        # 项目配置
 │   └── dpim.json             # 结构化配置（运行时持久化）
 ├── dpimWebUI/                # Vue 3 前端
 ├── dpimCLI/                  # 独立 CLI 客户端
-├── share/                    # 共享契约（protocol.md v1.9 / protocol.ts）
+├── share/                    # 共享契约（protocol.md v1.11 / protocol.ts）
 ├── docs/                     # 设计文档
 └── AGENTS.md                 # Agent 工作引导
 

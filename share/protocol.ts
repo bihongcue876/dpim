@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.10 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 补全 22 端点类型；已移除语义检索 embedding；MAX_RAW_CONTENT 默认 600000)
+// 版本 1.12 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 图维护任务；23 端点；MAX_RAW_CONTENT 默认 200000；COMPENSATE_CHECK_INTERVAL)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -145,6 +145,45 @@ export interface MetaCogVerdict {
   issues: MetaCogIssue[];
 }
 
+// ==================== 图维护（调整/合并/删改）====================
+
+/** 维护合并：target 吸收 source_ids（源证/内容/边）后删除 source */
+export interface MaintenanceMerge {
+  target_id: string;
+  source_ids: string[];
+  reason?: string;
+}
+
+/** 维护删除 */
+export interface MaintenanceDelete {
+  node_id: string;
+  reason?: string;
+}
+
+/** 维护修改：interaction 覆盖内容；data 由执行层转为追加行 */
+export interface MaintenanceUpdate {
+  node_id: string;
+  content: string;
+  reason?: string;
+}
+
+/** 维护删边 */
+export interface MaintenanceEdgeRemove {
+  source: string;
+  target: string;
+  relation?: string;
+  reason?: string;
+}
+
+/** 图维护计划（Gr 产出 → Meta 审核 → 执行；空计划合法） */
+export interface GraphMaintenancePlan {
+  merges: MaintenanceMerge[];
+  deletes: MaintenanceDelete[];
+  updates: MaintenanceUpdate[];
+  edge_removes: MaintenanceEdgeRemove[];
+  confidence: number;
+}
+
 // ==================== 内部队列消息 ====================
 
 export type QueueMessageType =
@@ -157,7 +196,8 @@ export type QueueMessageType =
   | 'query'          // 仅记录，实际同步处理
   | 'feedback'
   | 'timer_health'
-  | 'compensate';
+  | 'compensate'
+  | 'maintain_graph';
 
 export interface QueueMessage {
   type: QueueMessageType;
@@ -510,7 +550,7 @@ export interface DPIMConfig {
   // Agent 管线
   AGENT_MODE: AgentMode;        // 默认 'disabled'
   AGENT_MAX_RETRIES: number;    // 默认 2
-  MAX_RAW_CONTENT: number;      // 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（默认 600000）
+  MAX_RAW_CONTENT: number;      // 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（默认 200000）
   AGENT_CR_MODEL: string;
   AGENT_IN_MODEL: string;
   AGENT_GR_MODEL: string;
@@ -521,5 +561,8 @@ export interface DPIMConfig {
   HEALTH_CHECK_INTERVAL: number;
   HEALTH_CHECK_TIMEOUT: number;   // 健康检查超时（秒，默认 60，与生成超时分离）
   COMPENSATE_BATCH_SIZE: number;
+  COMPENSATE_CHECK_INTERVAL: number;  // 补偿批次结果检查间隔（秒，默认 5）
+  AGENT_MAINTAIN_AUTO: boolean;      // 图维护自动触发：AI 恢复时顺带整理图谱（默认 true）
+  AGENT_MAINTAIN_MIN_NODES: number;  // 自动维护最小图规模（节点数，默认 10；手动触发不受限）
   LOG_LEVEL: string;
 }

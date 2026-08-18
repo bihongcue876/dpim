@@ -146,6 +146,48 @@ class GraphBuildOutput(BaseModel):
     merged_into: str | None = None
 
 
+# ── 图维护（图结构调整/合并/删改，2026-08-18 新增）──
+# 说明：维护计划由 Gr 产出、Meta 审核、tool_apply_maintenance 执行。
+# 边界（与协议删除保护对齐）：system 节点永不参与；data 仅无有效源证可删；
+# 合并仅同类型；修改仅 interaction（data 只追加）；保守优先，空计划合法。
+
+
+class MaintenanceMerge(BaseModel):
+    """合并多个已有节点进 target（target 吸收源证/内容/边后删除 source）。"""
+
+    target_id: str
+    source_ids: list[str] = []
+    reason: str = ""
+
+
+class MaintenanceDelete(BaseModel):
+    node_id: str
+    reason: str = ""
+
+
+class MaintenanceUpdate(BaseModel):
+    """调整节点内容：interaction 覆盖式；data 由执行层转为追加行。"""
+
+    node_id: str
+    content: str
+    reason: str = ""
+
+
+class MaintenanceEdgeRemove(BaseModel):
+    source: str
+    target: str
+    relation: str = ""
+    reason: str = ""
+
+
+class GraphMaintenancePlan(BaseModel):
+    merges: list[MaintenanceMerge] = []
+    deletes: list[MaintenanceDelete] = []
+    updates: list[MaintenanceUpdate] = []
+    edge_removes: list[MaintenanceEdgeRemove] = []
+    confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+
+
 class MetaCogIssue(BaseModel):
     type: str
     description: str

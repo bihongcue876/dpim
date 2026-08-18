@@ -18,7 +18,10 @@ def test_default_values(monkeypatch):
     assert s.health_check_timeout == 120
     assert s.compensate_batch_size == 20
     assert s.log_level == "INFO"
-    assert s.max_raw_content == 600000
+    assert s.max_raw_content == 200000  # 上下文护栏：600000 → 200000 字符
+    assert s.compensate_check_interval == 5
+    assert s.agent_maintain_auto is True  # 图维护自动触发默认开启
+    assert s.agent_maintain_min_nodes == 10
 
 
 def test_env_override(monkeypatch):

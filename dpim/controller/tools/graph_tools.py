@@ -44,3 +44,24 @@ async def tool_graph_propose(
     })
     result = await gateway.chat_structured("gr", GraphBuildOutput, system, user)
     return result
+
+
+async def tool_maintain_propose(
+    graph_store: Any, candidates: dict, feedback: str = ""
+) -> Any:
+    """图维护计划（任务二 maintain_graph）：基于扫描候选做合并/删除/修改决策。
+
+    单次调用打包全部上下文（candidates + 图统计 + 上一轮反馈 + Schema）。
+    保守优先：不确定就不动，空计划合法。
+    """
+    from core.models import GraphMaintenancePlan
+
+    system = prompt_loader.load("gr")
+    user = compact_json({
+        "task": "maintain_graph",
+        "candidates": candidates,
+        "previous_feedback": feedback or None,
+        "output_schema": GraphMaintenancePlan.model_json_schema(),
+    })
+    result = await gateway.chat_structured("gr", GraphMaintenancePlan, system, user)
+    return result
