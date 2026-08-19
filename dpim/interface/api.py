@@ -1,6 +1,7 @@
 """FastAPI 应用，23 个 REST 端点"""
 
 import logging
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -114,7 +115,10 @@ async def auth_guard(request, call_next):
     部署到服务器时设置该环境变量即启用整体保护（含 /settings、/agent/logs 等敏感端点）。
     """
     expected = settings.api_key
-    if expected and request.headers.get("X-API-Key") != expected:
+    # compare_digest：常数时间比较，防 timing 侧信道逐字节猜测密钥
+    if expected and not secrets.compare_digest(
+        request.headers.get("X-API-Key", ""), expected
+    ):
         return JSONResponse(
             status_code=401,
             content={"detail": "Unauthorized: missing or invalid X-API-Key header"},
