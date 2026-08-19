@@ -216,9 +216,14 @@ class EventStore:
             "UPDATE events SET raw_content = ?, content_hash = ? WHERE event_id = ?",
             (new_content, c_hash, event_id),
         )
+        # 先删后插（UPSERT）：raw 状态事件尚无 FTS 行时 UPDATE 是静默 no-op，
+        # 会导致修订后的内容永远检索不到
         await self.db.conn.execute(
-            "UPDATE events_fts SET raw_content = ? WHERE event_id = ?",
-            (new_content, event_id),
+            "DELETE FROM events_fts WHERE event_id = ?", (event_id,)
+        )
+        await self.db.conn.execute(
+            "INSERT INTO events_fts (event_id, raw_content) VALUES (?, ?)",
+            (event_id, new_content),
         )
         await self.db.conn.commit()
         return True

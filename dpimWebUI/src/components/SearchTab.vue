@@ -303,8 +303,10 @@ function sourceTagType(t: string) {
 }
 
 // ── 核心搜索 ──
+/** 请求序号：快速翻页/切换模式时丢弃过期响应，避免旧结果覆盖新结果 */
+let fetchSeq = 0
+
 async function doSearch() {
-  if (searchMode.value === 'hybrid' && !query.value.trim()) return
   if (!query.value.trim()) return
 
   // 将页码重置为 1（非翻页触发的全新搜索）
@@ -314,6 +316,7 @@ async function doSearch() {
 
 /** 根据页码加载数据（翻页或首次搜索共用） */
 async function fetchPage(page: number) {
+  const seq = ++fetchSeq
   searched.value = true
   loading.value = true
 
@@ -343,6 +346,7 @@ async function fetchPage(page: number) {
     }
 
     const res = await api.query(params)
+    if (seq !== fetchSeq) return // 过期响应，丢弃
     realTotal.value = res.total
     degraded.value = res.degraded
 
@@ -356,11 +360,12 @@ async function fetchPage(page: number) {
     // 清除旧反馈状态
     for (const key of Object.keys(feedbackState)) delete feedbackState[key]
   } catch (e: any) {
+    if (seq !== fetchSeq) return
     results.value = []
     realTotal.value = 0
     message.error('搜索失败: ' + (e.message || '未知错误'))
   } finally {
-    loading.value = false
+    if (seq === fetchSeq) loading.value = false
   }
 }
 
@@ -386,11 +391,13 @@ function goToPage(page: number) {
 
 // ── 浏览最近（无关键词快速浏览） ──
 async function browseRecent() {
+  const seq = ++fetchSeq
   loading.value = true
   currentPage.value = 1
   try {
     if (searchMode.value === 'events') {
       const res = await api.listEvents({ limit: resultLimit.value || 20 })
+      if (seq !== fetchSeq) return // 过期响应，丢弃
       results.value = res.items.map(ev => ({
         node_id: ev.event_id,
         title: ev.event_id,
@@ -404,8 +411,10 @@ async function browseRecent() {
       realTotal.value = res.total
     } else {
       const res = await api.listNodes({ limit: resultLimit.value || 20 })
+      if (seq !== fetchSeq) return // 过期响应，丢弃
       const detailPromises = res.items.map(n => api.getNode(n.node_id).catch(() => null))
       const details = await Promise.all(detailPromises)
+      if (seq !== fetchSeq) return // 过期响应，丢弃
       results.value = res.items.map((n, i) => {
         const d = details[i]
         return {
@@ -423,11 +432,12 @@ async function browseRecent() {
     }
     searched.value = true
   } catch (e: any) {
+    if (seq !== fetchSeq) return
     results.value = []
     realTotal.value = 0
     message.error('加载失败: ' + (e.message || '未知错误'))
   } finally {
-    loading.value = false
+    if (seq === fetchSeq) loading.value = false
   }
 }
 

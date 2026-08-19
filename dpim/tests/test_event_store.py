@@ -309,6 +309,39 @@ class TestEventStoreFTS:
         assert results[0]["event_id"] == eid
 
 
+class TestEventStoreUpdateContent:
+    """update_content 同步 FTS 索引：含 raw 状态事件尚无 FTS 行的场景"""
+
+    @pytest.mark.asyncio
+    async def test_update_content_creates_missing_fts_row(self, event_store: EventStore):
+        """raw 状态事件（无 FTS 行）修订内容后必须能检索到新内容。
+
+        旧实现 UPDATE events_fts 对无行事件是静默 no-op，修订内容永远搜不到。
+        """
+        eid, _ = await event_store.insert("original content about database")  # raw，未建 FTS
+        ok = await event_store.update_content(eid, "revised content about quantum")
+        assert ok is True
+        results = await event_store.search_fts("quantum")
+        assert len(results) == 1
+        assert results[0]["event_id"] == eid
+
+    @pytest.mark.asyncio
+    async def test_update_content_replaces_existing_fts_row(self, event_store: EventStore):
+        """已建 FTS 行的事件修订后：新内容可搜到，旧内容不再命中，且无重复行"""
+        eid, _ = await event_store.insert_event("alpha beta gamma")
+        ok = await event_store.update_content(eid, "delta epsilon zeta")
+        assert ok is True
+        assert len(await event_store.search_fts("epsilon")) == 1
+        assert len(await event_store.search_fts("beta")) == 0
+        # 无重复 FTS 行（先删后插）
+        ev = await event_store.get(eid)
+        assert ev["raw_content"] == "delta epsilon zeta"
+
+    @pytest.mark.asyncio
+    async def test_update_content_nonexistent_event(self, event_store: EventStore):
+        assert await event_store.update_content("no-such-id", "x") is False
+
+
 class TestEventStoreControlledVariables:
     """控制变量：状态机、删除保护、类型筛选"""
 

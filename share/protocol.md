@@ -24,7 +24,7 @@ DPIM（Double-Place Intelligence Memory）是一个独立于大模型上下文�
 |------|------|------|------|
 | event_id | string | 是 | 全局唯一，格式 `{timestamp_ms}-{random_hex_8}` |
 | created_at | string | 是 | ISO8601 时间戳 |
-| raw_content | string | 是 | 原始内容，不可变 |
+| raw_content | string | 是 | 原始内容（默认不可变，可通过 PUT /events/{event_id} 修订） |
 | content_hash | string | 是 | BLAKE2s-8B 十六进制（16 字符；实现为 hashlib.blake2s(digest_size=8)） |
 | event_type | enum | 是 | interaction / data / source |
 | status | enum | 是 | raw / indexed / linked / failed / skipped |

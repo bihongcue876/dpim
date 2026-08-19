@@ -1,4 +1,4 @@
-"""FastAPI 应用，22 个 REST 端点"""
+"""FastAPI 应用，23 个 REST 端点"""
 
 import logging
 import uuid

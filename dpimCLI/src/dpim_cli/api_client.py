@@ -41,7 +41,21 @@ class DPIMClient:
         if not r.is_success:
             err = body.get("error", {}) if isinstance(body, dict) else {}
             code = err.get("code", f"HTTP_{r.status_code}")
-            msg = err.get("message", r.reason_phrase or str(r.status_code))
+            # 后端 FastAPI 错误信封为 {detail: "..."}（422 时为校验错误数组），
+            # 兼容 {error:{code,message}} 与 {message}；均缺省时退回 reason_phrase
+            detail = body.get("detail") if isinstance(body, dict) else None
+            if isinstance(detail, list):  # FastAPI 422 校验错误 [{loc,msg,type},...]
+                detail = "; ".join(
+                    str(d.get("msg", d)) if isinstance(d, dict) else str(d)
+                    for d in detail
+                )
+            msg = (
+                err.get("message")
+                or (str(detail) if detail else None)
+                or body.get("message")
+                or r.reason_phrase
+                or str(r.status_code)
+            )
             raise DPIMError(code, msg, r.status_code)
 
         return body

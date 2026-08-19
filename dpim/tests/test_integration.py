@@ -117,6 +117,21 @@ class TestDeleteNodeEndpoint:
         resp = test_app.delete("/nodes/orphan")
         assert resp.status_code == 200
 
+    def test_delete_system_node_allowed(self, test_app):
+        """手动 DELETE /nodes 不限制节点类型：system 节点（手动创建、无有效源证）
+        可自由删除。「system 不参与合并/删除」仅约束 Agent 自动维护任务
+        （run_maintenance_local_checks），而非手动 REST 端点。"""
+        api.graph_store.add_node(GraphNode(
+            node_id="sys_del", title="System", content="manual",
+            node_type=NodeType.system,
+            source_refs=[],
+            confidence=1.0,
+            metadata=NodeMetadata(evidence_quote=""),
+        ))
+        resp = test_app.delete("/nodes/sys_del")
+        assert resp.status_code == 200
+        assert api.graph_store.get_node("sys_del") is None
+
 
 class TestModifyNodeEndpoint:
     def test_modify_node(self, test_app):

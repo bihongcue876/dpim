@@ -165,13 +165,15 @@ class LLMGateway:
     """BYOK 多模型网关：按角色返回客户端/模型名，并缓存实例。"""
 
     def __init__(self) -> None:
-        self._client_cache: dict[tuple[str, str], AsyncOpenAI] = {}
-        self._instructed_cache: dict[tuple[str, str], Any] = {}
+        self._client_cache: dict[tuple[str, str, int], AsyncOpenAI] = {}
+        self._instructed_cache: dict[tuple[str, str, int, Any], Any] = {}
 
     def client(self, role: str = "cr") -> AsyncOpenAI:
         """按角色返回基础 AsyncOpenAI 客户端。"""
         conf = settings.role_provider(role)
-        key = (conf.base_url, conf.api_key)
+        # 缓存键含 timeout：前端 PUT /settings 修改 llm_timeout 后必须重建客户端，
+        # 否则新超时不生效（旧实现仅按 base_url/api_key 缓存，改超时被静默忽略）
+        key = (conf.base_url, conf.api_key, conf.timeout)
         if key not in self._client_cache:
             self._client_cache[key] = _client_for(conf)
         return self._client_cache[key]
@@ -185,7 +187,8 @@ class LLMGateway:
         mode = _STRUCTURED_MODES.get(
             conf.structured_mode or settings.llm_structured_mode, instructor.Mode.MD_JSON
         )
-        key = (conf.base_url, conf.api_key, mode)
+        # 缓存键含 timeout 与 mode：改超时或结构化模式均需重建包装客户端
+        key = (conf.base_url, conf.api_key, conf.timeout, mode)
         if key not in self._instructed_cache:
             self._instructed_cache[key] = instructor.from_openai(
                 self.client(role), mode=mode

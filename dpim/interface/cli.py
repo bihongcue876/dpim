@@ -25,7 +25,7 @@ async def _stores():
 
 
 @cli.command()
-def serve(host: str = "0.0.0.0", port: int = 8000, reload: bool = False):
+def serve(host: str = "127.0.0.1", port: int = 8000, reload: bool = False):
     """启动 FastAPI 服务"""
     import uvicorn
     uvicorn.run("interface.api:app", host=host, port=port, reload=reload)

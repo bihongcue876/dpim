@@ -132,15 +132,10 @@ def main():
         run_shell()
         return
 
-    # 检查 -h/--help（必须最先处理）
-    if any(a in ("-h", "--help") for a in sys.argv[1:]):
-        parser = _parser()
-        _build_subparsers(parser)
-        parser.print_help()
-        print("\n可用命令:")
-        print("  status, state-key, ingest, events, event, nodes, node,")
-        print("  edge, search, feedback, config, graph, shell")
-        print("使用 dpim <命令> -h 查看命令详情。")
+    # 检查 -h/--help：仅在无子命令时打印全局帮助；
+    # 子命令的 -h（如 dpim ingest -h）由 argparse 子解析器处理，显示对应命令详情
+    if sys.argv[1] in ("-h", "--help"):
+        print_global_help()
         return
 
     parser = _parser()
