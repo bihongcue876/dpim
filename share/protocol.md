@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.12
-> 日期：2026-08-18
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改，POST /agent/maintain，23 端点）
+> 版本：1.13
+> 日期：2026-08-19
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改，POST /agent/maintain，23 端点）+ 安全加固（API Key 掩码 + 可选 API 访问认证 + 输入上限/值域约束 + 日志全文开关）
 
 ---
 
@@ -411,6 +411,8 @@ content
 
 > 当前共 23 个端点。查询同步返回；写操作在 Agent 管线启用时异步入队，否则同步确认。
 
+**访问认证（可选，v1.13 新增）：** 环境变量 `DPIM_API_KEY` 非空时，所有端点要求请求头 `X-API-Key` 匹配，不匹配返回 `401`；默认为空（本地模式零配置不启用）。WebUI 通过 localStorage `dpim_api_key` 自动附带该头。此密钥仅经环境变量配置，不经 `GET /settings` 下发、不经 `PUT /settings` 修改。
+
 #### 8.1 写入类
 
 | 方法 | 路径 | 说明 | 请求体 |
@@ -477,6 +479,14 @@ content
 
 **配置更新请求：** 接受完整的配置键值对 JSON，只下发需要修改的字段即可（详见第九节配置项）。
 
+**配置读写安全语义（v1.13 新增）：**
+
+- `GET /settings` 下发的 `llm_api_key` 与 `providers[*].api_key` 一律为**掩码值**（格式 `{前3字符}****{后4字符}`，短密钥全掩码，空密钥为空串），明文密钥绝不出网。
+- `PUT /settings` 对密钥字段采用**掩码幂等保留**：提交掩码值或空串 = 保留现值不变；提交其他非空值 = 替换。前端把 GET 下发的掩码原样回传不会清掉密钥。
+- `SettingsUpdateRequest` 值域约束（越界 422）：`agent_mode ∈ {disabled, pipeline}`、`log_level ∈ {DEBUG, INFO, WARNING, ERROR}`、数值字段范围与前端输入框一致（如 `max_graph_hops 1-5`、`rrf_k 1-200`、`jaccard_threshold 0-1` 等）。
+- `IngestRequest.content` / `ModifyEventRequest.content` 上限 **1,000,000 字符**（超限 422，防磁盘耗尽 DoS）。
+- `SearchRequest` 服务端范围约束（越界 422）：`max_hops 1-5`、`limit 1-100`、`offset ≥ 0`。
+
 **事件内容修改请求（PUT /events/{event_id}）：**
 
 ```json
@@ -517,6 +527,8 @@ content
 }
 ```
 
+> `full=true` 返回完整 input/output/error（不做 2000 字符截断）。`DPIM_AGENT_LOGS_FULL=false` 时忽略 full 参数（日志含事件原文，部署环境可关闭全文防泄露；默认 true 保持本地观测能力）。
+
 ---
 
 ### 九、配置项
@@ -552,6 +564,8 @@ content
 | **COMPENSATE_CHECK_INTERVAL** | 5 | 补偿批次结果检查间隔（秒，独立于健康检查周期，失败批次快速进入退避） |
 | **AGENT_MAINTAIN_AUTO** | true | 图维护自动触发：AI 恢复触发补偿时顺带整理图谱（合并/删除/修改/删边） |
 | **AGENT_MAINTAIN_MIN_NODES** | 10 | 自动维护最小图规模（节点数；小图跳过，手动触发不受限） |
+| **API_KEY** | (空) | API 访问认证（v1.13）：非空时所有端点要求 `X-API-Key` 请求头匹配；仅 env 配置，不经 API 下发/修改 |
+| **AGENT_LOGS_FULL** | true | AI 调用日志全文开关（v1.13）：false 时 GET /agent/logs 忽略 full 参数 |
 | LOG_LEVEL | INFO | 日志级别 |
 
 > 2026-08-01：新增 BYOK 多模型网关与 Agent 管线配置（PROVIDERS / ACTIVE_PROVIDER / AGENT_*）。
@@ -565,6 +579,7 @@ content
 > 2026-08-14：规约升级至 v1.10。上下文护栏放宽：MAX_RAW_CONTENT 默认 10000 → 600000 字符（避免长输入被截断）。
 > 2026-08-18：规约升级至 v1.11。上下文护栏回调：MAX_RAW_CONTENT 默认 600000 → 200000 字符（≈5 万 token 输入，不依赖默认模型上下文，避免内存/上下文撑爆）；新增 COMPENSATE_CHECK_INTERVAL（默认 5s）：补偿批次结果检查间隔独立于健康检查周期（60s），失败批次快速进入退避。
 > 2026-08-18：规约升级至 v1.12。新增图维护任务（4.4 节）：调整/合并/删改已有图结构——候选扫描（相似对/僵尸节点/孤立低置信）→ Gr 维护计划（GraphMaintenancePlan）→ Meta 审核（本地硬规则 + LLM 语义复核）→ 执行；边界与删除保护对齐（system 永不参与、data 仅无有效源证可删、合并仅同类型、修改仅 interaction 覆盖/data 追加）；新增端点 POST /agent/maintain（22 → 23 端点）；自动触发：AI 恢复时顺带维护（AGENT_MAINTAIN_AUTO 默认开启，AGENT_MAINTAIN_MIN_NODES 默认 10 拦截小图）。
+> 2026-08-19：规约升级至 v1.13。安全加固：① GET /settings 密钥掩码下发（`llm_api_key` / `providers[*].api_key` → `{前3}****{后4}`），PUT /settings 掩码幂等保留（掩码/空 = 保留现值）；② 新增可选 API 访问认证 DPIM_API_KEY（非空时全部端点要求 X-API-Key 头，默认空不启用），WebUI/请求层自动附带；③ 输入上限：IngestRequest.content / ModifyEventRequest.content ≤ 1,000,000 字符；SearchRequest 服务端值域（max_hops 1-5 / limit 1-100 / offset ≥ 0）；SettingsUpdateRequest 枚举与数值范围校验（越界 422）；④ 新增 DPIM_AGENT_LOGS_FULL（默认 true，false 时 /agent/logs 忽略 full 参数）；⑤ 前端提供商注册表由 JSON textarea 改为表单化弹窗管理（密钥掩码显示、留空保持不变）；⑥ event_fts LIKE 降级分支补 LIMIT 500 护栏。
 
 ---
 

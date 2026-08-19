@@ -463,10 +463,10 @@ export interface NodeDetail extends GraphNode {
 // ==================== 配置（dpim-webui）====================
 
 /** 配置项响应 (GET /settings) */
-/** BYOK provider 条目：基础连接 + 厂商适配参数 */
+/** BYOK provider 条目：基础连接 + 厂商适配参数（api_key 经 GET /settings 下发为掩码值 `{前3}****{后4}`） */
 export interface ProviderEntry {
   base_url: string;
-  api_key: string;
+  api_key: string;               // GET 下发为掩码；PUT 提交掩码/空 = 保留现值
   model?: string;              // 旧式单模型
   models?: string[];           // 多模型列表
   timeout?: number;
@@ -482,7 +482,7 @@ export interface SettingsResponse {
   memory_db_path: string;
   graph_json_path: string;
   llm_base_url: string;
-  llm_api_key: string;
+  llm_api_key: string;           // GET 下发为掩码值 `{前3}****{后4}`，明文绝不出网
   llm_model_name: string;
   llm_timeout: number;
   available_providers: string[];  // 可选 provider 名单（含 'primary'）
@@ -507,10 +507,12 @@ export interface SettingsResponse {
   log_level: string;
 }
 
-/** 配置更新请求 (PUT /settings) 只下发需要修改的字段即可 */
+/** 配置更新请求 (PUT /settings) 只下发需要修改的字段即可。
+ *  密钥幂等语义：llm_api_key / providers[*].api_key 提交掩码值或空串 = 保留现值。
+ *  值域越界返回 422（agent_mode / log_level 枚举 + 数值范围，见 protocol.md v1.13） */
 export interface SettingsUpdateRequest {
   llm_base_url?: string;
-  llm_api_key?: string;
+  llm_api_key?: string;          // 掩码/空 = 保留现值；其他非空值 = 替换
   llm_model_name?: string;
   llm_timeout?: number;
   llm_max_tokens?: number | null;
