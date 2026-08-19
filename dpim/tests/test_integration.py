@@ -483,6 +483,54 @@ class TestSettingsEndpoint:
         finally:
             s.agent_max_retries = old
 
+    def test_get_settings_masks_secrets(self, test_app, monkeypatch):
+        """GET /settings 绝不明文下发 llm_api_key / providers[*].api_key。"""
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "llm_api_key", "sk-1234567890abcd")
+        monkeypatch.setattr(s, "providers", {
+            "qwen": {"base_url": "https://x/v1", "api_key": "sk-deadbeef123456"},
+        })
+        data = test_app.get("/settings").json()
+        assert data["llm_api_key"] == "sk-****abcd"
+        assert data["providers"]["qwen"]["api_key"] == "sk-****3456"
+
+    def test_put_settings_masked_key_preserves_secret(self, test_app, monkeypatch):
+        """前端把 GET 下发的掩码原样回传 → 不应清掉真钥（幂等）。"""
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "llm_api_key", "sk-1234567890abcd")
+        monkeypatch.setattr(s, "providers", {})
+        r = test_app.put("/settings", json={"llm_api_key": "sk-****abcd"})
+        assert r.status_code == 200
+        assert s.llm_api_key == "sk-1234567890abcd"
+
+
+class TestAuthGuard:
+    """DPIM_API_KEY 非空时整体鉴权：无/错 X-API-Key → 401，正确 → 200。"""
+
+    def test_blocks_without_header(self, test_app, monkeypatch):
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "api_key", "secret-key")
+        resp = test_app.get("/settings")
+        assert resp.status_code == 401
+        assert resp.headers.get("WWW-Authenticate") == "ApiKey"
+
+    def test_blocks_with_wrong_header(self, test_app, monkeypatch):
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "api_key", "secret-key")
+        resp = test_app.get("/settings", headers={"X-API-Key": "wrong"})
+        assert resp.status_code == 401
+
+    def test_allows_with_correct_header(self, test_app, monkeypatch):
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "api_key", "secret-key")
+        resp = test_app.get("/settings", headers={"X-API-Key": "secret-key"})
+        assert resp.status_code == 200
+
 
 class TestAgentLogsEndpoint:
     """GET /agent/logs — AI 调用日志观测"""
