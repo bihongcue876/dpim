@@ -184,6 +184,25 @@ class GraphStore:
             self.graph.nodes[nid]["data"] = ndata
         self._mark_dirty()
 
+    def sync_source_ref_hash(self, event_id: str, new_hash: str) -> None:
+        """事件内容修订后，同步引用该事件节点的 source_refs[].hash。
+
+        保证「hash 快照与事件现 content_hash 一致」，供 reconcile 做锚定核对时
+        不会因正常修订而误判为来源漂移。
+        """
+        nids = self.event_to_nodes.get(event_id, [])
+        if not nids:
+            return
+        for nid in nids:
+            ndata = self.graph.nodes.get(nid, {}).get("data")
+            if ndata is None:
+                continue
+            for sr in ndata.source_refs:
+                if sr.event_id == event_id:
+                    sr.hash = new_hash
+            self.graph.nodes[nid]["data"] = ndata
+        self._mark_dirty()
+
     def get_node(self, node_id: str) -> GraphNode | None:
         ndata = self.graph.nodes.get(node_id, {}).get("data")
         return ndata
@@ -318,6 +337,39 @@ class GraphStore:
 
     def get_nodes_for_event(self, event_id: str) -> list[str]:
         return self.event_to_nodes.get(event_id, [])
+
+    async def reconcile(self, event_store) -> int:
+        """启动自愈：把图内 source_refs 与事件表现状对齐。
+
+        对每条 valid 源证：
+        - 引用的事件已不存在 → 置 invalid（悬空引用）
+        - hash 快照与事件现 content_hash 不一致 → 置 invalid（来源被修订/漂移）
+        返回被置为 invalid 的源证数量，便于日志观测。
+        """
+        event_ids = {
+            sr.event_id
+            for _, ndata in self.graph.nodes(data="data")
+            if ndata is not None
+            for sr in ndata.source_refs
+        }
+        events = await event_store.get_many(list(event_ids))
+        changed = 0
+        for nid, ndata in self.graph.nodes(data="data"):
+            if ndata is None:
+                continue
+            for sr in ndata.source_refs:
+                if not sr.valid:
+                    continue
+                ev = events.get(sr.event_id)
+                if ev is None:
+                    sr.valid = False
+                    changed += 1
+                elif sr.hash and ev.get("content_hash") and sr.hash != ev["content_hash"]:
+                    sr.valid = False
+                    changed += 1
+        if changed:
+            self._mark_dirty()
+        return changed
 
     def total_nodes(self) -> int:
         return self.graph.number_of_nodes()

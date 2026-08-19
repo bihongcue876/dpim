@@ -341,6 +341,41 @@ class TestEventStoreUpdateContent:
     async def test_update_content_nonexistent_event(self, event_store: EventStore):
         assert await event_store.update_content("no-such-id", "x") is False
 
+    @pytest.mark.asyncio
+    async def test_update_content_syncs_source_ref_hash(self, event_store, graph_store):
+        """修订事件内容后，引用该事件节点的 source_refs[].hash 同步为新 content_hash。"""
+        from core.models import NodeType
+        from tests.factories import make_node
+
+        eid, _ = await event_store.insert("original content")
+        await make_node(
+            graph_store, "n1", "Node", "node content",
+            NodeType.interaction, event_id=eid,
+        )
+        await event_store.update_status(eid, "linked", graph_refs=["n1"])
+        ok = await event_store.update_content(eid, "revised content", graph_store)
+        assert ok is True
+        sr = graph_store.get_node("n1").source_refs[0]
+        assert sr.hash == _content_hash("revised content")
+
+
+class TestEventStoreGetMany:
+    """get_many 批量取事件：去重、缺失跳过、空入参"""
+
+    @pytest.mark.asyncio
+    async def test_batch_with_missing_and_dedupe(self, event_store: EventStore):
+        eid1, _ = await event_store.insert("alpha")
+        eid2, _ = await event_store.insert("beta")
+        got = await event_store.get_many([eid1, eid2, "missing", eid1])
+        assert set(got) == {eid1, eid2}
+        assert got[eid1]["raw_content"] == "alpha"
+        assert got[eid2]["raw_content"] == "beta"
+
+    @pytest.mark.asyncio
+    async def test_empty_and_none(self, event_store: EventStore):
+        assert await event_store.get_many([]) == {}
+        assert await event_store.get_many(["no-such"]) == {}
+
 
 class TestEventStoreControlledVariables:
     """控制变量：状态机、删除保护、类型筛选"""

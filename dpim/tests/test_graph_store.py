@@ -535,3 +535,52 @@ class TestGraphStoreControlledVariables:
         ref_b = next(r for r in node.source_refs if r.event_id == "e_b")
         assert ref_a.valid is False
         assert ref_b.valid is True
+
+
+class TestGraphStoreReconcile:
+    """启动自愈 reconcile：悬空引用 / hash 漂移 → invalid，一致源证保持 valid"""
+
+    @pytest.mark.asyncio
+    async def test_sync_source_ref_hash_updates_matching_refs(self, graph_store: GraphStore):
+        from tests.factories import make_node
+        await make_node(graph_store, "n1", "T", "c", event_id="e1")
+        await make_node(graph_store, "n2", "T2", "c2", event_id="e2")
+        graph_store.sync_source_ref_hash("e1", "newhash")
+        assert graph_store.get_node("n1").source_refs[0].hash == "newhash"
+        assert graph_store.get_node("n2").source_refs[0].hash != "newhash"
+
+    @pytest.mark.asyncio
+    async def test_reconcile_invalidates_dangling_ref(self, graph_store: GraphStore, event_store):
+        graph_store.add_node(GraphNode(
+            node_id="dangling", title="D", content="c",
+            node_type=NodeType.interaction,
+            source_refs=[SourceRef(event_id="ghost", valid=True, hash="h")],
+            confidence=0.5, metadata=NodeMetadata(evidence_quote="c"),
+        ))
+        assert await graph_store.reconcile(event_store) == 1
+        assert graph_store.get_node("dangling").source_refs[0].valid is False
+
+    @pytest.mark.asyncio
+    async def test_reconcile_invalidates_hash_mismatch(self, graph_store: GraphStore, event_store):
+        eid, _ = await event_store.insert("actual content")
+        graph_store.add_node(GraphNode(
+            node_id="stale", title="S", content="c",
+            node_type=NodeType.data,
+            source_refs=[SourceRef(event_id=eid, valid=True, hash="wronghash")],
+            confidence=0.5, metadata=NodeMetadata(evidence_quote="c"),
+        ))
+        assert await graph_store.reconcile(event_store) == 1
+        assert graph_store.get_node("stale").source_refs[0].valid is False
+
+    @pytest.mark.asyncio
+    async def test_reconcile_keeps_matching_ref_valid(self, graph_store: GraphStore, event_store):
+        from core.event_store import _content_hash
+        eid, _ = await event_store.insert("actual content")
+        graph_store.add_node(GraphNode(
+            node_id="ok", title="O", content="c",
+            node_type=NodeType.data,
+            source_refs=[SourceRef(event_id=eid, valid=True, hash=_content_hash("actual content"))],
+            confidence=0.5, metadata=NodeMetadata(evidence_quote="c"),
+        ))
+        assert await graph_store.reconcile(event_store) == 0
+        assert graph_store.get_node("ok").source_refs[0].valid is True
