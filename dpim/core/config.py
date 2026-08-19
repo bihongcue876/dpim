@@ -96,6 +96,13 @@ class Settings:
         elif isinstance(cfg.get("providers"), dict):
             self.providers = cfg["providers"]
         self.active_provider = getenv("DPIM_ACTIVE_PROVIDER", cfg.get("active_provider", "primary"))
+        # ── API 访问认证：非空时所有端点要求 X-API-Key 头匹配（空 = 禁用，本地默认）
+        # 仅 env 配置，不经 dpim.json / PUT /settings 下发，避免密钥经 API 自我暴露
+        self.api_key = getenv("DPIM_API_KEY", "").strip()
+        # ── AI 调用日志全文开关：false 时 GET /agent/logs 忽略 full 参数（防隐私泄露）──
+        self.agent_logs_full = (
+            _parse_bool_or_none(getenv("DPIM_AGENT_LOGS_FULL", "true")) is not False
+        )
         # ── Agent 管线开关 ──
         self.agent_mode = getenv("DPIM_AGENT_MODE", str(agent_cfg.get("mode", "disabled")))
         self.agent_max_retries = int(

@@ -206,7 +206,8 @@ class QueueMessage(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    content: str
+    # 内容上限：防无限写入撑爆 SQLite/FTS5（磁盘耗尽 DoS）
+    content: str = Field(max_length=1_000_000)
     event_type: str = "auto"
 
 
@@ -229,7 +230,8 @@ class ModifyEventStatusRequest(BaseModel):
 
 
 class ModifyEventRequest(BaseModel):
-    content: str
+    # 与 IngestRequest.content 同上限：修订路径同样防磁盘耗尽
+    content: str = Field(max_length=1_000_000)
 
 
 class CreateEdgeRequest(BaseModel):
@@ -249,9 +251,11 @@ class CreateNodeRequest(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     source_filter: str = "all"
-    max_hops: int = 2
-    limit: int = 20
-    offset: int = 0
+    # 服务端范围约束（前端只约束 UI，直连 API 需 Pydantic 拦截）：
+    # max_hops 防全图遍历，limit/offset 防超大分页拖垮内存
+    max_hops: int = Field(default=2, ge=1, le=5)
+    limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0, le=1_000_000)
 
 
 class SearchResult(BaseModel):
@@ -370,26 +374,33 @@ class SettingsResponse(BaseModel):
 
 
 class SettingsUpdateRequest(BaseModel):
+    """PUT /settings 请求体 — 字段白名单 + 值域约束（与前端输入范围对齐）。
+
+    安全语义：
+    - 枚举字段（agent_mode / log_level）非法值直接 422，杜绝任意字符串注入运行时
+    - llm_api_key / providers[*].api_key 支持掩码幂等：提交掩码或空 = 保留现值
+      （掩码格式 `xxx****xxxx`，见 core/security.py）
+    """
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     llm_model_name: str | None = None
-    llm_timeout: int | None = None
-    llm_max_tokens: int | None = None
+    llm_timeout: int | None = Field(default=None, ge=1, le=3600)
+    llm_max_tokens: int | None = Field(default=None, ge=0, le=32768)
     llm_enable_thinking: bool | None = None
-    llm_thinking_budget: int | None = None
+    llm_thinking_budget: int | None = Field(default=None, ge=0, le=32768)
     providers: dict[str, dict[str, Any]] | None = None
     active_provider: str | None = None
     active_model: str | None = None
-    agent_mode: str | None = None
-    agent_max_retries: int | None = None
+    agent_mode: Literal["disabled", "pipeline"] | None = None
+    agent_max_retries: int | None = Field(default=None, ge=0, le=10)
     agent_cr_model: str | None = None
     agent_in_model: str | None = None
     agent_gr_model: str | None = None
     agent_meta_model: str | None = None
-    max_graph_hops: int | None = None
-    rrf_k: int | None = None
-    jaccard_threshold: float | None = None
-    health_check_interval: int | None = None
-    health_check_timeout: int | None = None
-    compensate_batch_size: int | None = None
-    log_level: str | None = None
+    max_graph_hops: int | None = Field(default=None, ge=1, le=5)
+    rrf_k: int | None = Field(default=None, ge=1, le=200)
+    jaccard_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    health_check_interval: int | None = Field(default=None, ge=10, le=86400)
+    health_check_timeout: int | None = Field(default=None, ge=10, le=3600)
+    compensate_batch_size: int | None = Field(default=None, ge=5, le=100)
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] | None = None
