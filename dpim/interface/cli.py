@@ -21,6 +21,8 @@ async def _stores():
     es = EventStore(db)
     gs = GraphStore(db)
     await gs.load()
+    await gs.reconcile(es)
+    await gs.flush()
     return db, es, gs
 
 

@@ -85,6 +85,9 @@ async def lifespan(app: FastAPI):
     event_store = EventStore(db)
     graph_store = GraphStore(db)
     await graph_store.load()
+    # 启动自愈：图 source_refs 与事件表现状对齐（悬空/漂移源证置 invalid）
+    await graph_store.reconcile(event_store)
+    await graph_store.flush()
     orchestrator = Orchestrator(db, event_store, graph_store)
     orchestrator.start()
     compensator = Compensator(event_store, graph_store, orchestrator.enqueue)
@@ -231,9 +234,10 @@ async def modify_event_status(event_id: str, body: ModifyEventStatusRequest):
 @app.put("/events/{event_id}")
 async def modify_event(event_id: str, body: ModifyEventRequest):
     es, gs = _stores()
-    ok = await es.update_content(event_id, body.content)
+    ok = await es.update_content(event_id, body.content, gs)
     if not ok:
         raise HTTPException(status_code=404, detail="Event not found")
+    await gs.flush()
     refresh_key()
     return _ok(event_id=event_id, message="Event content updated")
 
