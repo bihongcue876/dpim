@@ -1,5 +1,8 @@
 """安全加固测试集（协议 v1.13）— 密钥掩码 / API 认证 / 输入上限与值域 / 日志开关"""
 
+import json
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -142,6 +145,26 @@ class TestSettingsMasking:
 
 class TestSettingsPutMaskedIdempotent:
     """掩码幂等保留：前端把 GET 下发的掩码原样回传，不得清掉真钥。"""
+
+    def test_put_storage_paths_updates_and_persists(self, test_app, monkeypatch, tmp_path):
+        """v1.16：存储路径经 PUT /settings 修改并持久化 dpim.json（白名单修复回归）。"""
+        old_db, old_json = settings.memory_db_path, settings.graph_json_path
+        new_db, new_json = str(tmp_path / "new.db"), str(tmp_path / "new.json")
+        try:
+            r = test_app.put(
+                "/settings",
+                json={"memory_db_path": new_db, "graph_json_path": new_json},
+            )
+            assert r.status_code == 200
+            # 白名单修复：此前字段不在 SettingsUpdateRequest，修改被静默丢弃
+            assert settings.memory_db_path == new_db
+            assert settings.graph_json_path == new_json
+            # 持久化断言：storage 段落盘 dpim.json（_isolate_dpim 已重定向到 tmp）
+            data = json.loads(Path(settings.config_file).read_text(encoding="utf-8"))
+            assert data["storage"]["memory_db_path"] == new_db
+            assert data["storage"]["graph_json_path"] == new_json
+        finally:
+            settings.memory_db_path, settings.graph_json_path = old_db, old_json
 
     def test_put_masked_llm_api_key_keeps_original(self, test_app, monkeypatch):
         real = "sk-real-key-111222"

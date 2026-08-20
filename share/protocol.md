@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.15
+> 版本：1.16
 > 日期：2026-08-20
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改/节点压缩，POST /agent/maintain，23 端点）+ 安全加固（API Key 掩码 + 可选 API 访问认证 + 输入上限/值域约束 + 日志全文开关）+ 防冗余节点硬规则（redundant_node）+ 节点规模高水位自动维护（AGENT_MAINTAIN_MAX_NODES / COOLDOWN）
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改/节点压缩，POST /agent/maintain，23 端点）+ 安全加固（API Key 掩码 + 可选 API 访问认证 + 输入上限/值域约束 + 日志全文开关）+ 防冗余节点硬规则（redundant_node）+ 节点规模高水位自动维护（AGENT_MAINTAIN_MAX_NODES / COOLDOWN）+ 存储路径/日志级别 dpim.json 持久化
 
 ---
 
@@ -320,7 +320,7 @@ raw → indexed → linked
 **流程**：
 
 1. 关键词召回：events_fts 和 node_fts 同时 FTS5 匹配，各取 top-100，合并去重得 C1
-2. 图扩散：以 C1 为种子，2 跳扩散，得分 = 1/(hop+1)，取 top-200 得 C2
+2. 图扩散：以 C1 为种子，2 跳扩散，得分 = 1/(hop+1)，取 top-200 得 C2；扩散取**无向邻域**（v1.16：召回不区分边方向，A→B 时命中 B 也能跳回 A；边方向语义保留在图数据与前端展示中，溯源不受影响——溯源靠 source_refs 事件锚定，与边方向无关）
 3. RRF 融合：`Σ 1/(60 + rank_i)`（两路），交互类乘以时间衰减 `1/(1+days×0.05)`
 4. 降级模式：仅执行步骤 1
 
@@ -486,7 +486,7 @@ content
 
 - `GET /settings` 下发的 `llm_api_key` 与 `providers[*].api_key` 一律为**掩码值**（格式 `{前3字符}****{后4字符}`，短密钥全掩码，空密钥为空串），明文密钥绝不出网。
 - `PUT /settings` 对密钥字段采用**掩码幂等保留**：提交掩码值或空串 = 保留现值不变；提交其他非空值 = 替换。前端把 GET 下发的掩码原样回传不会清掉密钥。
-- `SettingsUpdateRequest` 值域约束（越界 422）：`agent_mode ∈ {disabled, pipeline}`、`log_level ∈ {DEBUG, INFO, WARNING, ERROR}`、数值字段范围与前端输入框一致（如 `max_graph_hops 1-5`、`rrf_k 1-200`、`jaccard_threshold 0-1` 等）。
+- `SettingsUpdateRequest` 值域约束（越界 422）：`agent_mode ∈ {disabled, pipeline}`、`log_level ∈ {DEBUG, INFO, WARNING, ERROR}`、数值字段范围与前端输入框一致（如 `max_graph_hops 1-5`、`rrf_k 1-200`、`jaccard_threshold 0-1` 等）；`memory_db_path` / `graph_json_path` 为可选字符串（v1.16），修改后持久化 dpim.json、重启生效（运行中句柄不切换，数据文件不自动迁移）。
 - `IngestRequest.content` / `ModifyEventRequest.content` 上限 **1,000,000 字符**（超限 422，防磁盘耗尽 DoS）。
 - `SearchRequest` 服务端范围约束（越界 422）：`max_hops 1-5`、`limit 1-100`、`offset ≥ 0`。
 
@@ -538,8 +538,8 @@ content
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| MEMORY_DB_PATH | ./data/memory.db | SQLite 数据库路径 |
-| GRAPH_JSON_PATH | ./data/graph.json | 图层 JSON 路径 |
+| MEMORY_DB_PATH | ./data/memory.db | SQLite 数据库路径（v1.16：env → dpim.json storage → 默认；可经 PUT /settings 修改，重启生效） |
+| GRAPH_JSON_PATH | ./data/graph.json | 图层 JSON 路径（v1.16：同上，持久化 dpim.json；数据文件不自动迁移） |
 | LLM_BASE_URL | http://localhost:11434/v1 | LLM 服务地址（主 provider，向后兼容） |
 | LLM_API_KEY | (空) | LLM API Key |
 | LLM_MODEL_NAME | llama3:8b | 模型名称 |
@@ -571,7 +571,7 @@ content
 | **AGENT_MAINTAIN_COOLDOWN** | 300 | 高水位自动维护触发冷却（秒）：避免超过阈值后每个健康周期空转 LLM |
 | **API_KEY** | (空) | API 访问认证（v1.13）：非空时所有端点要求 `X-API-Key` 请求头匹配；仅 env 配置，不经 API 下发/修改 |
 | **AGENT_LOGS_FULL** | true | AI 调用日志全文开关（v1.13）：false 时 GET /agent/logs 忽略 full 参数 |
-| LOG_LEVEL | INFO | 日志级别 |
+| LOG_LEVEL | INFO | 日志级别（v1.16：env → dpim.json → 默认；可经 PUT /settings 修改） |
 
 > 2026-08-01：新增 BYOK 多模型网关与 Agent 管线配置（PROVIDERS / ACTIVE_PROVIDER / AGENT_*）。
 > 2026-08-02：BYOK/Agent 结构化配置迁入 `dpim/dpim.json`（env DPIM_* 可覆盖）；前端 `PUT /settings` 写回 dpim.json 持久化。
@@ -587,6 +587,7 @@ content
 > 2026-08-19：规约升级至 v1.13。安全加固：① GET /settings 密钥掩码下发（`llm_api_key` / `providers[*].api_key` → `{前3}****{后4}`），PUT /settings 掩码幂等保留（掩码/空 = 保留现值）；② 新增可选 API 访问认证 DPIM_API_KEY（非空时全部端点要求 X-API-Key 头，默认空不启用），WebUI/请求层自动附带；③ 输入上限：IngestRequest.content / ModifyEventRequest.content ≤ 1,000,000 字符；SearchRequest 服务端值域（max_hops 1-5 / limit 1-100 / offset ≥ 0）；SettingsUpdateRequest 枚举与数值范围校验（越界 422）；④ 新增 DPIM_AGENT_LOGS_FULL（默认 true，false 时 /agent/logs 忽略 full 参数）；⑤ 前端提供商注册表由 JSON textarea 改为表单化弹窗管理（密钥掩码显示、留空保持不变）；⑥ event_fts LIKE 降级分支补 LIMIT 500 护栏。
 > 2026-08-19：规约升级至 v1.14。① 防冗余节点硬规则：`run_local_checks` 新增 redundant_node issue 类型（new_node 与 similar_nodes 高度重合且同类型 → 驳回并要求 merged_into），Gr 构图提示词强化「重合即合并」决策优先级；② 节点规模高水位自动维护：新增 AGENT_MAINTAIN_MAX_NODES（默认 900，总节点数达到即由健康检查循环自动入队一次维护清理僵尸节点）与 AGENT_MAINTAIN_COOLDOWN（默认 300s，冷却防空转）；③ 修正 data 节点维护追加统计口径（空/重复追加不计 updated、不重建 FTS）。
 > 2026-08-20：规约升级至 v1.15。节点压缩：图维护新增 compresses 操作（MaintenanceCompress），仅 data 节点可概括压缩——覆盖 content + 可选精炼 title + 补充 new_edges；source_refs 保留不动（溯源锚定不破坏）；system/interaction 永不压缩；候选扫描新增 compress_candidates（data 节点有效源证 ≥ 3 或内容 ≥ 500 字符）；Gr/Meta 提示词新增压缩决策与审查规则。事件压缩仍不实施（compressed 状态预留）。
+> 2026-08-20：规约升级至 v1.16。存储路径与日志级别持久化：① `SettingsUpdateRequest` 新增 `memory_db_path` / `graph_json_path` 字段（此前前端虽有输入框但请求被白名单静默丢弃，属缺陷修复）；② 读取链统一为 env → dpim.json（storage 段 / log_level 键）→ 内置默认，`save_dpim_config()` 持久化存储路径与日志级别，前端修改重启保留；③ 存储路径修改重启生效（运行中句柄不切换，数据文件不自动迁移）；④ `.env` 精简为部署级安全开关与临时覆盖，日常配置全部走 WebUI/dpim.json；⑤ 前端「主配置 API Key」行移除（primary 密钥经 .env 或 dpim.json 管理，providers 注册表保留卡片化编辑），Agent 四角色模型字段改下拉框（跟随使用模型/当前提供商模型列表）。⑥ 图扩散双向化：ego_graph 扩散改无向邻域（A→B 时命中 B 也能跳回 A，提升召回；方向语义保留在边数据与前端展示；溯源靠 source_refs 锚定不受影响）。
 
 ---
 

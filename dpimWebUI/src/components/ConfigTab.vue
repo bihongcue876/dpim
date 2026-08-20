@@ -271,10 +271,19 @@ watch(
   },
 )
 
+// Agent 角色模型下拉选项：空 = 跟随使用模型；其余为当前提供商模型列表
+// （后端语义：agent_*_model 在活动提供商上使用该模型，故选项随提供商联动；
+//   当前值不在列表时追加显示，避免历史手填值丢失）
+function roleModelOptions(key: string): Array<{ label: string; value: string }> {
+  const opts = modelOptions.value.map(o => ({ ...o }))
+  const cur = String(edits[key] ?? '')
+  if (cur && !opts.some(o => o.value === cur)) opts.push({ label: cur, value: cur })
+  return [{ label: '（跟随使用模型）', value: '' }, ...opts]
+}
+
 const fields = computed<ConfigField[]>(() => [
   { key: 'memory_db_path', label: '记忆库路径', type: 'text', section: '存储' },
   { key: 'graph_json_path', label: '图谱文件路径', type: 'text', section: '存储' },
-  { key: 'llm_api_key', label: '主配置 API Key', type: 'password', section: '模型与提供商' },
   { key: 'active_provider', label: '活动提供商', type: 'select', options: providerOptions.value, section: '模型与提供商' },
   { key: 'active_model', label: '使用模型', type: 'select', options: modelOptions.value, section: '模型与提供商' },
   { key: 'llm_max_tokens', label: '输出上限 tokens（0=服务端默认）', type: 'number', min: 0, max: 32768, section: '模型与提供商' },
@@ -284,10 +293,10 @@ const fields = computed<ConfigField[]>(() => [
     { label: 'pipeline（四 Agent 管线）', value: 'pipeline' },
   ]},
   { key: 'agent_max_retries', label: 'Agent 最大修正轮次', type: 'number', min: 0, max: 10, section: 'Agent 管线' },
-  { key: 'agent_cr_model', label: 'Cr 模型（空=活动提供商）', type: 'text', section: 'Agent 管线' },
-  { key: 'agent_in_model', label: 'In 模型（空=活动提供商）', type: 'text', section: 'Agent 管线' },
-  { key: 'agent_gr_model', label: 'Gr 模型（空=活动提供商）', type: 'text', section: 'Agent 管线' },
-  { key: 'agent_meta_model', label: 'Meta 模型（空=活动提供商）', type: 'text', section: 'Agent 管线' },
+  { key: 'agent_cr_model', label: 'Cr 模型', type: 'select', options: roleModelOptions('agent_cr_model'), section: 'Agent 管线' },
+  { key: 'agent_in_model', label: 'In 模型', type: 'select', options: roleModelOptions('agent_in_model'), section: 'Agent 管线' },
+  { key: 'agent_gr_model', label: 'Gr 模型', type: 'select', options: roleModelOptions('agent_gr_model'), section: 'Agent 管线' },
+  { key: 'agent_meta_model', label: 'Meta 模型', type: 'select', options: roleModelOptions('agent_meta_model'), section: 'Agent 管线' },
   { key: 'max_graph_hops', label: '图谱最大跳数', type: 'number', min: 1, max: 5, section: '检索' },
   { key: 'rrf_k', label: 'RRF 参数 K', type: 'number', min: 1, max: 200, section: '检索' },
   { key: 'jaccard_threshold', label: '杰卡德阈值', type: 'number', min: 0, max: 1, section: '检索' },
