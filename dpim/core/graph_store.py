@@ -326,13 +326,20 @@ class GraphStore:
         return edata
 
     def ego_graph(self, seeds: list[str], hops: int = 2) -> dict[str, float]:
+        """种子节点的 ego-graph 扩散得分（检索用，双向）。
+
+        图为有向（边承载语义方向），但检索扩散取无向邻域：
+        相关性召回不区分边方向（A→B 时命中 B 也能跳回 A），
+        方向语义保留在边数据与前端展示中，不因扩散丢失。
+        """
         result: dict[str, float] = {}
+        undirected = self.graph.to_undirected(as_view=True)
         for seed in seeds:
             if seed not in self.graph:
                 continue
-            ego = nx.ego_graph(self.graph, seed, radius=hops, center=False)
+            ego = nx.ego_graph(undirected, seed, radius=hops, center=False)
             for n in ego.nodes():
-                hop_dist = nx.shortest_path_length(self.graph, seed, n)
+                hop_dist = nx.shortest_path_length(undirected, seed, n)
                 score = 1.0 / (hop_dist + 1)
                 if n not in result or score > result[n]:
                     result[n] = score
