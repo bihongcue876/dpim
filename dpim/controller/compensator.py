@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 
 from core.config import settings
 from core.event_store import EventStore
@@ -21,6 +22,8 @@ class Compensator:
         self._failure_count = 0
         self._health_task: asyncio.Task | None = None
         self._running = False
+        # 节点规模高水位触发的自动维护：记录上次触发时刻，冷却期内不重复触发
+        self._last_auto_maintain = 0.0
         # 健康检查互斥锁：前端 PUT /settings 与后台健康循环并发触发时串行执行，
         # 避免 _failure_count 计数串扰导致状态翻转不一致
         self._check_lock = asyncio.Lock()
@@ -45,6 +48,7 @@ class Compensator:
         while self._running:
             try:
                 await self._check_llm()
+                await self._maybe_trigger_maintain()
             except Exception:
                 logger.exception("Health check error")
             await asyncio.sleep(settings.health_check_interval)
@@ -94,3 +98,31 @@ class Compensator:
                 timestamp=__import__("time").time(),
             )
             await self.enqueue(maint)
+
+    async def _maybe_trigger_maintain(self) -> None:
+        """节点规模高水位触发的自动图维护（与 AI 恢复触发互补）。
+
+        总节点数达到 AGENT_MAINTAIN_MAX_NODES 时自动入队一次图维护
+        （清理僵尸节点等）；独立于 AI 恢复，健康检查循环周期调用。
+        冷却期内不重复触发，避免超过高水位后每个周期空转 LLM。
+        """
+        if not settings.agent_maintain_auto:
+            return
+        now = time.time()
+        if now - self._last_auto_maintain < settings.agent_maintain_cooldown:
+            return
+        total = self.graph_store.total_nodes()
+        if total < settings.agent_maintain_max_nodes:
+            return
+        self._last_auto_maintain = now
+        await self.enqueue(
+            QueueMessage(
+                type="maintain_graph",
+                payload={"auto": True},
+                timestamp=now,
+            )
+        )
+        logger.info(
+            "Auto-maintain triggered by node count (%d >= %d)",
+            total, settings.agent_maintain_max_nodes,
+        )

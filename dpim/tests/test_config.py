@@ -22,6 +22,8 @@ def test_default_values(monkeypatch):
     assert s.compensate_check_interval == 5
     assert s.agent_maintain_auto is True  # 图维护自动触发默认开启
     assert s.agent_maintain_min_nodes == 10
+    assert s.agent_maintain_max_nodes == 900  # 节点规模高水位触发（1000 软上限的 90%）
+    assert s.agent_maintain_cooldown == 300  # 触发冷却（秒）
 
 
 def test_env_override(monkeypatch):
@@ -31,6 +33,8 @@ def test_env_override(monkeypatch):
     monkeypatch.setenv("DPIM_LOG_LEVEL", "DEBUG")
     monkeypatch.setenv("DPIM_MAX_RAW_CONTENT", "5000")
     monkeypatch.setenv("DPIM_HEALTH_CHECK_TIMEOUT", "30")
+    monkeypatch.setenv("DPIM_AGENT_MAINTAIN_MAX_NODES", "500")
+    monkeypatch.setenv("DPIM_AGENT_MAINTAIN_COOLDOWN", "120")
     s = Settings()
     assert s.memory_db_path == "/tmp/test.db"
     assert s.llm_model_name == "test-model"
@@ -38,6 +42,8 @@ def test_env_override(monkeypatch):
     assert s.log_level == "DEBUG"
     assert s.max_raw_content == 5000
     assert s.health_check_timeout == 30
+    assert s.agent_maintain_max_nodes == 500
+    assert s.agent_maintain_cooldown == 120
 
 
 def test_provider_multi_models_and_active_model(monkeypatch):

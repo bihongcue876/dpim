@@ -143,6 +143,15 @@ class Settings:
         self.agent_maintain_min_nodes = int(
             getenv("DPIM_AGENT_MAINTAIN_MIN_NODES", "10")
         )
+        # ── 节点规模高水位：总节点数达到该阈值时自动触发一次图维护
+        #（清理僵尸节点等，独立于 AI 恢复触发）。默认 900 ≈ 用户设定 1000 软上限的 90% ──
+        self.agent_maintain_max_nodes = int(
+            getenv("DPIM_AGENT_MAINTAIN_MAX_NODES", "900")
+        )
+        # 自动维护触发冷却（秒）：超过高水位后避免每个健康周期重复触发空转 LLM
+        self.agent_maintain_cooldown = int(
+            getenv("DPIM_AGENT_MAINTAIN_COOLDOWN", "300")
+        )
         self.log_level = getenv("DPIM_LOG_LEVEL", "INFO")
         self._validate()
 
