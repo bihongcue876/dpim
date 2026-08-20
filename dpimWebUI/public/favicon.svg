@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- DPIM：双区智能记忆图标 — 上层知识图谱（节点连线），下层事件线（不可变日志） -->
+  <rect width="64" height="64" rx="14" fill="#10151f"/>
+  <!-- 图谱层：三个节点 + 连线 -->
+  <line x1="18" y1="20" x2="32" y2="13" stroke="#3ddbb0" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="32" y1="13" x2="46" y2="22" stroke="#3ddbb0" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="18" y1="20" x2="46" y2="22" stroke="#3ddbb0" stroke-width="1.5" stroke-linecap="round" opacity="0.45"/>
+  <circle cx="18" cy="20" r="4.5" fill="#3ddbb0"/>
+  <circle cx="32" cy="13" r="4.5" fill="#5eead4"/>
+  <circle cx="46" cy="22" r="4.5" fill="#3ddbb0"/>
+  <!-- 事件线层：横线 + 事件点 -->
+  <line x1="12" y1="44" x2="52" y2="44" stroke="#f59e0b" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="20" cy="44" r="3" fill="#fbbf24"/>
+  <circle cx="32" cy="44" r="3" fill="#fbbf24"/>
+  <circle cx="44" cy="44" r="3" fill="#fbbf24"/>
+  <!-- 双区联动：锚点连线 -->
+  <line x1="32" y1="17.5" x2="32" y2="41" stroke="#8aa0b8" stroke-width="1.5" stroke-dasharray="3 3" stroke-linecap="round"/>
+</svg>
