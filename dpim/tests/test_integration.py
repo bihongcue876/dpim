@@ -117,6 +117,21 @@ class TestDeleteNodeEndpoint:
         resp = test_app.delete("/nodes/orphan")
         assert resp.status_code == 200
 
+    def test_delete_system_node_allowed(self, test_app):
+        """手动 DELETE /nodes 不限制节点类型：system 节点（手动创建、无有效源证）
+        可自由删除。「system 不参与合并/删除」仅约束 Agent 自动维护任务
+        （run_maintenance_local_checks），而非手动 REST 端点。"""
+        api.graph_store.add_node(GraphNode(
+            node_id="sys_del", title="System", content="manual",
+            node_type=NodeType.system,
+            source_refs=[],
+            confidence=1.0,
+            metadata=NodeMetadata(evidence_quote=""),
+        ))
+        resp = test_app.delete("/nodes/sys_del")
+        assert resp.status_code == 200
+        assert api.graph_store.get_node("sys_del") is None
+
 
 class TestModifyNodeEndpoint:
     def test_modify_node(self, test_app):
@@ -143,6 +158,22 @@ class TestModifyNodeEndpoint:
         ))
         resp = test_app.put("/nodes/sys_node", json={"content": "hack"})
         assert resp.status_code == 403
+
+    def test_modify_node_persists_to_disk(self, test_app):
+        """PUT /nodes 修改必须落盘：重载 graph.json 可见（防静默丢失）。"""
+        import asyncio
+
+        from core.graph_store import GraphStore
+
+        resp = test_app.post("/nodes", json={"title": "持久化节点", "content": "旧内容"})
+        node_id = resp.json()["node_id"]
+        test_app.put(f"/nodes/{node_id}", json={"content": "新内容"})
+        gs2 = GraphStore(api.db, json_path=api.graph_store.json_path)
+        asyncio.run(gs2.load())
+        node = gs2.get_node(node_id)
+        assert node is not None
+        assert node.content == "新内容"
+        assert node.confidence == 0.7
 
 
 class TestCreateNodeEndpoint:
@@ -190,6 +221,16 @@ class TestClearGraphEndpoint:
         assert resp.json()["status"] == "ok"
         nodes_after = test_app.get("/nodes?limit=100").json()
         assert nodes_after["total"] == 0
+
+    def test_clear_graph_clears_fts(self, test_app):
+        """清空图谱后 node_fts 同步清空：旧节点不再被检索召回。"""
+        test_app.post("/nodes", json={"title": "清图后应消失"})
+        resp = test_app.post("/query", json={"query": "清图后应消失"})
+        assert resp.status_code == 200
+        assert len(resp.json()["results"]) > 0
+        test_app.delete("/graph")
+        resp = test_app.post("/query", json={"query": "清图后应消失"})
+        assert len(resp.json()["results"]) == 0
 
 
 class TestModifyEventStatusEndpoint:
@@ -304,6 +345,31 @@ class TestFeedbackEndpoint:
         node = api.graph_store.get_node("fb_node")
         assert node.confidence == 0.51  # 0.5 + 0.01
 
+    def test_feedback_persists_to_disk(self, test_app):
+        """反馈调整置信度必须落盘：重载 graph.json 可见（防静默丢失）。"""
+        import asyncio
+
+        from core.graph_store import GraphStore
+
+        # interaction 节点才受反馈影响（data/system 不生效，属设计行为）
+        resp = test_app.post("/nodes", json={
+            "title": "反馈节点", "content": "x", "node_type": "interaction",
+        })
+        node_id = resp.json()["node_id"]
+        test_app.post("/feedback", json={"result_id": node_id, "accepted": True})
+        gs2 = GraphStore(api.db, json_path=api.graph_store.json_path)
+        asyncio.run(gs2.load())
+        node = gs2.get_node(node_id)
+        assert node is not None
+        assert node.confidence == 0.71  # 0.7 + 0.01
+
+    def test_feedback_event_result_noop(self, test_app):
+        """事件结果无置信度字段：反馈不报错、不落盘（保持兼容）。"""
+        ev = test_app.post("/ingest", json={"content": "feedback on event"})
+        eid = ev.json()["event_id"]
+        resp = test_app.post("/feedback", json={"result_id": eid, "accepted": True})
+        assert resp.status_code == 200
+
 
 class TestSettingsEndpoint:
     """GET/PUT /settings — 含 BYOK 多模型网关配置项"""
@@ -417,6 +483,54 @@ class TestSettingsEndpoint:
         finally:
             s.agent_max_retries = old
 
+    def test_get_settings_masks_secrets(self, test_app, monkeypatch):
+        """GET /settings 绝不明文下发 llm_api_key / providers[*].api_key。"""
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "llm_api_key", "sk-1234567890abcd")
+        monkeypatch.setattr(s, "providers", {
+            "qwen": {"base_url": "https://x/v1", "api_key": "sk-deadbeef123456"},
+        })
+        data = test_app.get("/settings").json()
+        assert data["llm_api_key"] == "sk-****abcd"
+        assert data["providers"]["qwen"]["api_key"] == "sk-****3456"
+
+    def test_put_settings_masked_key_preserves_secret(self, test_app, monkeypatch):
+        """前端把 GET 下发的掩码原样回传 → 不应清掉真钥（幂等）。"""
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "llm_api_key", "sk-1234567890abcd")
+        monkeypatch.setattr(s, "providers", {})
+        r = test_app.put("/settings", json={"llm_api_key": "sk-****abcd"})
+        assert r.status_code == 200
+        assert s.llm_api_key == "sk-1234567890abcd"
+
+
+class TestAuthGuard:
+    """DPIM_API_KEY 非空时整体鉴权：无/错 X-API-Key → 401，正确 → 200。"""
+
+    def test_blocks_without_header(self, test_app, monkeypatch):
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "api_key", "secret-key")
+        resp = test_app.get("/settings")
+        assert resp.status_code == 401
+        assert resp.headers.get("WWW-Authenticate") == "ApiKey"
+
+    def test_blocks_with_wrong_header(self, test_app, monkeypatch):
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "api_key", "secret-key")
+        resp = test_app.get("/settings", headers={"X-API-Key": "wrong"})
+        assert resp.status_code == 401
+
+    def test_allows_with_correct_header(self, test_app, monkeypatch):
+        from core.config import settings as s
+
+        monkeypatch.setattr(s, "api_key", "secret-key")
+        resp = test_app.get("/settings", headers={"X-API-Key": "secret-key"})
+        assert resp.status_code == 200
+
 
 class TestAgentLogsEndpoint:
     """GET /agent/logs — AI 调用日志观测"""
@@ -449,4 +563,9 @@ class TestAgentLogsEndpoint:
     def test_agent_compensate_requires_orchestrator(self, test_app):
         """测试夹具中 orchestrator 未启动 → 503；生产环境 orchestrator 存在则触发。"""
         resp = test_app.post("/agent/compensate")
+        assert resp.status_code == 503
+
+    def test_agent_maintain_requires_orchestrator(self, test_app):
+        """图维护端点：夹具中 orchestrator 未启动 → 503。"""
+        resp = test_app.post("/agent/maintain")
         assert resp.status_code == 503

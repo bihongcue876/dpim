@@ -61,6 +61,32 @@ class TestLikeRank:
         assert like_rank("", "abc", "def") == 0.0
 
 
+class TestSearchMultiToken:
+    """多关键词 LIKE 降级：旧整串 LIKE 对多词查询基本全灭，现按词召回计分。"""
+
+    @pytest.mark.asyncio
+    async def test_multi_token_ranking(self, event_store: EventStore):
+        from tests.factories import make_event
+
+        eid_both = await make_event(event_store, "Python 异步编程教程", event_type="interaction")
+        await make_event(event_store, "异步编程概念", event_type="interaction")
+        # 查询含两个词；FTS5 中文不命中 → 降级多词 LIKE
+        results = await event_store.search_fts("异步 教程")
+        assert len(results) >= 2
+        # 两词都命中的事件（"异步编程教程" 含 异步 + 教程）排最前
+        assert results[0]["event_id"] == eid_both
+
+    @pytest.mark.asyncio
+    async def test_multi_token_no_overlap(self, event_store: EventStore):
+        """多词查询中仅部分词命中也应召回（旧整串 LIKE 会漏掉）。"""
+        from tests.factories import make_event
+
+        eid = await make_event(event_store, "今天学习了Python基础语法", event_type="interaction")
+        results = await event_store.search_fts("Python 网络爬虫")
+        assert len(results) == 1
+        assert results[0]["event_id"] == eid  # "Python" 命中即可召回
+
+
 class TestEventStoreInsert:
     @pytest.mark.asyncio
     async def test_insert_returns_id_and_status(self, event_store: EventStore):
@@ -270,12 +296,85 @@ class TestEventStoreFTS:
 
     @pytest.mark.asyncio
     async def test_fts_special_char_query_falls_back(self, event_store: EventStore):
-        """对照：查询串含 FTS5 特殊字符（语法错误）→ 降级 LIKE，不抛异常"""
+        """查询串含 FTS5 特殊字符（语法错误）→ 降级 LIKE，不抛异常。
+
+        切词后 "hello-world" 拆为 hello/world 两词，可召回 "hello world"
+        （旧实现整串 LIKE 全灭，属改进）。
+        """
         eid, _ = await event_store.insert("hello world")
         await event_store.insert_fts(eid, "hello world")
         results = await event_store.search_fts("hello-world")
         assert isinstance(results, list)  # 不抛异常
-        assert results == []
+        assert len(results) == 1
+        assert results[0]["event_id"] == eid
+
+
+class TestEventStoreUpdateContent:
+    """update_content 同步 FTS 索引：含 raw 状态事件尚无 FTS 行的场景"""
+
+    @pytest.mark.asyncio
+    async def test_update_content_creates_missing_fts_row(self, event_store: EventStore):
+        """raw 状态事件（无 FTS 行）修订内容后必须能检索到新内容。
+
+        旧实现 UPDATE events_fts 对无行事件是静默 no-op，修订内容永远搜不到。
+        """
+        eid, _ = await event_store.insert("original content about database")  # raw，未建 FTS
+        ok = await event_store.update_content(eid, "revised content about quantum")
+        assert ok is True
+        results = await event_store.search_fts("quantum")
+        assert len(results) == 1
+        assert results[0]["event_id"] == eid
+
+    @pytest.mark.asyncio
+    async def test_update_content_replaces_existing_fts_row(self, event_store: EventStore):
+        """已建 FTS 行的事件修订后：新内容可搜到，旧内容不再命中，且无重复行"""
+        eid, _ = await event_store.insert_event("alpha beta gamma")
+        ok = await event_store.update_content(eid, "delta epsilon zeta")
+        assert ok is True
+        assert len(await event_store.search_fts("epsilon")) == 1
+        assert len(await event_store.search_fts("beta")) == 0
+        # 无重复 FTS 行（先删后插）
+        ev = await event_store.get(eid)
+        assert ev["raw_content"] == "delta epsilon zeta"
+
+    @pytest.mark.asyncio
+    async def test_update_content_nonexistent_event(self, event_store: EventStore):
+        assert await event_store.update_content("no-such-id", "x") is False
+
+    @pytest.mark.asyncio
+    async def test_update_content_syncs_source_ref_hash(self, event_store, graph_store):
+        """修订事件内容后，引用该事件节点的 source_refs[].hash 同步为新 content_hash。"""
+        from core.models import NodeType
+        from tests.factories import make_node
+
+        eid, _ = await event_store.insert("original content")
+        await make_node(
+            graph_store, "n1", "Node", "node content",
+            NodeType.interaction, event_id=eid,
+        )
+        await event_store.update_status(eid, "linked", graph_refs=["n1"])
+        ok = await event_store.update_content(eid, "revised content", graph_store)
+        assert ok is True
+        sr = graph_store.get_node("n1").source_refs[0]
+        assert sr.hash == _content_hash("revised content")
+
+
+class TestEventStoreGetMany:
+    """get_many 批量取事件：去重、缺失跳过、空入参"""
+
+    @pytest.mark.asyncio
+    async def test_batch_with_missing_and_dedupe(self, event_store: EventStore):
+        eid1, _ = await event_store.insert("alpha")
+        eid2, _ = await event_store.insert("beta")
+        got = await event_store.get_many([eid1, eid2, "missing", eid1])
+        assert set(got) == {eid1, eid2}
+        assert got[eid1]["raw_content"] == "alpha"
+        assert got[eid2]["raw_content"] == "beta"
+
+    @pytest.mark.asyncio
+    async def test_empty_and_none(self, event_store: EventStore):
+        assert await event_store.get_many([]) == {}
+        assert await event_store.get_many(["no-such"]) == {}
 
 
 class TestEventStoreControlledVariables:

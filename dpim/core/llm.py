@@ -117,17 +117,20 @@ class LLMCallLog:
 
 _llm_logs: deque[LLMCallLog] = deque(maxlen=50)
 _LOG_PREVIEW_LEN = 2000
+# 单条日志 input/output/error 截断上限（字符）：配合 MAX_RAW_CONTENT 护栏，
+# 防止 50 条环形缓冲把长输入放大为数十 MB 常驻内存（full=true 返回的是截断后的全文）
+_LOG_MAX_LEN = 50000
 
 
 def log_llm_call(role: str, model: str, user: str, output: str, error: str = "") -> None:
-    # 完整内容入缓冲；是否截断由读取侧（get_llm_logs）按需决定
+    # 入缓冲前截断：完整内容仅保留前 _LOG_MAX_LEN；是否再截断由读取侧按需决定
     _llm_logs.appendleft(LLMCallLog(
         role=role,
         timestamp=time(),
         model=model,
-        input=user,
-        output=output,
-        error=error,
+        input=user[:_LOG_MAX_LEN],
+        output=output[:_LOG_MAX_LEN],
+        error=error[:_LOG_MAX_LEN],
     ))
 
 
@@ -162,13 +165,15 @@ class LLMGateway:
     """BYOK 多模型网关：按角色返回客户端/模型名，并缓存实例。"""
 
     def __init__(self) -> None:
-        self._client_cache: dict[tuple[str, str], AsyncOpenAI] = {}
-        self._instructed_cache: dict[tuple[str, str], Any] = {}
+        self._client_cache: dict[tuple[str, str, int], AsyncOpenAI] = {}
+        self._instructed_cache: dict[tuple[str, str, int, Any], Any] = {}
 
     def client(self, role: str = "cr") -> AsyncOpenAI:
         """按角色返回基础 AsyncOpenAI 客户端。"""
         conf = settings.role_provider(role)
-        key = (conf.base_url, conf.api_key)
+        # 缓存键含 timeout：前端 PUT /settings 修改 llm_timeout 后必须重建客户端，
+        # 否则新超时不生效（旧实现仅按 base_url/api_key 缓存，改超时被静默忽略）
+        key = (conf.base_url, conf.api_key, conf.timeout)
         if key not in self._client_cache:
             self._client_cache[key] = _client_for(conf)
         return self._client_cache[key]
@@ -182,7 +187,8 @@ class LLMGateway:
         mode = _STRUCTURED_MODES.get(
             conf.structured_mode or settings.llm_structured_mode, instructor.Mode.MD_JSON
         )
-        key = (conf.base_url, conf.api_key, mode)
+        # 缓存键含 timeout 与 mode：改超时或结构化模式均需重建包装客户端
+        key = (conf.base_url, conf.api_key, conf.timeout, mode)
         if key not in self._instructed_cache:
             self._instructed_cache[key] = instructor.from_openai(
                 self.client(role), mode=mode

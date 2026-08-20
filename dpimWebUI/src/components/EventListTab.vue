@@ -189,14 +189,24 @@ async function load(p = 1) {
 }
 function onPage(p: number) { load(p) }
 
+// 请求序号：快速切换事件行时丢弃过期响应，避免旧详情覆盖新详情
+let detailSeq = 0
 async function onSelectRow(eventId: string) {
   selectedId.value = eventId
   editing.value = false
   loadingDetail.value = true
+  const seq = ++detailSeq
   try {
-    detail.value = await api.getEvent(eventId)
-  } catch { detail.value = null }
-  finally { loadingDetail.value = false }
+    const d = await api.getEvent(eventId)
+    if (seq !== detailSeq) return
+    detail.value = d
+  } catch {
+    if (seq !== detailSeq) return
+    detail.value = null
+  }
+  finally {
+    if (seq === detailSeq) loadingDetail.value = false
+  }
 }
 
 function startEdit() {

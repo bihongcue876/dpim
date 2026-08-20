@@ -246,6 +246,8 @@ onUnmounted(() => {
   window.removeEventListener('dpim:focus-node', onFocusNode)
 })
 
+// 请求序号：快速切换节点时丢弃过期响应，避免旧详情覆盖新详情
+let detailSeq = 0
 function onSelectNode(id: string) {
   highlightId.value = id
   selectedEdge.value = null
@@ -253,13 +255,16 @@ function onSelectNode(id: string) {
   nodeDetail.value = null
   loadingNodeDetail.value = true
   editing.value = false
+  const seq = ++detailSeq
   api.getNode(id).then(d => {
+    if (seq !== detailSeq) return
     nodeDetail.value = d
     editNodeContent.value = d.content
   }).catch(() => {
+    if (seq !== detailSeq) return
     message.error('加载节点详情失败')
   }).finally(() => {
-    loadingNodeDetail.value = false
+    if (seq === detailSeq) loadingNodeDetail.value = false
   })
 }
 function onDbl(id: string) {

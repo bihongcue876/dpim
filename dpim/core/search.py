@@ -55,12 +55,13 @@ async def search(
     # Apply source_filter
     if request.source_filter != "all":
         filtered = {}
+        events = await event_store.get_many([k for k in c1 if k in event_node_map])
         for key in c1:
             node = graph_store.get_node(key)
             if node is not None and node.node_type.value == request.source_filter:
                 filtered[key] = c1[key]
             elif key in event_node_map:
-                ev = await event_store.get(key)
+                ev = events.get(key)
                 if ev and ev["event_type"] == request.source_filter:
                     filtered[key] = c1[key]
         c1 = filtered
@@ -96,6 +97,12 @@ async def search(
         )
 
     # Apply time decay
+    first_ref_ids: list[str] = []
+    for key in rrf_scores:
+        node = graph_store.get_node(key)
+        if node is not None and node.source_refs:
+            first_ref_ids.append(node.source_refs[0].event_id)
+    first_ref_events = await event_store.get_many(first_ref_ids)
     for key in rrf_scores:
         source_type = "interaction"
         node = graph_store.get_node(key)
@@ -104,7 +111,7 @@ async def search(
         days_since = 0.0
         refs = node.source_refs if node else []
         if refs:
-            ev = await event_store.get(refs[0].event_id)
+            ev = first_ref_events.get(refs[0].event_id)
             if ev:
                 created = datetime.fromisoformat(ev["created_at"])
                 days_since = (now - created).total_seconds() / 86400.0
@@ -124,6 +131,9 @@ async def _build_results(
     event_node_map: dict[str, list[str]],
 ) -> list[SearchResult]:
     results: list[SearchResult] = []
+    events = await event_store.get_many(
+        [key for key in scores if graph_store.get_node(key) is None]
+    )
     for key, score in scores.items():
         node = graph_store.get_node(key)
         if node:
@@ -142,8 +152,10 @@ async def _build_results(
                 confidence=conf,
                 degraded=False,
             ))
-        elif key in event_node_map or True:
-            ev = await event_store.get(key)
+        else:
+            # 非图节点 key：可能是无图节点关联的事件（含 orchestrator 以空
+            # map 调用的场景），回退查事件表；查不到则跳过
+            ev = events.get(key)
             if ev:
                 results.append(SearchResult(
                     node_id=key,

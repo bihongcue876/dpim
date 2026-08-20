@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.10 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 补全 22 端点类型；已移除语义检索 embedding；MAX_RAW_CONTENT 默认 600000)
+// 版本 1.14 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 图维护任务 + 防冗余节点硬规则 + 节点规模高水位自动维护；23 端点；MAX_RAW_CONTENT 默认 200000；COMPENSATE_CHECK_INTERVAL)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -134,7 +134,7 @@ export interface GraphBuildOutput {
 
 /** 元认知审查问题项 */
 export interface MetaCogIssue {
-  type: 'hallucination' | 'illegal_edge' | 'conflict' | 'empty_node';
+  type: 'hallucination' | 'illegal_edge' | 'conflict' | 'empty_node' | 'redundant_node';
   description: string;
   suggestion: string;
 }
@@ -143,6 +143,63 @@ export interface MetaCogIssue {
 export interface MetaCogVerdict {
   verdict: 'pass' | 'fail';
   issues: MetaCogIssue[];
+}
+
+// ==================== 图维护（调整/合并/删改）====================
+
+/** 维护合并：target 吸收 source_ids（源证/内容/边）后删除 source */
+export interface MaintenanceMerge {
+  target_id: string;
+  source_ids: string[];
+  reason?: string;
+}
+
+/** 维护删除 */
+export interface MaintenanceDelete {
+  node_id: string;
+  reason?: string;
+}
+
+/** 维护修改：interaction 覆盖内容；data 由执行层转为追加行 */
+export interface MaintenanceUpdate {
+  node_id: string;
+  content: string;
+  reason?: string;
+}
+
+/** 维护删边 */
+export interface MaintenanceEdgeRemove {
+  source: string;
+  target: string;
+  relation?: string;
+  reason?: string;
+}
+
+/** 维护压缩补边：把概括后可能丢失的隐含关系显式化为边 */
+export interface MaintenanceEdgeAdd {
+  source: string;
+  target: string;
+  relation: string;
+  reason?: string;
+}
+
+/** 维护压缩：仅 data 节点概括覆盖 content + 可选精炼 title + 可选补边 */
+export interface MaintenanceCompress {
+  node_id: string;
+  content: string;
+  title?: string;
+  new_edges?: MaintenanceEdgeAdd[];
+  reason?: string;
+}
+
+/** 图维护计划（Gr 产出 → Meta 审核 → 执行；空计划合法） */
+export interface GraphMaintenancePlan {
+  merges: MaintenanceMerge[];
+  deletes: MaintenanceDelete[];
+  updates: MaintenanceUpdate[];
+  edge_removes: MaintenanceEdgeRemove[];
+  compresses: MaintenanceCompress[];
+  confidence: number;
 }
 
 // ==================== 内部队列消息 ====================
@@ -157,7 +214,8 @@ export type QueueMessageType =
   | 'query'          // 仅记录，实际同步处理
   | 'feedback'
   | 'timer_health'
-  | 'compensate';
+  | 'compensate'
+  | 'maintain_graph';
 
 export interface QueueMessage {
   type: QueueMessageType;
@@ -423,10 +481,10 @@ export interface NodeDetail extends GraphNode {
 // ==================== 配置（dpim-webui）====================
 
 /** 配置项响应 (GET /settings) */
-/** BYOK provider 条目：基础连接 + 厂商适配参数 */
+/** BYOK provider 条目：基础连接 + 厂商适配参数（api_key 经 GET /settings 下发为掩码值 `{前3}****{后4}`） */
 export interface ProviderEntry {
   base_url: string;
-  api_key: string;
+  api_key: string;               // GET 下发为掩码；PUT 提交掩码/空 = 保留现值
   model?: string;              // 旧式单模型
   models?: string[];           // 多模型列表
   timeout?: number;
@@ -442,7 +500,7 @@ export interface SettingsResponse {
   memory_db_path: string;
   graph_json_path: string;
   llm_base_url: string;
-  llm_api_key: string;
+  llm_api_key: string;           // GET 下发为掩码值 `{前3}****{后4}`，明文绝不出网
   llm_model_name: string;
   llm_timeout: number;
   available_providers: string[];  // 可选 provider 名单（含 'primary'）
@@ -467,10 +525,12 @@ export interface SettingsResponse {
   log_level: string;
 }
 
-/** 配置更新请求 (PUT /settings) 只下发需要修改的字段即可 */
+/** 配置更新请求 (PUT /settings) 只下发需要修改的字段即可。
+ *  密钥幂等语义：llm_api_key / providers[*].api_key 提交掩码值或空串 = 保留现值。
+ *  值域越界返回 422（agent_mode / log_level 枚举 + 数值范围，见 protocol.md v1.13） */
 export interface SettingsUpdateRequest {
   llm_base_url?: string;
-  llm_api_key?: string;
+  llm_api_key?: string;          // 掩码/空 = 保留现值；其他非空值 = 替换
   llm_model_name?: string;
   llm_timeout?: number;
   llm_max_tokens?: number | null;
@@ -510,7 +570,7 @@ export interface DPIMConfig {
   // Agent 管线
   AGENT_MODE: AgentMode;        // 默认 'disabled'
   AGENT_MAX_RETRIES: number;    // 默认 2
-  MAX_RAW_CONTENT: number;      // 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（默认 600000）
+  MAX_RAW_CONTENT: number;      // 上下文护栏：单次 LLM 输入中 raw_content 最大字符数（默认 200000）
   AGENT_CR_MODEL: string;
   AGENT_IN_MODEL: string;
   AGENT_GR_MODEL: string;
@@ -521,5 +581,10 @@ export interface DPIMConfig {
   HEALTH_CHECK_INTERVAL: number;
   HEALTH_CHECK_TIMEOUT: number;   // 健康检查超时（秒，默认 60，与生成超时分离）
   COMPENSATE_BATCH_SIZE: number;
+  COMPENSATE_CHECK_INTERVAL: number;  // 补偿批次结果检查间隔（秒，默认 5）
+  AGENT_MAINTAIN_AUTO: boolean;      // 图维护自动触发：AI 恢复时顺带整理图谱（默认 true）
+  AGENT_MAINTAIN_MIN_NODES: number;  // 自动维护最小图规模（节点数，默认 10；手动触发不受限）
+  AGENT_MAINTAIN_MAX_NODES: number;  // 节点规模高水位：达到即自动触发维护清理僵尸节点（默认 900）
+  AGENT_MAINTAIN_COOLDOWN: number;   // 高水位自动维护冷却（秒，默认 300）
   LOG_LEVEL: string;
 }

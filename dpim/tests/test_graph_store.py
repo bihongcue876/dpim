@@ -1,4 +1,6 @@
 
+import json
+
 import pytest
 
 from core.graph_store import GraphStore
@@ -228,6 +230,158 @@ class TestGraphStorePersistence:
         await gs.load()
         assert json_path.with_suffix(".json.bak").exists()
 
+    @pytest.mark.asyncio
+    async def test_flush_writes_when_dirty(self, db, tmp_path):
+        """flush 语义：有脏位即写盘（替代旧防抖阈值，杜绝未达阈值不落盘）。"""
+        json_path = tmp_path / "graph.json"
+        gs1 = GraphStore(db, json_path=str(json_path))
+        await gs1.load()
+        node = GraphNode(
+            node_id="f1", title="Flush", content="data",
+            node_type=NodeType.data,
+            source_refs=[SourceRef(event_id="e1", valid=True, hash="h1")],
+            confidence=0.5, metadata=NodeMetadata(evidence_quote="flush"),
+        )
+        gs1.add_node(node)
+        await gs1.flush()  # 仅 1 次修改也立即落盘
+        assert json_path.exists()
+
+        gs2 = GraphStore(db, json_path=str(json_path))
+        await gs2.load()
+        assert gs2.get_node("f1") is not None
+
+    @pytest.mark.asyncio
+    async def test_update_node_marks_dirty_and_persists(self, db, tmp_path):
+        """修改节点必须标记脏位并落盘：save 后重载可见（防静默丢失）。"""
+        json_path = tmp_path / "graph.json"
+        gs1 = GraphStore(db, json_path=str(json_path))
+        await gs1.load()
+        gs1.add_node(GraphNode(
+            node_id="upd", title="Before", content="old",
+            node_type=NodeType.interaction,
+            source_refs=[SourceRef(event_id="e1", valid=True, hash="h1")],
+            confidence=0.5, metadata=NodeMetadata(evidence_quote="old"),
+        ))
+        await gs1.flush()
+        updated = gs1.update_node("upd", content="new", confidence=0.7)
+        assert updated is not None
+        assert gs1.dirty is True  # update_node 必须标记脏位
+        await gs1.save()
+
+        gs2 = GraphStore(db, json_path=str(json_path))
+        await gs2.load()
+        node = gs2.get_node("upd")
+        assert node.content == "new"
+        assert node.confidence == 0.7
+
+    @pytest.mark.asyncio
+    async def test_update_node_nonexistent_returns_none(self, graph_store: GraphStore):
+        assert graph_store.update_node("nothing", content="x") is None
+
+    @pytest.mark.asyncio
+    async def test_load_rebuilds_node_fts(self, db, tmp_path):
+        """加载后 node_fts 以内存图为唯一真源重建：清残留、补新节点。
+
+        手动编辑 graph.json 或备份恢复后，全文索引与图层保持一致。
+        """
+        json_path = tmp_path / "graph.json"
+        json_path.write_text(json.dumps({
+            "nodes": {
+                "n_manual": {
+                    "node_id": "n_manual", "title": "手工节点", "content": "手动编辑加入",
+                    "node_type": "data",
+                    "source_refs": [{"event_id": "e1", "valid": True, "hash": "h1"}],
+                    "confidence": 0.8,
+                    "metadata": {"evidence_quote": "手动"},
+                }
+            },
+            "edges": [],
+        }, ensure_ascii=False), encoding="utf-8")
+        # 预置一条与图不一致的脏索引（模拟旧残留）
+        gs1 = GraphStore(db, json_path=str(json_path))
+        await gs1.load()
+        await gs1.upsert_node_fts("ghost", "幽灵", "应被清除")
+        await gs1.rebuild_node_fts()
+        results = await gs1.search_node_fts("幽灵")
+        assert len(results) == 0  # 脏索引已清
+        results = await gs1.search_node_fts("手工")
+        assert len(results) == 1
+        assert results[0]["node_id"] == "n_manual"  # 新节点可检索
+
+    @pytest.mark.asyncio
+    async def test_clear_all_then_rebuild_fts_empty(self, graph_store: GraphStore):
+        """清空图谱后重建 node_fts：旧节点检索不到。"""
+        await graph_store.upsert_node_fts("old", "旧节点", "内容")
+        graph_store.clear_all()
+        await graph_store.rebuild_node_fts()
+        results = await graph_store.search_node_fts("旧节点")
+        assert len(results) == 0
+
+
+class TestGraphStoreMerge:
+    """merge_into 统一合并：source_refs 并集 + 反向索引 + 内容追加 + 置信度 max"""
+
+    @pytest.mark.asyncio
+    async def test_merge_adds_source_ref_and_reverse_index(self, graph_store: GraphStore):
+        """合并必须补 source_refs 与反向索引（否则删除事件时该节点源证不失效）。"""
+        from tests.factories import make_node
+        await make_node(graph_store, "m1", "Python异步", "基础概念", event_id="e1")
+        node = graph_store.merge_into("m1", event_id="e2", content_hash="h2")
+        assert node is not None
+        assert {sr.event_id for sr in node.source_refs} == {"e1", "e2"}
+        assert "m1" in graph_store.get_nodes_for_event("e2")
+
+    @pytest.mark.asyncio
+    async def test_merge_duplicate_event_id_ignored(self, graph_store: GraphStore):
+        from tests.factories import make_node
+        await make_node(graph_store, "m1", "T", "c", event_id="e1")
+        graph_store.merge_into("m1", event_id="e1", content_hash="h2")
+        node = graph_store.get_node("m1")
+        assert len(node.source_refs) == 1
+
+    @pytest.mark.asyncio
+    async def test_merge_appends_content_and_max_confidence(self, graph_store: GraphStore):
+        from tests.factories import make_node
+        await make_node(graph_store, "m1", "T", "旧内容", event_id="e1", confidence=0.5)
+        graph_store.merge_into(
+            "m1", event_id="e2", content_hash="h2",
+            content="新内容", confidence=0.9,
+        )
+        node = graph_store.get_node("m1")
+        assert "新内容" in node.content
+        assert node.confidence == 0.9
+        # 整段重复内容不追加
+        graph_store.merge_into("m1", event_id="e3", content_hash="h3", content="新内容")
+        assert node.content.count("新内容") == 1
+        # confidence 只升不降
+        graph_store.merge_into("m1", event_id="e4", content_hash="h4", confidence=0.3)
+        assert node.confidence == 0.9
+
+    @pytest.mark.asyncio
+    async def test_merge_nonexistent_returns_none(self, graph_store: GraphStore):
+        assert graph_store.merge_into("nothing", event_id="e1") is None
+
+    @pytest.mark.asyncio
+    async def test_merge_persists_after_flush(self, db, tmp_path):
+        """合并后 flush 落盘：重载可见（防静默丢失）。"""
+        json_path = tmp_path / "graph.json"
+        gs1 = GraphStore(db, json_path=str(json_path))
+        await gs1.load()
+        gs1.add_node(GraphNode(
+            node_id="m1", title="T", content="c",
+            node_type=NodeType.data,
+            source_refs=[SourceRef(event_id="e1", valid=True, hash="h1")],
+            confidence=0.5, metadata=NodeMetadata(evidence_quote="c"),
+        ))
+        gs1.merge_into("m1", event_id="e2", content_hash="h2", content="追加内容")
+        await gs1.flush()
+
+        gs2 = GraphStore(db, json_path=str(json_path))
+        await gs2.load()
+        node = gs2.get_node("m1")
+        assert "追加内容" in node.content
+        assert {sr.event_id for sr in node.source_refs} == {"e1", "e2"}
+
 
 class TestGraphStoreEgoGraph:
     @pytest.mark.asyncio
@@ -320,6 +474,19 @@ class TestGraphStoreNodeFTS:
         assert results[1]["node_id"] == "n_content"
         assert results[0]["rank"] < results[1]["rank"]
 
+    @pytest.mark.asyncio
+    async def test_like_multi_token_ranking(self, graph_store: GraphStore):
+        """多关键词降级：命中词数多的节点排前。"""
+        from tests.factories import make_node
+        # 不写 node_fts：FTS5 无命中直接走降级遍历内存图
+        await make_node(graph_store, "n1", "Python 异步", "异步编程教程", event_id="e1")
+        await make_node(graph_store, "n2", "Python 教程", "基础内容", event_id="e2")
+        results = await graph_store.search_node_fts("异步 教程")
+        assert len(results) == 2
+        # n1：异步(标题) + 教程(内容) = 2 词；n2：仅 教程(标题) = 1 词
+        assert results[0]["node_id"] == "n1"
+        assert results[1]["node_id"] == "n2"
+
 
 class TestGraphStoreControlledVariables:
     """控制变量：置信度排序、扩散跳数对照、多节点共享事件"""
@@ -368,3 +535,52 @@ class TestGraphStoreControlledVariables:
         ref_b = next(r for r in node.source_refs if r.event_id == "e_b")
         assert ref_a.valid is False
         assert ref_b.valid is True
+
+
+class TestGraphStoreReconcile:
+    """启动自愈 reconcile：悬空引用 / hash 漂移 → invalid，一致源证保持 valid"""
+
+    @pytest.mark.asyncio
+    async def test_sync_source_ref_hash_updates_matching_refs(self, graph_store: GraphStore):
+        from tests.factories import make_node
+        await make_node(graph_store, "n1", "T", "c", event_id="e1")
+        await make_node(graph_store, "n2", "T2", "c2", event_id="e2")
+        graph_store.sync_source_ref_hash("e1", "newhash")
+        assert graph_store.get_node("n1").source_refs[0].hash == "newhash"
+        assert graph_store.get_node("n2").source_refs[0].hash != "newhash"
+
+    @pytest.mark.asyncio
+    async def test_reconcile_invalidates_dangling_ref(self, graph_store: GraphStore, event_store):
+        graph_store.add_node(GraphNode(
+            node_id="dangling", title="D", content="c",
+            node_type=NodeType.interaction,
+            source_refs=[SourceRef(event_id="ghost", valid=True, hash="h")],
+            confidence=0.5, metadata=NodeMetadata(evidence_quote="c"),
+        ))
+        assert await graph_store.reconcile(event_store) == 1
+        assert graph_store.get_node("dangling").source_refs[0].valid is False
+
+    @pytest.mark.asyncio
+    async def test_reconcile_invalidates_hash_mismatch(self, graph_store: GraphStore, event_store):
+        eid, _ = await event_store.insert("actual content")
+        graph_store.add_node(GraphNode(
+            node_id="stale", title="S", content="c",
+            node_type=NodeType.data,
+            source_refs=[SourceRef(event_id=eid, valid=True, hash="wronghash")],
+            confidence=0.5, metadata=NodeMetadata(evidence_quote="c"),
+        ))
+        assert await graph_store.reconcile(event_store) == 1
+        assert graph_store.get_node("stale").source_refs[0].valid is False
+
+    @pytest.mark.asyncio
+    async def test_reconcile_keeps_matching_ref_valid(self, graph_store: GraphStore, event_store):
+        from core.event_store import _content_hash
+        eid, _ = await event_store.insert("actual content")
+        graph_store.add_node(GraphNode(
+            node_id="ok", title="O", content="c",
+            node_type=NodeType.data,
+            source_refs=[SourceRef(event_id=eid, valid=True, hash=_content_hash("actual content"))],
+            confidence=0.5, metadata=NodeMetadata(evidence_quote="c"),
+        ))
+        assert await graph_store.reconcile(event_store) == 0
+        assert graph_store.get_node("ok").source_refs[0].valid is True

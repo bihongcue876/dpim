@@ -108,7 +108,7 @@ class TestCompensationControlledVariables:
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
         # 批次检查任务挂起（大间隔），不干扰退避断言
-        monkeypatch.setattr(settings, "health_check_interval", 999)
+        monkeypatch.setattr(settings, "compensate_check_interval", 999)
         sleeps: list[float] = []
         _real_sleep = asyncio.sleep
         async def fake_sleep(s):
@@ -135,7 +135,7 @@ class TestCompensationControlledVariables:
         from core.config import settings
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
-        monkeypatch.setattr(settings, "health_check_interval", 0.02)
+        monkeypatch.setattr(settings, "compensate_check_interval", 0.02)
         eid, _ = await event_store.insert("never links")
         await event_store.update_status(eid, "raw")
         orchestrator.enqueue = _null_enqueue
@@ -153,7 +153,7 @@ class TestCompensationControlledVariables:
         from tests.factories import make_event
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
-        monkeypatch.setattr(settings, "health_check_interval", 0.02)
+        monkeypatch.setattr(settings, "compensate_check_interval", 0.02)
         orchestrator._comp_fail_streak = 1
         eid = await make_event(event_store, "linked soon", status="raw")
         orchestrator.enqueue = _null_enqueue
@@ -170,7 +170,7 @@ class TestCompensationControlledVariables:
         from core.config import settings
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
-        monkeypatch.setattr(settings, "health_check_interval", 0.02)
+        monkeypatch.setattr(settings, "compensate_check_interval", 0.02)
         eid, _ = await event_store.insert("probe fail")
         await event_store.update_status(eid, "raw")
         orchestrator.enqueue = _null_enqueue
@@ -186,7 +186,7 @@ class TestCompensationControlledVariables:
         from core.config import settings
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
-        monkeypatch.setattr(settings, "health_check_interval", 0.02)
+        monkeypatch.setattr(settings, "compensate_check_interval", 0.02)
         orchestrator._comp_fail_streak = 1
         enqueued: list[dict] = []
         async def record_enqueue(msg):
@@ -209,7 +209,7 @@ class TestCompensationControlledVariables:
         from core.config import settings
         ai_state.available = False
         orchestrator = Orchestrator(db, event_store, graph_store)
-        monkeypatch.setattr(settings, "health_check_interval", 999)
+        monkeypatch.setattr(settings, "compensate_check_interval", 999)
         sleeps: list[float] = []
         _real_sleep = asyncio.sleep
         async def fake_sleep(s):
@@ -228,6 +228,45 @@ class TestCompensationControlledVariables:
             orchestrator._comp_batch_check.cancel()
 
     @pytest.mark.asyncio
+    async def test_trigger_compensate_enqueues_maintain(
+        self, db, event_store, graph_store, monkeypatch
+    ):
+        """AI 恢复触发补偿时顺带自动入队图维护（AGENT_MAINTAIN_AUTO）。"""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "agent_maintain_auto", True)
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        enqueued: list[str] = []
+
+        async def rec(msg):
+            enqueued.append(msg.type)
+
+        orchestrator.enqueue = rec
+        compensator = Compensator(event_store, graph_store, orchestrator.enqueue)
+        await compensator._trigger_compensate()
+        assert "compensate" in enqueued
+        assert "maintain_graph" in enqueued  # 自动维护消息
+
+    @pytest.mark.asyncio
+    async def test_trigger_compensate_maintain_disabled(
+        self, db, event_store, graph_store, monkeypatch
+    ):
+        """AGENT_MAINTAIN_AUTO=false：恢复时不入队图维护。"""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "agent_maintain_auto", False)
+        orchestrator = Orchestrator(db, event_store, graph_store)
+        enqueued: list[str] = []
+
+        async def rec(msg):
+            enqueued.append(msg.type)
+
+        orchestrator.enqueue = rec
+        compensator = Compensator(event_store, graph_store, orchestrator.enqueue)
+        await compensator._trigger_compensate()
+        assert "maintain_graph" not in enqueued
+
+    @pytest.mark.asyncio
     async def test_no_pending_resets_state(
         self, db, event_store, graph_store, monkeypatch
     ):
@@ -240,6 +279,88 @@ class TestCompensationControlledVariables:
         await orchestrator._handle_compensate({})
         assert orchestrator._comp_fail_streak == 0
         assert orchestrator._comp_paused is False
+
+
+class TestHighWatermarkMaintain:
+    """节点规模高水位触发的自动图维护（C1：达到阈值自动清理僵尸节点）。"""
+
+    @pytest.mark.asyncio
+    async def test_high_watermark_triggers_maintain(
+        self, event_store, graph_store, monkeypatch
+    ):
+        """总节点数达到 AGENT_MAINTAIN_MAX_NODES → 自动入队 maintain_graph。"""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "agent_maintain_auto", True)
+        monkeypatch.setattr(settings, "agent_maintain_max_nodes", 900)
+        monkeypatch.setattr(settings, "agent_maintain_cooldown", 300)
+        monkeypatch.setattr(graph_store, "total_nodes", lambda: 900)
+        enqueued: list[str] = []
+
+        async def rec(msg):
+            enqueued.append(msg.type)
+
+        compensator = Compensator(event_store, graph_store, rec)
+        await compensator._maybe_trigger_maintain()
+        assert enqueued == ["maintain_graph"]
+
+    @pytest.mark.asyncio
+    async def test_below_threshold_no_trigger(
+        self, event_store, graph_store, monkeypatch
+    ):
+        """总节点数低于高水位 → 不触发。"""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "agent_maintain_auto", True)
+        monkeypatch.setattr(settings, "agent_maintain_max_nodes", 900)
+        monkeypatch.setattr(settings, "agent_maintain_cooldown", 300)
+        monkeypatch.setattr(graph_store, "total_nodes", lambda: 899)
+        enqueued: list[str] = []
+
+        async def rec(msg):
+            enqueued.append(msg.type)
+
+        compensator = Compensator(event_store, graph_store, rec)
+        await compensator._maybe_trigger_maintain()
+        assert enqueued == []
+
+    @pytest.mark.asyncio
+    async def test_cooldown_blocks_retrigger(
+        self, event_store, graph_store, monkeypatch
+    ):
+        """冷却期内不重复触发：两次连续调用仅入队一次。"""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "agent_maintain_auto", True)
+        monkeypatch.setattr(settings, "agent_maintain_max_nodes", 900)
+        monkeypatch.setattr(settings, "agent_maintain_cooldown", 300)
+        monkeypatch.setattr(graph_store, "total_nodes", lambda: 900)
+        enqueued: list[str] = []
+
+        async def rec(msg):
+            enqueued.append(msg.type)
+
+        compensator = Compensator(event_store, graph_store, rec)
+        await compensator._maybe_trigger_maintain()
+        await compensator._maybe_trigger_maintain()  # 冷却期内
+        assert enqueued == ["maintain_graph"]
+
+    @pytest.mark.asyncio
+    async def test_disabled_no_trigger(self, event_store, graph_store, monkeypatch):
+        """AGENT_MAINTAIN_AUTO=false → 高水位不触发。"""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "agent_maintain_auto", False)
+        monkeypatch.setattr(settings, "agent_maintain_max_nodes", 900)
+        monkeypatch.setattr(graph_store, "total_nodes", lambda: 900)
+        enqueued: list[str] = []
+
+        async def rec(msg):
+            enqueued.append(msg.type)
+
+        compensator = Compensator(event_store, graph_store, rec)
+        await compensator._maybe_trigger_maintain()
+        assert enqueued == []
 
 
 async def _null_enqueue(msg):

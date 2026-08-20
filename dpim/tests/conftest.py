@@ -1,8 +1,30 @@
+import shutil
+import uuid
+from pathlib import Path
+
 import pytest
 
 from core.database import Database
 from core.event_store import EventStore
 from core.graph_store import GraphStore
+
+# 沙箱环境（DSH）下系统临时目录（%TEMP%）受限：覆盖 pytest 内置 tmp_path，
+# 固定使用工作区内目录，保证测试可写。目录名以 . 开头，pytest 收集自动忽略。
+_WS_TMP = Path(__file__).resolve().parent / ".pytest_tmp_ws"
+
+
+@pytest.fixture
+def tmp_path():
+    """覆盖 pytest 内置 tmp_path：固定工作区目录，每个测试独立子目录。"""
+    _WS_TMP.mkdir(parents=True, exist_ok=True)
+    p = _WS_TMP / uuid.uuid4().hex[:12]
+    p.mkdir(parents=True, exist_ok=True)
+    yield p
+    # 测试后尝试清理（沙箱拒删目录时静默忽略，不影响测试）
+    try:
+        shutil.rmtree(p)
+    except OSError:
+        pass
 
 
 @pytest.fixture

@@ -51,6 +51,11 @@ dpimCLI/**/htmlcov/
 dpimCLI/build/
 dpimCLI/dist/
 
+# 测试临时目录（沙箱环境下 pytest basetemp / conftest tmp_path 重定向）
+dpim/.pytest_tmp/
+.pytest_tmp/
+dpim/tests/.pytest_tmp_ws/
+
 docs/
 .workbuddy
 

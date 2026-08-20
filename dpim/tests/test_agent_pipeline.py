@@ -20,6 +20,7 @@ from core.models import (
     EdgeCreate,
     GraphBuildOutput,
     GraphEdge,
+    GraphMaintenancePlan,
     GraphNode,
     MetaCogIssue,
     MetaCogVerdict,
@@ -53,12 +54,14 @@ def _edge(s: str, t: str, relation: str):
 class FakeLLM:
     """mock chat_structured：按 response_model 返回预置对象并记录调用。"""
 
-    def __init__(self, chunks=None, proposal=None, verdict=None, intent=None, cr=None):
+    def __init__(self, chunks=None, proposal=None, verdict=None, intent=None, cr=None,
+                 plan=None):
         self.chunks = chunks
         self.proposal = proposal
         self.verdict = verdict
         self.intent = intent
         self.cr = cr or CrSummary(summary=["要点"], themes=["主题"], confidence=0.8)
+        self.plan = plan
         self.calls: list[tuple] = []
         self.propose_user_calls: list[str] = []
         self.meta_count = 0
@@ -75,6 +78,8 @@ class FakeLLM:
         if response_model is GraphBuildOutput:
             self.propose_user_calls.append(user)
             return self.proposal
+        if response_model is GraphMaintenancePlan:
+            return self.plan
         if response_model is MetaCogVerdict:
             self.meta_count += 1
             if isinstance(self.verdict, list):
@@ -697,4 +702,120 @@ def test_prompt_loader_missing_role_returns_skeleton(tmp_path):
     loader = PromptLoader(prompts_dir=tmp_path)
     content = loader.load("cr")
     assert "骨架" in content
+
+
+# ── 图维护（maintain_graph）──
+
+
+async def _maintain_env(db, event_store, graph_store):
+    """构造维护场景：两个重合 data 节点 + 一个僵尸 interaction 节点。"""
+    from tests.factories import make_node
+
+    await make_node(
+        graph_store, "dup1", "Python异步编程", "Python异步编程的实现方式", event_id="e1"
+    )
+    await make_node(
+        graph_store, "dup2", "Python异步编程", "Python异步编程的实现方式", event_id="e2"
+    )
+    await make_node(
+        graph_store, "zombie", "过时信息", "源事件已删除的内容", event_id="e_del"
+    )
+    graph_store.invalidate_source_ref("e_del")  # 僵尸化：无有效源证
+    return graph_store
+
+
+async def test_maintain_graph_full_flow(db, event_store, graph_store, enable_ai, monkeypatch):
+    """图维护全链路：扫描候选 → Gr 计划 → Meta 通过 → 执行合并与删除。"""
+    from core.models import MaintenanceDelete, MaintenanceMerge
+
+    await _maintain_env(db, event_store, graph_store)
+    plan = GraphMaintenancePlan(
+        merges=[MaintenanceMerge(target_id="dup1", source_ids=["dup2"], reason="完全重合")],
+        deletes=[MaintenanceDelete(node_id="zombie", reason="无有效源证")],
+        confidence=0.9,
+    )
+    fake = FakeLLM(plan=plan, verdict=make_verdict(pass_=True))
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    await orch._handle_maintain_graph({})
+
+    # 合并：dup2 消失，dup1 吸收其源证
+    assert graph_store.get_node("dup2") is None
+    dup1 = graph_store.get_node("dup1")
+    assert {sr.event_id for sr in dup1.source_refs} == {"e1", "e2"}
+    # 僵尸节点被删除
+    assert graph_store.get_node("zombie") is None
+    assert graph_store.total_nodes() == 1
+    # 调用序列：gr 计划 → meta 审核
+    roles = [c[0] for c in fake.calls]
+    assert roles.count("gr") == 1
+    assert roles.count("meta") == 1
+
+
+async def test_maintain_graph_rejected_no_change(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """Meta 驳回维护计划：图无任何变化。"""
+    from core.models import MaintenanceDelete
+
+    await _maintain_env(db, event_store, graph_store)
+    plan = GraphMaintenancePlan(
+        deletes=[MaintenanceDelete(node_id="zombie", reason="无源证")],
+        confidence=0.9,
+    )
+    fake = FakeLLM(plan=plan, verdict=make_verdict(pass_=False))
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    await orch._handle_maintain_graph({})
+
+    assert graph_store.total_nodes() == 3  # 原样保留
+    assert graph_store.get_node("zombie") is not None
+
+
+async def test_maintain_graph_skipped_without_candidates(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """无候选：不调 LLM，直接返回。"""
+    fake = FakeLLM()
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    await orch._handle_maintain_graph({})
+    assert fake.calls == []  # 未触发任何 LLM 调用
+
+
+async def test_maintain_graph_skipped_when_ai_down(db, event_store, graph_store):
+    """AI 不可用：维护跳过（降级即常态）。"""
+    ai_state.available = False
+    orch = make_orchestrator(db, event_store, graph_store)
+    await orch._handle_maintain_graph({})  # 不抛异常
+
+
+async def test_maintain_graph_auto_skips_small_graph(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """自动维护：图规模小于阈值 → 跳过（不调 LLM）；手动触发不受限。"""
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "agent_maintain_min_nodes", 100)
+    fake = FakeLLM()
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    await orch._handle_maintain_graph({"auto": True})
+    assert fake.calls == []  # 小图自动触发被拦截
+
+
+async def test_maintain_graph_auto_runs_when_large_enough(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """自动维护：图规模达标 → 走完整链路（候选 → Gr → Meta → 执行）。"""
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "agent_maintain_min_nodes", 0)
+    await _maintain_env(db, event_store, graph_store)
+    fake = FakeLLM(plan=GraphMaintenancePlan(), verdict=make_verdict(pass_=True))
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    await orch._handle_maintain_graph({"auto": True})
+    roles = [c[0] for c in fake.calls]
+    assert "gr" in roles  # 自动触发走维护链路
 

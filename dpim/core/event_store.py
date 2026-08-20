@@ -65,6 +65,26 @@ class EventStore:
         d["graph_refs"] = json.loads(d.get("graph_refs", "[]"))
         return d
 
+    async def get_many(self, event_ids: list[str]) -> dict[str, dict]:
+        """按 event_id 列表批量取事件（去重），返回 {event_id: event dict}。
+
+        检索等路径需一次取多条事件时使用，避免逐条 get 造成 N+1 查询。
+        """
+        ids = list(dict.fromkeys(event_ids))
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        cursor = await self.db.conn.execute(
+            f"SELECT * FROM events WHERE event_id IN ({placeholders})", ids
+        )
+        rows = await cursor.fetchall()
+        result: dict[str, dict] = {}
+        for r in rows:
+            d = dict(r)
+            d["graph_refs"] = json.loads(d.get("graph_refs", "[]"))
+            result[d["event_id"]] = d
+        return result
+
     async def update_status(self, event_id: str, status: str, graph_refs: list[str] | None = None):
         if graph_refs is not None:
             await self.db.conn.execute(
@@ -185,23 +205,34 @@ class EventStore:
             rows = []  # MATCH 语法错误（如含 - : " 等）→ 降级 LIKE
         if rows:
             return [dict(r) for r in rows]
-        # FTS5 不命中（如中文），降级为 LIKE：按标题/内容命中位置计分排序
+        # FTS5 不命中（如中文），降级为多关键词 LIKE：按命中词数/位置计分排序
+        from core.text_utils import like_rank_multi, tokenize_query
+
+        tokens = tokenize_query(query)
+        if not tokens:
+            tokens = [query]
+        like_sql = "SELECT e.* FROM events e WHERE " + " OR ".join(
+            ["e.raw_content LIKE ?"] * len(tokens)
+        )
+        # LIMIT 护栏：全表 LIKE 无上限会把所有命中行载入内存逐行计分（DoS 放大点）
         like_cursor = await self.db.conn.execute(
-            "SELECT e.* FROM events e "
-            "WHERE e.raw_content LIKE ?",
-            (f"%{query}%",),
+            like_sql + " LIMIT 500", [f"%{t}%" for t in tokens]
         )
         rows = await like_cursor.fetchall()
         scored = []
         for r in rows:
             d = dict(r)
-            d["rank"] = like_rank(query, "", d["raw_content"])
+            d["rank"] = like_rank_multi(tokens, "", d["raw_content"])
             scored.append(d)
         scored.sort(key=lambda x: x["rank"])
         return scored[:limit]
 
-    async def update_content(self, event_id: str, new_content: str) -> bool:
-        """更新事件内容，同步更新 FTS 索引。返回是否存在该事件。"""
+    async def update_content(self, event_id: str, new_content: str, graph_store=None) -> bool:
+        """更新事件内容，同步更新 FTS 索引与引用节点的 hash 快照。
+
+        返回是否存在该事件。传入 graph_store 时，同步刷新引用该事件节点的
+        source_refs[].hash（落盘由调用方 flush）。
+        """
         event = await self.get(event_id)
         if event is None:
             return False
@@ -210,10 +241,17 @@ class EventStore:
             "UPDATE events SET raw_content = ?, content_hash = ? WHERE event_id = ?",
             (new_content, c_hash, event_id),
         )
+        # 先删后插（UPSERT）：raw 状态事件尚无 FTS 行时 UPDATE 是静默 no-op，
+        # 会导致修订后的内容永远检索不到
         await self.db.conn.execute(
-            "UPDATE events_fts SET raw_content = ? WHERE event_id = ?",
-            (new_content, event_id),
+            "DELETE FROM events_fts WHERE event_id = ?", (event_id,)
         )
+        await self.db.conn.execute(
+            "INSERT INTO events_fts (event_id, raw_content) VALUES (?, ?)",
+            (event_id, new_content),
+        )
+        if graph_store is not None:
+            graph_store.sync_source_ref_hash(event_id, c_hash)
         await self.db.conn.commit()
         return True
 
@@ -257,5 +295,7 @@ class EventStore:
             if not has_other:
                 graph_store.remove_node(nid)
                 await graph_store.delete_node_fts(nid)
+        # 先落图，再删事件行：避免「事件已删、图改动仅留内存」的悬空源证
+        await graph_store.flush()
         await self.delete(event_id)
         return {"status": "ok"}

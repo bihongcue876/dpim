@@ -2,6 +2,12 @@ function base(): string {
   return localStorage.getItem('dpim_backend_url') || ''
 }
 
+/** 后端启用 DPIM_API_KEY 时随请求附带认证头（本地默认无认证，头为空不发送） */
+function authHeaders(): Record<string, string> {
+  const key = localStorage.getItem('dpim_api_key') || ''
+  return key ? { 'X-API-Key': key } : {}
+}
+
 function formatErrorDetail(detail: unknown): string {
   if (typeof detail === 'string') return detail
   // FastAPI 422 校验错误的 detail 是数组 [{loc,msg,type},...]
@@ -25,8 +31,12 @@ function formatErrorDetail(detail: unknown): string {
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(base() + url, {
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
     ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      ...init?.headers,
+    },
   })
   if (!res.ok) {
     // FastAPI 错误信封为 {detail: "..."}，兼容 {message} / {error:{message}} 两种；

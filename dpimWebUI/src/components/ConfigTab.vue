@@ -7,6 +7,28 @@
           <span class="section-count">{{ sec.fields.length }}</span>
         </header>
         <div class="section-body">
+          <!-- 提供商表单化管理（取代整块 JSON 暴露）：密钥掩码显示，弹窗逐字段配置 -->
+          <div v-if="sec.name === '模型与提供商'" class="prov-block">
+            <div class="prov-toolbar">
+              <span class="prov-hint">BYOK 注册表 · 密钥掩码显示，编辑留空即保持不变</span>
+              <n-button size="tiny" type="primary" ghost @click="openAdd">新增提供商</n-button>
+            </div>
+            <div v-if="!providerNames.length" class="prov-empty">暂无注册提供商，可点击「新增提供商」添加</div>
+            <div v-for="name in providerNames" :key="name" class="prov-card">
+              <div class="prov-main">
+                <div class="prov-name">{{ name }}</div>
+                <div class="prov-meta">{{ providersDraft[name].base_url }}</div>
+                <div class="prov-meta">
+                  密钥 {{ providersDraft[name].api_key || '（未设置）' }} · {{ providerModels(name).length }} 个模型
+                </div>
+              </div>
+              <div class="prov-actions">
+                <n-button size="tiny" @click="openEdit(name)">编辑</n-button>
+                <n-button size="tiny" type="error" ghost @click="removeProvider(name)">删除</n-button>
+              </div>
+            </div>
+            <div class="prov-divider"></div>
+          </div>
           <div v-for="field in sec.fields" :key="field.key" class="config-row">
             <span class="cf-name">{{ field.label }}</span>
             <span class="cf-current" :title="currentTitle(field)">{{ currentText(field) }}</span>
@@ -17,15 +39,50 @@
               <template v-else-if="field.type === 'text'">
                 <n-input v-model:value="edits[field.key]" size="small" :placeholder="String(orig(field.key) ?? '')" />
               </template>
-              <n-input v-else-if="field.type === 'password'" v-model:value="edits[field.key]" type="password" size="small" placeholder="••••••" />
+              <n-input v-else-if="field.type === 'password'" v-model:value="edits[field.key]" type="password" show-password-on="click" size="small" :placeholder="passwordPlaceholder(field)" />
               <n-input-number v-else-if="field.type === 'number'" v-model:value="edits[field.key]" size="small" style="width:100%" :min="field.min ?? 0" :max="field.max ?? 9999" />
               <n-select v-else-if="field.type === 'select'" v-model:value="edits[field.key]" :options="field.options" size="small" />
-              <n-input v-else-if="field.type === 'json'" v-model:value="edits[field.key]" type="textarea" :rows="5" size="small" placeholder='{"provider名": {"base_url": "...", "api_key": "...", "models": ["模型1", "模型2"], "timeout": 120}}' style="font-family: Consolas, monospace" />
             </div>
           </div>
         </div>
       </section>
     </div>
+
+    <!-- 提供商编辑弹窗：逐字段表单（参考主流 AI 平台的 provider 配置交互） -->
+    <n-modal v-model:show="showModal" preset="card" :title="editingName ? `编辑提供商 · ${editingName}` : '新增提供商'" class="prov-modal" :mask-closable="false">
+      <n-form label-placement="left" label-width="92">
+        <n-form-item label="名称">
+          <n-input v-if="!editingName" v-model:value="form.name" placeholder="如 siliconflow" />
+          <span v-else class="prov-name">{{ editingName }}</span>
+        </n-form-item>
+        <n-form-item label="Base URL">
+          <n-input v-model:value="form.base_url" placeholder="https://api.siliconflow.cn/v1" />
+        </n-form-item>
+        <n-form-item label="API Key">
+          <n-input
+            v-model:value="form.api_key"
+            type="password"
+            show-password-on="click"
+            :placeholder="editingName && providersDraft[editingName]?.api_key
+              ? `当前 ${providersDraft[editingName].api_key}，留空保持不变`
+              : 'sk-...（本地服务可留空）'"
+          />
+        </n-form-item>
+        <n-form-item label="模型列表">
+          <n-input v-model:value="form.models_text" type="textarea" :rows="2" placeholder="逗号或换行分隔，如 Qwen3.5-9B, deepseek-v4" />
+        </n-form-item>
+        <n-form-item label="超时（秒）">
+          <n-input-number v-model:value="form.timeout" :min="1" :max="3600" style="width:100%" placeholder="默认 666" />
+        </n-form-item>
+      </n-form>
+      <template #footer>
+        <div class="prov-modal-footer">
+          <n-button size="small" @click="showModal = false">取消</n-button>
+          <n-button size="small" type="primary" @click="saveModal">保存</n-button>
+        </div>
+      </template>
+    </n-modal>
+
     <div class="config-bottom">
       <n-alert v-if="staleHint" type="warning" closable style="margin-bottom:8px;font-size:12px">{{ staleHint }}</n-alert>
       <n-alert v-if="savedHint" type="info" closable style="margin-bottom:8px;font-size:12px">{{ savedHint }}</n-alert>
@@ -36,8 +93,11 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { createDiscreteApi } from 'naive-ui'
 import type { SettingsResponse, HealthResponse } from '@/api/client'
 import * as api from '@/api/client'
+
+const { message, dialog } = createDiscreteApi(['message', 'dialog'])
 
 const props = defineProps<{
   health: HealthResponse | null
@@ -59,28 +119,106 @@ const original = ref<SettingsResponse>({
 })
 const edits = reactive<Record<string, any>>({})
 
+// ── 提供商表单化状态（取代 JSON textarea）──
+interface ProviderEntry {
+  base_url: string
+  api_key: string // 掩码值（来自 GET）或用户新输入的明文
+  models?: string[]
+  model?: string
+  timeout?: number
+  [k: string]: unknown // 保留 max_tokens / thinking_style 等厂商适配字段
+}
+const providersDraft = ref<Record<string, ProviderEntry>>({})
+const showModal = ref(false)
+const editingName = ref<string | null>(null) // null = 新增
+const form = reactive({
+  name: '',
+  base_url: '',
+  api_key: '',
+  models_text: '',
+  timeout: null as number | null,
+})
+
+const providerNames = computed(() => Object.keys(providersDraft.value).sort())
+
+function providerModels(name: string): string[] {
+  const entry = providersDraft.value[name]
+  if (!entry) return []
+  const list = Array.isArray(entry.models) ? entry.models : (entry.model ? [entry.model] : [])
+  return list.map(String).filter(Boolean)
+}
+
+function openAdd() {
+  editingName.value = null
+  form.name = ''
+  form.base_url = ''
+  form.api_key = ''
+  form.models_text = ''
+  form.timeout = null
+  showModal.value = true
+}
+
+function openEdit(name: string) {
+  const entry = providersDraft.value[name] ?? { base_url: '', api_key: '' }
+  editingName.value = name
+  form.name = name
+  form.base_url = String(entry.base_url ?? '')
+  form.api_key = '' // 不回填密钥（避免明文/掩码误提交），留空 = 保持不变
+  form.models_text = providerModels(name).join(', ')
+  form.timeout = typeof entry.timeout === 'number' ? entry.timeout : null
+  showModal.value = true
+}
+
+function saveModal() {
+  const key = editingName.value
+  const name = (key ?? form.name).trim()
+  if (!name) { message.error('请填写提供商名称'); return }
+  if (!key && providersDraft.value[name]) { message.error(`名称「${name}」已存在`); return }
+  if (!form.base_url.trim()) { message.error('请填写 Base URL'); return }
+  const models = form.models_text.split(/[,，\n]/).map(s => s.trim()).filter(Boolean)
+  // 保留原有厂商适配字段，仅覆盖表单管理的四项
+  const entry: ProviderEntry = key
+    ? { ...providersDraft.value[key] }
+    : { base_url: '', api_key: '' }
+  entry.base_url = form.base_url.trim()
+  // 编辑留空 = 回传原掩码值（后端识别为「保持现值」）；新增留空 = 未设置密钥
+  entry.api_key = form.api_key.trim() || (key ? String(providersDraft.value[key]?.api_key ?? '') : '')
+  if (models.length) entry.models = models
+  else delete entry.models
+  if (form.timeout != null) entry.timeout = form.timeout
+  else delete entry.timeout
+  providersDraft.value[name] = entry
+  showModal.value = false
+}
+
+function removeProvider(name: string) {
+  dialog.warning({
+    title: '删除提供商',
+    content: `确认从注册表移除「${name}」？提交配置后生效。`,
+    positiveText: '移除',
+    negativeText: '取消',
+    onPositiveClick() { delete providersDraft.value[name] },
+  })
+}
+
 /** 安全读取配置项现值（field.key 为动态字符串） */
 function orig(key: string): unknown {
   return (original.value as Record<string, unknown>)[key]
 }
 
-/** 当前值显示文本（JSON 字段显示概要） */
+/** 当前值显示文本 */
 function currentText(field: ConfigField): string {
   if (field.key === 'backend_url') return backendUrl.value
-  if (field.type === 'json') return summaryJson(orig(field.key))
   const v = orig(field.key)
   return v == null || v === '' ? '—' : String(v)
 }
 function currentTitle(field: ConfigField): string {
-  if (field.type === 'json') return String(orig(field.key) ?? '')
   return currentText(field)
 }
-function summaryJson(v: unknown): string {
-  if (v && typeof v === 'object') {
-    const keys = Object.keys(v as Record<string, unknown>)
-    return keys.length ? `${keys.length} 个提供商` : '{}'
-  }
-  return String(v ?? '—')
+/** 密码字段输入框提示：显示当前掩码，留空保持不变 */
+function passwordPlaceholder(field: ConfigField): string {
+  const cur = orig(field.key)
+  return cur ? `当前 ${String(cur)}，留空保持不变` : '未设置，可输入新密钥'
 }
 const backendUrl = ref('http://localhost:8000')
 const submitting = ref(false)
@@ -90,7 +228,7 @@ const savedHint = ref('')
 interface ConfigField {
   key: string
   label: string
-  type: 'text' | 'password' | 'number' | 'select' | 'json'
+  type: 'text' | 'password' | 'number' | 'select'
   section?: string
   min?: number
   max?: number
@@ -106,22 +244,17 @@ const providerOptions = computed(() =>
   })),
 )
 
-// 使用模型下拉选项：按「用户当前选择的提供商」从 providers JSON 解析模型列表
-// （这样切换提供商或编辑 providers JSON 后立即生效，不依赖后端旧缓存）；
-// primary 回退环境变量主模型；解析不到时用后端 available_models 兜底
+// 使用模型下拉选项：按「用户当前选择的提供商」从 providersDraft 取模型列表
+// （切换提供商或编辑提供商后立即生效，不依赖后端旧缓存）；
+// primary 回退环境变量主模型；取不到时用后端 available_models 兜底
 const modelOptions = computed(() => {
   const provider = String(edits['active_provider'] ?? original.value.active_provider ?? 'primary')
   let models: string[] = []
   if (provider === 'primary') {
     models = [original.value.llm_model_name].filter(Boolean)
   } else {
-    let parsed: Record<string, any> | null = null
-    try { parsed = JSON.parse(String(edits['providers'] ?? '{}')) } catch { parsed = null }
-    const entry = parsed && parsed[provider]
-    if (entry) {
-      const list = Array.isArray(entry.models) ? entry.models : (entry.model ? [entry.model] : [])
-      models = list.map(String).filter(Boolean)
-    }
+    const entry = providersDraft.value[provider]
+    if (entry) models = providerModels(provider)
   }
   if (models.length === 0) models = (original.value.available_models ?? []).slice()
   return models.map(m => ({ label: m, value: m }))
@@ -141,7 +274,7 @@ watch(
 const fields = computed<ConfigField[]>(() => [
   { key: 'memory_db_path', label: '记忆库路径', type: 'text', section: '存储' },
   { key: 'graph_json_path', label: '图谱文件路径', type: 'text', section: '存储' },
-  { key: 'providers', label: '提供商注册表(JSON)', type: 'json', section: '模型与提供商' },
+  { key: 'llm_api_key', label: '主配置 API Key', type: 'password', section: '模型与提供商' },
   { key: 'active_provider', label: '活动提供商', type: 'select', options: providerOptions.value, section: '模型与提供商' },
   { key: 'active_model', label: '使用模型', type: 'select', options: modelOptions.value, section: '模型与提供商' },
   { key: 'llm_max_tokens', label: '输出上限 tokens（0=服务端默认）', type: 'number', min: 0, max: 32768, section: '模型与提供商' },
@@ -191,10 +324,12 @@ async function refreshOriginal() {
 async function load() {
   // 初次加载 / 提交成功后：刷新基准并初始化编辑框
   await refreshOriginal()
+  providersDraft.value = JSON.parse(JSON.stringify(original.value.providers ?? {}))
   for (const f of fields.value) {
     if (f.key === 'backend_url') continue
-    if (f.type === 'json') {
-      edits[f.key] = JSON.stringify(original.value[f.key as keyof SettingsResponse] ?? {}, null, 2)
+    if (f.type === 'password') {
+      // 密钥类字段：不回填（后端下发的是掩码），留空 = 保持不变
+      edits[f.key] = ''
       continue
     }
     // number 字段用 null 表示「未设置」（后端可空数字），避免空串 '' 提交后触发 422
@@ -233,20 +368,20 @@ async function onSubmit() {
         }
         continue
       }
-      if (f.type === 'json') {
-        // JSON 字段：解析后按对象比较
-        let parsed: unknown
-        try { parsed = JSON.parse(String(edits[f.key] ?? '{}')) }
-        catch { continue }  // 无效 JSON 不提交
-        const origVal = original.value[f.key as keyof SettingsResponse] ?? {}
-        if (JSON.stringify(parsed) !== JSON.stringify(origVal)) {
-          changed[f.key] = parsed
+      if (f.type === 'password') {
+        // 密钥类字段：留空 = 保持不变，不提交
+        if (String(edits[f.key] ?? '') !== '') {
+          changed[f.key] = edits[f.key]
         }
         continue
       }
       if (String(edits[f.key]) !== String(original.value[f.key as keyof SettingsResponse])) {
         changed[f.key] = edits[f.key]
       }
+    }
+    // providers 草稿与基准（掩码版）不一致 → 提交（掩码回传由后端幂等保留）
+    if (JSON.stringify(providersDraft.value) !== JSON.stringify(original.value.providers ?? {})) {
+      changed.providers = providersDraft.value
     }
     if (Object.keys(changed).length === 0) {
       savedHint.value = '没有需要保存的修改'
@@ -287,6 +422,38 @@ async function onSubmit() {
   background: rgba(255,255,255,0.06); padding: 0 8px; border-radius: 999px;
 }
 .section-body { padding: 4px 16px 8px; }
+
+/* ── 提供商管理块 ── */
+.prov-block { padding: 6px 0 10px; }
+.prov-toolbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 0 8px;
+}
+.prov-hint { font-size: 11px; color: var(--dpim-text-3, #7c8694); }
+.prov-empty {
+  font-size: 12px; color: var(--dpim-text-3, #7c8694);
+  padding: 10px 0; text-align: center;
+  border: 1px dashed var(--dpim-border, rgba(255,255,255,0.12));
+  border-radius: 8px;
+}
+.prov-card {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 10px; margin-bottom: 6px;
+  border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  border-radius: 8px;
+  background: var(--dpim-surface-2, rgba(255,255,255,0.02));
+}
+.prov-main { flex: 1; min-width: 0; }
+.prov-name { font-size: 13px; font-weight: 600; color: var(--dpim-text, #e6edf3); }
+.prov-meta {
+  font-size: 11px; color: var(--dpim-text-3, #7c8694);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: 'Cascadia Code', Consolas, monospace;
+}
+.prov-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.prov-divider { border-bottom: 1px dashed var(--dpim-border, rgba(255,255,255,0.07)); margin-top: 4px; }
+.prov-modal { max-width: 480px; }
+.prov-modal-footer { display: flex; justify-content: flex-end; gap: 8px; }
 
 .config-row {
   display: flex; align-items: center; gap: 12px; padding: 7px 0;
