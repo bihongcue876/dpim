@@ -8,16 +8,19 @@ dependencies = [
     "aiosqlite>=0.20",
     "fastapi>=0.110",
     "instructor>=1.0",
-    "mypy>=1.9",
     "networkx>=3.2",
     "openai>=1.30",
     "pydantic>=2.0",
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
     "python-dotenv>=1.0",
-    "ruff>=0.4",
     "typer>=0.12",
     "uvicorn[standard]>=0.29",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
 ]
 
 [tool.ruff]
@@ -26,11 +29,6 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
-
-[tool.mypy]
-python_version = "3.14"
-strict = true
-ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
