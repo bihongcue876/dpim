@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.13
-> 日期：2026-08-19
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改，POST /agent/maintain，23 端点）+ 安全加固（API Key 掩码 + 可选 API 访问认证 + 输入上限/值域约束 + 日志全文开关）
+> 版本：1.15
+> 日期：2026-08-20
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改/节点压缩，POST /agent/maintain，23 端点）+ 安全加固（API Key 掩码 + 可选 API 访问认证 + 输入上限/值域约束 + 日志全文开关）+ 防冗余节点硬规则（redundant_node）+ 节点规模高水位自动维护（AGENT_MAINTAIN_MAX_NODES / COOLDOWN）
 
 ---
 
@@ -202,7 +202,7 @@ raw → indexed → linked
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| type | enum | hallucination / illegal_edge / conflict / empty_node |
+| type | enum | hallucination / illegal_edge / conflict / empty_node / redundant_node |
 | description | string | 问题描述 |
 | suggestion | string | 修正建议 |
 
@@ -212,21 +212,22 @@ raw → indexed → linked
 - 来源锚定：evidence_quote 是否出现在 raw_content 中，优先子串匹配
 - 空节点检查：content 不得为空
 
-#### 4.4 图维护任务（调整/合并/删改）
+#### 4.4 图维护任务（调整/合并/删改/节点压缩）
 
-**职责**：整理已有图结构——合并重合节点、删除僵尸节点、修正过时内容、删除错误边。与「4.2 图构建（存）」互补：构图是增，维护是改删。
+**职责**：整理已有图结构——合并重合节点、删除僵尸节点、修正过时内容、删除错误边、概括压缩 data 节点。与「4.2 图构建（存）」互补：构图是增，维护是改删压。
 
 **触发**：
 - 手动：`POST /agent/maintain`（入队 `maintain_graph`，与写入共用串行队列）
-- 自动：AI 恢复触发补偿时顺带入队一次（`AGENT_MAINTAIN_AUTO` 默认开启；图节点数 < `AGENT_MAINTAIN_MIN_NODES` 时自动触发跳过，手动不受限）
+- 自动（AI 恢复）：AI 恢复触发补偿时顺带入队一次（`AGENT_MAINTAIN_AUTO` 默认开启；图节点数 < `AGENT_MAINTAIN_MIN_NODES` 时自动触发跳过，手动不受限）
+- 自动（节点规模高水位）：总节点数达到 `AGENT_MAINTAIN_MAX_NODES`（默认 900 ≈ 1000 软上限 90%）时由健康检查循环入队一次（清理僵尸节点）；`AGENT_MAINTAIN_COOLDOWN`（默认 300s）冷却期内不重复触发
 - AI 不可用或管线未启用时跳过
 
 **流程**：
 
-1. **候选扫描**（确定性，无 LLM）：同类型相似节点对（词重叠 Jaccard ≥ 0.6，词桶优化）、无有效源证的僵尸节点、低置信度（<0.4）且无边的孤立节点
-2. **Gr 维护计划**：一次 LLM 调用输出 GraphMaintenancePlan（merges / deletes / updates / edge_removes，每条带 reason）
-3. **Meta 审核**：本地硬规则（存在性/类型边界/删除保护）+ LLM 语义复核（合并是否真重合、删除是否安全、修改是否违背证据）
-4. **执行**：审核通过则执行（合并 = target 吸收 source 源证/内容/边迁移后删 source；删除/修改/删边各按规则），驳回即放弃本轮（无修正循环，保守优先）
+1. **候选扫描**（确定性，无 LLM）：同类型相似节点对（词重叠 Jaccard ≥ 0.6，词桶优化）、无有效源证的僵尸节点、低置信度（<0.4）且无边的孤立节点、可压缩 data 节点（有效源证 ≥ 3 或内容 ≥ 500 字符）
+2. **Gr 维护计划**：一次 LLM 调用输出 GraphMaintenancePlan（merges / deletes / updates / edge_removes / compresses，每条带 reason）
+3. **Meta 审核**：本地硬规则（存在性/类型边界/删除保护/压缩仅 data）+ LLM 语义复核（合并是否真重合、删除是否安全、修改是否违背证据、压缩是否损坏语义）
+4. **执行**：审核通过则执行（合并 = target 吸收 source 源证/内容/边迁移后删 source；删除/修改/删边/压缩各按规则），驳回即放弃本轮（无修正循环，保守优先）
 5. **空计划合法**：无必要整理时 Gr 输出空计划，不做任何改动
 
 **边界**（与删除保护对齐）：
@@ -237,6 +238,7 @@ raw → indexed → linked
 | 删除 | interaction 节点（Meta 审核）；data 仅当无有效源证；system 永不删除 |
 | 修改 | interaction 覆盖内容；data 只允许追加（不得概括）；system 禁改；修改须仍能被源证支撑 |
 | 删边 | 按 (source, target) 删除，须有依据 |
+| 压缩 | 仅 data 概括压缩（覆盖 content + 可精炼 title + 可补边）；source_refs 保留不动（溯源锚定不破坏）；system / interaction 永不压缩；概括不得引入新论断/丢失关键语义 |
 
 **GraphMaintenancePlan**：
 
@@ -246,6 +248,7 @@ raw → indexed → linked
 | deletes | MaintenanceDelete[] | 删除节点（node_id + reason） |
 | updates | MaintenanceUpdate[] | 调整内容（node_id + content + reason） |
 | edge_removes | MaintenanceEdgeRemove[] | 删除边（source + target + reason） |
+| compresses | MaintenanceCompress[] | 概括压缩 data 节点（node_id + content + 可选 title + 可选 new_edges + reason） |
 | confidence | number | 计划整体置信度 0.0~1.0 |
 
 ---
@@ -564,6 +567,8 @@ content
 | **COMPENSATE_CHECK_INTERVAL** | 5 | 补偿批次结果检查间隔（秒，独立于健康检查周期，失败批次快速进入退避） |
 | **AGENT_MAINTAIN_AUTO** | true | 图维护自动触发：AI 恢复触发补偿时顺带整理图谱（合并/删除/修改/删边） |
 | **AGENT_MAINTAIN_MIN_NODES** | 10 | 自动维护最小图规模（节点数；小图跳过，手动触发不受限） |
+| **AGENT_MAINTAIN_MAX_NODES** | 900 | 节点规模高水位：总节点数达到即由健康检查循环自动触发一次图维护（清理僵尸节点；≈ 1000 软上限 90%） |
+| **AGENT_MAINTAIN_COOLDOWN** | 300 | 高水位自动维护触发冷却（秒）：避免超过阈值后每个健康周期空转 LLM |
 | **API_KEY** | (空) | API 访问认证（v1.13）：非空时所有端点要求 `X-API-Key` 请求头匹配；仅 env 配置，不经 API 下发/修改 |
 | **AGENT_LOGS_FULL** | true | AI 调用日志全文开关（v1.13）：false 时 GET /agent/logs 忽略 full 参数 |
 | LOG_LEVEL | INFO | 日志级别 |
@@ -580,6 +585,8 @@ content
 > 2026-08-18：规约升级至 v1.11。上下文护栏回调：MAX_RAW_CONTENT 默认 600000 → 200000 字符（≈5 万 token 输入，不依赖默认模型上下文，避免内存/上下文撑爆）；新增 COMPENSATE_CHECK_INTERVAL（默认 5s）：补偿批次结果检查间隔独立于健康检查周期（60s），失败批次快速进入退避。
 > 2026-08-18：规约升级至 v1.12。新增图维护任务（4.4 节）：调整/合并/删改已有图结构——候选扫描（相似对/僵尸节点/孤立低置信）→ Gr 维护计划（GraphMaintenancePlan）→ Meta 审核（本地硬规则 + LLM 语义复核）→ 执行；边界与删除保护对齐（system 永不参与、data 仅无有效源证可删、合并仅同类型、修改仅 interaction 覆盖/data 追加）；新增端点 POST /agent/maintain（22 → 23 端点）；自动触发：AI 恢复时顺带维护（AGENT_MAINTAIN_AUTO 默认开启，AGENT_MAINTAIN_MIN_NODES 默认 10 拦截小图）。
 > 2026-08-19：规约升级至 v1.13。安全加固：① GET /settings 密钥掩码下发（`llm_api_key` / `providers[*].api_key` → `{前3}****{后4}`），PUT /settings 掩码幂等保留（掩码/空 = 保留现值）；② 新增可选 API 访问认证 DPIM_API_KEY（非空时全部端点要求 X-API-Key 头，默认空不启用），WebUI/请求层自动附带；③ 输入上限：IngestRequest.content / ModifyEventRequest.content ≤ 1,000,000 字符；SearchRequest 服务端值域（max_hops 1-5 / limit 1-100 / offset ≥ 0）；SettingsUpdateRequest 枚举与数值范围校验（越界 422）；④ 新增 DPIM_AGENT_LOGS_FULL（默认 true，false 时 /agent/logs 忽略 full 参数）；⑤ 前端提供商注册表由 JSON textarea 改为表单化弹窗管理（密钥掩码显示、留空保持不变）；⑥ event_fts LIKE 降级分支补 LIMIT 500 护栏。
+> 2026-08-19：规约升级至 v1.14。① 防冗余节点硬规则：`run_local_checks` 新增 redundant_node issue 类型（new_node 与 similar_nodes 高度重合且同类型 → 驳回并要求 merged_into），Gr 构图提示词强化「重合即合并」决策优先级；② 节点规模高水位自动维护：新增 AGENT_MAINTAIN_MAX_NODES（默认 900，总节点数达到即由健康检查循环自动入队一次维护清理僵尸节点）与 AGENT_MAINTAIN_COOLDOWN（默认 300s，冷却防空转）；③ 修正 data 节点维护追加统计口径（空/重复追加不计 updated、不重建 FTS）。
+> 2026-08-20：规约升级至 v1.15。节点压缩：图维护新增 compresses 操作（MaintenanceCompress），仅 data 节点可概括压缩——覆盖 content + 可选精炼 title + 补充 new_edges；source_refs 保留不动（溯源锚定不破坏）；system/interaction 永不压缩；候选扫描新增 compress_candidates（data 节点有效源证 ≥ 3 或内容 ≥ 500 字符）；Gr/Meta 提示词新增压缩决策与审查规则。事件压缩仍不实施（compressed 状态预留）。
 
 ---
 
@@ -591,12 +598,13 @@ content
 - 信息处理 Agent、图构建 Agent
 - 元认知裁判（单次审查）
 - 混合检索（FTS5 + 图扩散 + RRF）
+- 图维护（合并/删除/修改/删边/节点压缩）
 - 降级与补偿
 - FastAPI 接口层
 - Typer CLI
 - dpim-webui 前端
 
 **本期暂缓**：
-- 压缩功能（compressed 状态预留）
+- 事件压缩（compressed 状态预留）
 - 检索缓存
 - 多用户多租户

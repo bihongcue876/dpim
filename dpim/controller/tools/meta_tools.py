@@ -21,13 +21,16 @@ async def tool_meta_review(
     proposal: Any,
     source_content: str,
     chunks: Any = None,
+    similar_nodes: list[Any] | None = None,
 ) -> MetaCogVerdict:
     """审核图构建计划。
 
-    本地检查（来源锚定/边合法性/空节点）作为预筛，通过后始终调用
+    本地检查（来源锚定/边合法性/空节点/冗余节点）作为预筛，通过后始终调用
     LLM 做冲突检测与质量复核（元认知为硬关卡）。
     """
-    local_issues = run_local_checks(graph_store, proposal, source_content, chunks)
+    local_issues = run_local_checks(
+        graph_store, proposal, source_content, chunks, similar_nodes
+    )
     if local_issues:
         return empty_verdict(local_issues)
 

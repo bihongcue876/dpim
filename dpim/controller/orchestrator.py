@@ -149,7 +149,9 @@ class Orchestrator:
                     chunks, similar, tm.last_feedback, prior_context=prior, event_id=event_id
                 )
                 tm.graph_proposal = proposal
-                verdict = await tool_meta_review(self.graph_store, proposal, raw, chunks)
+                verdict = await tool_meta_review(
+                    self.graph_store, proposal, raw, chunks, tm.similar_nodes
+                )
                 tm.meta_verdict = verdict
                 if verdict.verdict == "pass":
                     created = await tool_apply_to_store(
@@ -317,6 +319,7 @@ class Orchestrator:
             candidates.get("merge_candidates"),
             candidates.get("zombie_nodes"),
             candidates.get("low_conf_isolated"),
+            candidates.get("compress_candidates"),
         ]):
             logger.info("Graph maintenance: no candidates")
             return

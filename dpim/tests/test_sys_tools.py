@@ -5,6 +5,7 @@ import pytest
 from controller.tools import tool_apply_to_store, tool_graph_query
 from controller.tools.sys_tools import (
     find_redundant_node,
+    run_local_checks,
     run_maintenance_local_checks,
     scan_maintenance_candidates,
     tool_apply_maintenance,
@@ -369,3 +370,155 @@ class TestApplyMaintenance:
         stats = await tool_apply_maintenance(event_store, graph_store, plan)
         assert stats["edges_removed"] == ["a→b"]
         assert graph_store.get_edge("a", "b") is None
+
+    @pytest.mark.asyncio
+    async def test_data_append_noop_not_counted(self, db, event_store, graph_store):
+        """统计口径：data 追加为空/内容已存在时无实际更新，不计 updated、不重建 FTS。"""
+        from core.models import GraphMaintenancePlan, MaintenanceUpdate
+        from tests.factories import make_node
+        await make_node(graph_store, "d1", "资料", "旧资料", event_id="e2")
+        plan = GraphMaintenancePlan(
+            updates=[
+                MaintenanceUpdate(node_id="d1", content="", reason="空追加"),
+                MaintenanceUpdate(node_id="d1", content="旧资料", reason="重复追加"),
+            ],
+            confidence=0.9,
+        )
+        stats = await tool_apply_maintenance(event_store, graph_store, plan)
+        assert stats["updated"] == []  # 无实际追加，不计入 updated
+        assert graph_store.get_node("d1").content == "旧资料"  # 内容未变
+
+
+class TestCompressMaintenance:
+    """节点压缩：仅 data 可概括压缩（覆盖 content + 精炼 title + 补边），system/interaction 不动。"""  # noqa: E501
+
+    @pytest.mark.asyncio
+    async def test_compress_candidate_long_content(self, graph_store):
+        """data 节点内容冗长（≥500 字符）→ 可压缩候选。"""
+        from tests.factories import make_node
+        await make_node(graph_store, "d1", "长资料", "压" * 600, event_id="e1")
+        c = scan_maintenance_candidates(graph_store)
+        assert any(x["node_id"] == "d1" for x in c["compress_candidates"])
+
+    @pytest.mark.asyncio
+    async def test_compress_candidate_deep_refs(self, graph_store):
+        """data 节点溯源关联深重（有效源证 ≥ 3）→ 可压缩候选。"""
+        from tests.factories import make_node
+        await make_node(graph_store, "d1", "主题", "内容", event_id="e1")
+        graph_store.merge_into("d1", event_id="e2", content_hash="h2")
+        graph_store.merge_into("d1", event_id="e3", content_hash="h3")
+        c = scan_maintenance_candidates(graph_store)
+        assert any(x["node_id"] == "d1" for x in c["compress_candidates"])
+
+    @pytest.mark.asyncio
+    async def test_compress_candidate_excludes_system_interaction(self, graph_store):
+        """system / interaction 节点（即使冗长）不进压缩候选。"""
+        from tests.factories import make_node
+        long_c = "压" * 600
+        await make_node(graph_store, "s1", "系统", long_c, node_type=NodeType.system)
+        await make_node(graph_store, "i1", "对话", long_c,
+                        node_type=NodeType.interaction, event_id="e2")
+        c = scan_maintenance_candidates(graph_store)
+        ids = [x["node_id"] for x in c["compress_candidates"]]
+        assert "s1" not in ids and "i1" not in ids
+
+    @pytest.mark.asyncio
+    async def test_compress_system_rejected(self, graph_store):
+        from core.models import GraphMaintenancePlan, MaintenanceCompress
+        from tests.factories import make_node
+        await make_node(graph_store, "s1", "系统", "内容", node_type=NodeType.system)
+        plan = GraphMaintenancePlan(
+            compresses=[MaintenanceCompress(node_id="s1", content="概括", reason="x")],
+            confidence=0.9,
+        )
+        issues = run_maintenance_local_checks(graph_store, plan)
+        assert issues and issues[0].description == "system 节点禁止压缩"
+
+    @pytest.mark.asyncio
+    async def test_compress_interaction_rejected(self, graph_store):
+        from core.models import GraphMaintenancePlan, MaintenanceCompress
+        from tests.factories import make_node
+        await make_node(graph_store, "i1", "对话", "内容", event_id="e1",
+                        node_type=NodeType.interaction)
+        plan = GraphMaintenancePlan(
+            compresses=[MaintenanceCompress(node_id="i1", content="概括", reason="x")],
+            confidence=0.9,
+        )
+        issues = run_maintenance_local_checks(graph_store, plan)
+        assert any("仅 data 可概括" in i.description for i in issues)
+
+    @pytest.mark.asyncio
+    async def test_compress_execution(self, db, event_store, graph_store):
+        """压缩执行：data 覆盖 content + 精炼 title + 补边，source_refs 保留不动。"""
+        from core.models import GraphMaintenancePlan, MaintenanceCompress, MaintenanceEdgeAdd
+        from tests.factories import make_node
+        await make_node(graph_store, "d1", "旧标题", "冗长内容" * 100, event_id="e1")
+        await make_node(graph_store, "other", "关联", "内容", event_id="e2")
+        plan = GraphMaintenancePlan(
+            compresses=[MaintenanceCompress(
+                node_id="d1", content="精炼概括", title="新标题",
+                new_edges=[MaintenanceEdgeAdd(
+                    source="d1", target="other", relation="related_to", reason="补边",
+                )],
+                reason="冗长",
+            )],
+            confidence=0.9,
+        )
+        stats = await tool_apply_maintenance(event_store, graph_store, plan)
+        assert stats["compressed"] == ["d1"]
+        node = graph_store.get_node("d1")
+        assert node.content == "精炼概括"
+        assert node.title == "新标题"
+        assert {sr.event_id for sr in node.source_refs} == {"e1"}  # 源证保留
+        assert graph_store.get_edge("d1", "other") is not None
+
+    @pytest.mark.asyncio
+    async def test_compress_skip_system_interaction(self, db, event_store, graph_store):
+        """执行层兜底：system / interaction 不压缩。"""
+        from core.models import GraphMaintenancePlan, MaintenanceCompress
+        from tests.factories import make_node
+        await make_node(graph_store, "s1", "系统", "内容", node_type=NodeType.system)
+        await make_node(graph_store, "i1", "对话", "内容", event_id="e1",
+                        node_type=NodeType.interaction)
+        plan = GraphMaintenancePlan(
+            compresses=[
+                MaintenanceCompress(node_id="s1", content="hack", reason="x"),
+                MaintenanceCompress(node_id="i1", content="hack", reason="x"),
+            ],
+            confidence=0.9,
+        )
+        stats = await tool_apply_maintenance(event_store, graph_store, plan)
+        assert stats["compressed"] == []
+        assert graph_store.get_node("s1").content == "内容"
+        assert graph_store.get_node("i1").content == "内容"
+
+
+class TestRunLocalChecksRedundant:
+    """B2 冗余节点硬规则：new_node 与 similar 高度重合且同类型 → redundant_node issue。"""
+
+    @pytest.mark.asyncio
+    async def test_redundant_node_flagged(self, graph_store):
+        from tests.factories import make_node
+        content = "Python异步编程的实现方式"
+        await make_node(graph_store, "existing", "Python异步编程", content)
+        similar = [graph_store.get_node("existing")]
+        proposal = _proposal("Python异步编程", content)
+        issues = run_local_checks(graph_store, proposal, content, similar_nodes=similar)
+        assert any(i.type == "redundant_node" for i in issues)
+
+    @pytest.mark.asyncio
+    async def test_non_redundant_not_flagged(self, graph_store):
+        from tests.factories import make_node
+        await make_node(graph_store, "existing", "图数据库", "知识图谱存储")
+        similar = [graph_store.get_node("existing")]
+        proposal = _proposal("Python异步编程", "Python异步编程的实现方式")
+        issues = run_local_checks(
+            graph_store, proposal, "Python异步编程的实现方式", similar_nodes=similar,
+        )
+        assert not any(i.type == "redundant_node" for i in issues)
+
+    @pytest.mark.asyncio
+    async def test_no_similar_nodes_no_flag(self, graph_store):
+        proposal = _proposal("Python异步编程", "Python异步编程的实现方式")
+        issues = run_local_checks(graph_store, proposal, "Python异步编程的实现方式")
+        assert not any(i.type == "redundant_node" for i in issues)

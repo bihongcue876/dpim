@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.12 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 图维护任务；23 端点；MAX_RAW_CONTENT 默认 200000；COMPENSATE_CHECK_INTERVAL)
+// 版本 1.14 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 图维护任务 + 防冗余节点硬规则 + 节点规模高水位自动维护；23 端点；MAX_RAW_CONTENT 默认 200000；COMPENSATE_CHECK_INTERVAL)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -134,7 +134,7 @@ export interface GraphBuildOutput {
 
 /** 元认知审查问题项 */
 export interface MetaCogIssue {
-  type: 'hallucination' | 'illegal_edge' | 'conflict' | 'empty_node';
+  type: 'hallucination' | 'illegal_edge' | 'conflict' | 'empty_node' | 'redundant_node';
   description: string;
   suggestion: string;
 }
@@ -175,12 +175,30 @@ export interface MaintenanceEdgeRemove {
   reason?: string;
 }
 
+/** 维护压缩补边：把概括后可能丢失的隐含关系显式化为边 */
+export interface MaintenanceEdgeAdd {
+  source: string;
+  target: string;
+  relation: string;
+  reason?: string;
+}
+
+/** 维护压缩：仅 data 节点概括覆盖 content + 可选精炼 title + 可选补边 */
+export interface MaintenanceCompress {
+  node_id: string;
+  content: string;
+  title?: string;
+  new_edges?: MaintenanceEdgeAdd[];
+  reason?: string;
+}
+
 /** 图维护计划（Gr 产出 → Meta 审核 → 执行；空计划合法） */
 export interface GraphMaintenancePlan {
   merges: MaintenanceMerge[];
   deletes: MaintenanceDelete[];
   updates: MaintenanceUpdate[];
   edge_removes: MaintenanceEdgeRemove[];
+  compresses: MaintenanceCompress[];
   confidence: number;
 }
 
@@ -566,5 +584,7 @@ export interface DPIMConfig {
   COMPENSATE_CHECK_INTERVAL: number;  // 补偿批次结果检查间隔（秒，默认 5）
   AGENT_MAINTAIN_AUTO: boolean;      // 图维护自动触发：AI 恢复时顺带整理图谱（默认 true）
   AGENT_MAINTAIN_MIN_NODES: number;  // 自动维护最小图规模（节点数，默认 10；手动触发不受限）
+  AGENT_MAINTAIN_MAX_NODES: number;  // 节点规模高水位：达到即自动触发维护清理僵尸节点（默认 900）
+  AGENT_MAINTAIN_COOLDOWN: number;   // 高水位自动维护冷却（秒，默认 300）
   LOG_LEVEL: string;
 }

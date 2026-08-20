@@ -146,10 +146,11 @@ class GraphBuildOutput(BaseModel):
     merged_into: str | None = None
 
 
-# ── 图维护（图结构调整/合并/删改，2026-08-18 新增）──
+# ── 图维护（图结构调整/合并/删改/节点压缩，2026-08-18 新增）──
 # 说明：维护计划由 Gr 产出、Meta 审核、tool_apply_maintenance 执行。
 # 边界（与协议删除保护对齐）：system 节点永不参与；data 仅无有效源证可删；
-# 合并仅同类型；修改仅 interaction（data 只追加）；保守优先，空计划合法。
+# 合并仅同类型；修改仅 interaction（data 只追加）；压缩仅 data（概括/精炼标题/补边）；
+# 保守优先，空计划合法。
 
 
 class MaintenanceMerge(BaseModel):
@@ -180,11 +181,36 @@ class MaintenanceEdgeRemove(BaseModel):
     reason: str = ""
 
 
+class MaintenanceEdgeAdd(BaseModel):
+    """压缩时补充的关系：把概括后可能丢失的隐含关系显式化为边。"""
+
+    source: str
+    target: str
+    relation: str
+    reason: str = ""
+
+
+class MaintenanceCompress(BaseModel):
+    """压缩 data 节点：概括 content + 精炼 title + 补充关系（边），保留源证与语义。
+
+    与 updates 的区别：updates 对 data 只追加、对 interaction 覆盖；
+    compresses 是对 data 的概括压缩（覆盖 content、可优化 title、可补边），
+    是「节点压缩」的专门通道。system / interaction 不参与。
+    """
+
+    node_id: str
+    content: str
+    title: str = ""
+    new_edges: list[MaintenanceEdgeAdd] = []
+    reason: str = ""
+
+
 class GraphMaintenancePlan(BaseModel):
     merges: list[MaintenanceMerge] = []
     deletes: list[MaintenanceDelete] = []
     updates: list[MaintenanceUpdate] = []
     edge_removes: list[MaintenanceEdgeRemove] = []
+    compresses: list[MaintenanceCompress] = []
     confidence: float = Field(ge=0.0, le=1.0, default=0.5)
 
 

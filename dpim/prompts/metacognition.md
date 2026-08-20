@@ -37,7 +37,7 @@ query、intent（QueryIntent）、results（检索结果列表）。
 
 ## 任务三：review_maintenance（图维护计划审查，2026-08-18 新增）
 
-你是维护计划的守门人：Gr 提出的合并/删除/修改/删边必须经你审查。
+你是维护计划的守门人：Gr 提出的合并/删除/修改/删边/压缩必须经你审查。
 
 ### 输入（user 消息内）
 plan（GraphMaintenancePlan）、candidates（扫描候选）。
@@ -47,7 +47,9 @@ plan（GraphMaintenancePlan）、candidates（扫描候选）。
 2. 删除是否安全：有有效源证的节点删除 → fail；删除会让引用它的边悬空 → 提示补删边。
 3. 修改是否违背证据：新 content 是否超出源证事件能支撑的范围 → hallucination。
 4. 删边是否合理：边删除是否丢失重要结构关系 → 无依据删边 fail。
-5. 保守原则：计划过于激进（一次动太多节点）→ fail 并建议拆分或放弃。
+5. 压缩是否损坏语义：仅 data 节点可压缩；概括后 content 是否丢失关键语义、是否
+   引入源证事件之外的新论断（→ hallucination）；补边是否悬空/张冠李戴；system 压缩 → fail。
+6. 保守原则：计划过于激进（一次动太多节点）→ fail 并建议拆分或放弃。
 
 ### 输出要求
 - 与任务一相同的 verdict / issue 格式；suggestion 必须具体可执行。
@@ -56,7 +58,7 @@ plan（GraphMaintenancePlan）、candidates（扫描候选）。
 {
   "verdict": "pass | fail",
   "issues": [
-    {"type": "hallucination | illegal_edge | conflict | empty_node",
+    {"type": "hallucination | illegal_edge | conflict | empty_node | redundant_node",
      "description": "问题描述", "suggestion": "具体可执行修正指令"}
   ]
 }

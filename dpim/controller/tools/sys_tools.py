@@ -219,15 +219,18 @@ def run_local_checks(
     proposal: Any,
     source_content: str,
     chunks: Any = None,
+    similar_nodes: list[Any] | None = None,
 ) -> list[MetaCogIssue]:
-    """来源锚定 / 边合法性 / 空节点 的本地逻辑检查。
+    """来源锚定 / 边合法性 / 空节点 / 冗余节点 的本地逻辑检查。
 
     纯确定性检查，不调 LLM。有任一问题即返回 fail 级 issues。
     传入 chunks 时，额外校验 evidence_quote 至少属于某个 chunk.content（合并跨块可容忍）。
+    传入 similar_nodes 时，校验 new_nodes 是否与已有节点高度重合（冗余节点硬规则）。
     """
     issues: list[MetaCogIssue] = []
     new_titles = {nc.title for nc in proposal.new_nodes}
     chunk_texts = [c.content for c in (chunks.chunks if chunks else [])]
+    similar = similar_nodes or []
 
     for nc in proposal.new_nodes:
         if not (nc.content or "").strip():
@@ -255,6 +258,20 @@ def run_local_checks(
                     suggestion="从所属分块的原文中逐字摘录",
                 )
             )
+
+    if similar:
+        # 冗余节点硬规则（B2）：new_node 与已有相似节点词重叠 Jaccard ≥ 阈值且同类型
+        # → 驳回并要求 Gr 显式 merged_into，从语义层抑制冗余，而非依赖执行层兜底改道
+        for nc in proposal.new_nodes:
+            dup_id = find_redundant_node(graph_store, nc, similar)
+            if dup_id is not None:
+                issues.append(
+                    MetaCogIssue(
+                        type="redundant_node",
+                        description=f"新节点与已有节点高度重合：{nc.title}",
+                        suggestion=f"合并到已有节点 {dup_id}（填 merged_into）而非新建",
+                    )
+                )
 
     for ec in proposal.new_edges:
         if ec.source not in new_titles and graph_store.get_node(ec.source) is None:
@@ -311,6 +328,11 @@ def empty_verdict(issues: list[MetaCogIssue]) -> MetaCogVerdict:
 _MAINTENANCE_OVERLAP = 0.6
 _MAINTENANCE_CANDIDATE_CAP = 30
 
+# 节点压缩（data 概括压缩）候选阈值——确定性代理，真实语义由 Gr/Meta 判断。
+# 溯源关联深重（多源证并入 → 内容累积成碎片）或内容冗长（单事件大段）的 data 节点。
+_COMPRESS_MIN_REFS = 3       # 有效源证数：≥3 条事件并入 → 溯源关联深重
+_COMPRESS_MIN_CONTENT = 500  # content 字符数：≥500 → 冗长，值得概括
+
 
 def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
     """确定性扫描图维护候选（无 LLM），供 Gr 决策：
@@ -319,6 +341,8 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
       （词桶优化：只比较共享词的节点对，避免全图 O(n²)）
     - zombie_nodes：无有效源证的节点（可删除候选；system 除外）
     - low_conf_isolated：confidence < 0.4 且无边的孤立节点（需判断）
+    - compress_candidates：data 节点（非 system/interaction），溯源关联深重
+      （有效源证 ≥ _COMPRESS_MIN_REFS）或内容冗长（≥ _COMPRESS_MIN_CONTENT）
     """
     from core.text_utils import tokenize_query
 
@@ -391,10 +415,28 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
                 "confidence": ndata.confidence,
             })
 
+    # 节点压缩候选：仅 data 节点（非 system/interaction），
+    # 溯源关联深重（多有效源证）或内容冗长 → 可概括压缩（system 永不参与）
+    compress_candidates: list[dict] = []
+    for nid, ndata in graph_store.graph.nodes(data="data"):
+        if ndata is None or ndata.node_type.value != "data":
+            continue
+        valid_refs = sum(1 for sr in ndata.source_refs if sr.valid)
+        content_len = len(ndata.content or "")
+        if valid_refs >= _COMPRESS_MIN_REFS or content_len >= _COMPRESS_MIN_CONTENT:
+            compress_candidates.append({
+                "node_id": nid,
+                "title": ndata.title,
+                "refs": valid_refs,
+                "content_len": content_len,
+                "content": (ndata.content or "")[:200],
+            })
+
     return {
         "merge_candidates": merge_candidates[:_MAINTENANCE_CANDIDATE_CAP],
         "zombie_nodes": zombie_nodes[:_MAINTENANCE_CANDIDATE_CAP],
         "low_conf_isolated": low_conf_isolated[:_MAINTENANCE_CANDIDATE_CAP],
+        "compress_candidates": compress_candidates[:_MAINTENANCE_CANDIDATE_CAP],
         "total_nodes": graph_store.total_nodes(),
     }
 
@@ -403,7 +445,8 @@ def run_maintenance_local_checks(graph_store: Any, plan: Any) -> list[MetaCogIss
     """维护计划本地硬规则（无 LLM）：存在性 / 类型边界 / 删除保护。
 
     与协议保护对齐：system 永不参与；data 仅无有效源证可删；
-    合并仅同类型；修改内容非空。任何问题即 fail 级 issues。
+    合并仅同类型；修改内容非空；压缩仅 data（概括非空、补边合法）。
+    任何问题即 fail 级 issues。
     """
     issues: list[MetaCogIssue] = []
     for m in plan.merges:
@@ -483,21 +526,60 @@ def run_maintenance_local_checks(graph_store: Any, plan: Any) -> list[MetaCogIss
                 description=f"待删边不存在：{e.source}→{e.target}",
                 suggestion="删除该项",
             ))
+    for c in plan.compresses:
+        node = graph_store.get_node(c.node_id)
+        if node is None:
+            issues.append(MetaCogIssue(
+                type="illegal_edge",
+                description=f"压缩目标节点不存在：{c.node_id}",
+                suggestion="删除该项",
+            ))
+            continue
+        elif node.node_type.value == "system":
+            issues.append(MetaCogIssue(
+                type="illegal_edge",
+                description="system 节点禁止压缩",
+                suggestion="删除该项",
+            ))
+        elif node.node_type.value == "interaction":
+            issues.append(MetaCogIssue(
+                type="illegal_edge",
+                description=f"interaction 节点禁止压缩（仅 data 可概括）：{node.title}",
+                suggestion="删除该项",
+            ))
+        elif not (c.content or "").strip():
+            issues.append(MetaCogIssue(
+                type="empty_node",
+                description=f"压缩内容为空：{c.node_id}",
+                suggestion="补充概括后内容或删除该项",
+            ))
+        for e in c.new_edges:
+            if graph_store.get_node(e.source) is None or graph_store.get_node(e.target) is None:
+                issues.append(MetaCogIssue(
+                    type="illegal_edge",
+                    description=f"压缩补边节点不存在：{e.source}→{e.target}",
+                    suggestion="删除该边或改用已有节点",
+                ))
     return issues
 
 
 async def tool_apply_maintenance(
     event_store: Any, graph_store: Any, plan: Any
 ) -> dict[str, Any]:
-    """执行审核通过的图维护计划（合并/删除/修改/删边），返回执行统计。
+    """执行审核通过的图维护计划（合并/删除/修改/删边/压缩），返回执行统计。
 
     - 合并：graph_store.merge_nodes（target 吸收源证/内容/边迁移后删 source）
     - 删除：执行层再兜底保护（system 跳过；data 有有效源证跳过）
     - 修改：interaction 覆盖内容；data 转为追加行（不得概括，证据锚定精神）
     - 删边：按 (source, target)
+    - 压缩：仅 data 可否概括（覆盖 content + 可选精炼 title + 补边）；
+      source_refs 保留不动（溯源锚定不破坏）；补边 evidence 取该节点首个有效源证事件
     - FTS 同步 + flush 落盘
     """
-    stats: dict[str, Any] = {"merged": [], "deleted": [], "updated": [], "edges_removed": []}
+    stats: dict[str, Any] = {
+        "merged": [], "deleted": [], "updated": [],
+        "edges_removed": [], "compressed": [],
+    }
 
     for m in plan.merges:
         removed = graph_store.merge_nodes(m.target_id, m.source_ids)
@@ -522,14 +604,19 @@ async def tool_apply_maintenance(
         node = graph_store.get_node(u.node_id)
         if node is None or node.node_type.value == "system":
             continue
+        changed = False
         if node.node_type.value == "data":
-            # data 只允许追加（不得概括）
+            # data 只允许追加（不得概括）；空追加或内容已存在时不视为更新
             if u.content and u.content not in node.content:
                 graph_store.update_node(
                     u.node_id, content=(node.content + "\n" + u.content).strip()
                 )
+                changed = True
         else:
             graph_store.update_node(u.node_id, content=u.content)
+            changed = True
+        if not changed:
+            continue
         updated = graph_store.get_node(u.node_id)
         await graph_store.upsert_node_fts(u.node_id, updated.title, updated.content)
         stats["updated"].append(u.node_id)
@@ -537,6 +624,30 @@ async def tool_apply_maintenance(
     for e in plan.edge_removes:
         if graph_store.remove_edge(e.source, e.target):
             stats["edges_removed"].append(f"{e.source}→{e.target}")
+
+    for c in plan.compresses:
+        node = graph_store.get_node(c.node_id)
+        if node is None or node.node_type.value != "data":
+            continue  # 兜底：仅 data 可压缩（system/interaction 跳过）
+        # 概括覆盖 content + 可选精炼 title；source_refs 不变（溯源锚定不破坏）
+        graph_store.update_node(
+            c.node_id, content=c.content, title=(c.title or None)
+        )
+        # 补充关系：把概括后可能丢失的隐含关系显式化为边
+        evidence = next(
+            (sr.event_id for sr in node.source_refs if sr.valid), ""
+        )
+        for e in c.new_edges:
+            src_ok = graph_store.get_node(e.source) is not None
+            tgt_ok = graph_store.get_node(e.target) is not None
+            if src_ok and tgt_ok:
+                graph_store.add_edge(GraphEdge(
+                    source=e.source, target=e.target,
+                    relation=e.relation, evidence_event_id=evidence,
+                ))
+        compressed = graph_store.get_node(c.node_id)
+        await graph_store.upsert_node_fts(c.node_id, compressed.title, compressed.content)
+        stats["compressed"].append(c.node_id)
 
     await graph_store.flush()
     return stats

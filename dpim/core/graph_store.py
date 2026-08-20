@@ -213,6 +213,7 @@ class GraphStore:
         *,
         content: str | None = None,
         confidence: float | None = None,
+        title: str | None = None,
     ) -> GraphNode | None:
         """就地更新节点字段并标记脏位（调用方随后 flush/save 落盘）。
 
@@ -226,6 +227,8 @@ class GraphStore:
             node.content = content
         if confidence is not None:
             node.confidence = confidence
+        if title is not None:
+            node.title = title
         self.graph.nodes[node_id]["data"] = node
         self._mark_dirty()
         return node
