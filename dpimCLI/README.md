@@ -45,7 +45,7 @@ dpim --help
 
 | 命令 | 说明 |
 |------|------|
-| `dpim ingest <内容> [--type auto\|interaction\|data\|source]` | 写入事件 |
+| `dpim ingest <内容> [--type interaction\|data\|source]` | 写入事件 |
 | `dpim events [--type] [--status] [--limit N] [--offset N]` | 分页事件列表 |
 | `dpim event view <id>` | 事件详情 |
 | `dpim event edit <id> <新内容>` | 修订事件 raw_content |

@@ -84,7 +84,7 @@ class DPIMClient:
 
     # ── 事件管理 ──
 
-    def ingest(self, content: str, event_type: str = "auto") -> dict:
+    def ingest(self, content: str, event_type: str = "interaction") -> dict:
         """POST /ingest 写入事件。"""
         return self._post("/ingest", {"content": content, "event_type": event_type})
 
