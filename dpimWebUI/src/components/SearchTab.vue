@@ -186,8 +186,9 @@
       <n-button size="tiny" @click="goToPage(currentPage + 1)" :disabled="currentPage >= totalPages">下一页</n-button>
     </div>
 
-    <!-- 空状态 -->
-    <div class="empty-area" v-if="!loading">
+    <!-- 空状态：仅在确实无结果时渲染——若无条件渲染，它会与 .search-results（同为 flex:1）
+         平分剩余高度，导致结果区只占一半、下方留出空白（"结果未顶到底部"） -->
+    <div class="empty-area" v-if="!loading && results.length === 0">
       <n-empty v-if="searched && results.length === 0" description="无匹配结果" size="small">
         <template #extra>
           <n-button size="small" @click="clearResults">清除条件重试</n-button>
@@ -200,8 +201,9 @@
       </n-empty>
     </div>
 
-    <!-- 加载中 -->
-    <div v-if="loading" class="loading-area">
+    <!-- 加载中：仅首次搜索（无旧结果）时撑满居中；已有结果时结果区保持满高，
+         加载反馈由搜索按钮自身的 loading 承担，避免与结果区平分高度 -->
+    <div v-if="loading && results.length === 0" class="loading-area">
       <n-spin size="small" />
     </div>
   </div>
