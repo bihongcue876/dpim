@@ -59,9 +59,8 @@
     <!-- 提供商编辑弹窗：逐字段表单（参考主流 AI 平台的 provider 配置交互） -->
     <n-modal v-model:show="showModal" preset="card" :title="editingName ? `编辑提供商 · ${editingName}` : '新增提供商'" class="prov-modal" :mask-closable="false">
       <n-form label-placement="left" label-width="92">
-        <n-form-item label="名称">
-          <n-input v-if="!editingName" v-model:value="form.name" placeholder="如 siliconflow" />
-          <span v-else class="prov-name">{{ editingName }}</span>
+        <n-form-item label="名称" :feedback="nameError || undefined" :validation-status="nameError ? 'error' : undefined">
+          <n-input v-model:value="form.name" placeholder="如 siliconflow" />
         </n-form-item>
         <n-form-item label="Base URL">
           <n-input v-model:value="form.base_url" placeholder="https://api.siliconflow.cn/v1" />
@@ -86,7 +85,7 @@
       <template #footer>
         <div class="prov-modal-footer">
           <n-button size="small" @click="showModal = false">取消</n-button>
-          <n-button size="small" type="primary" @click="saveModal">保存</n-button>
+          <n-button size="small" type="primary" :disabled="!!nameError" @click="saveModal">保存</n-button>
         </div>
       </template>
     </n-modal>
@@ -149,6 +148,14 @@ const form = reactive({
 
 const providerNames = computed(() => Object.keys(providersDraft.value).sort())
 
+/** 名称实时查重：非空且与其他提供商重名（编辑自身原名除外）即报错，重复不允许保存 */
+const nameError = computed(() => {
+  const name = form.name.trim()
+  if (!name) return '' // 空名由保存时兜底提示，不实时标红
+  if (providersDraft.value[name] && name !== editingName.value) return `名称「${name}」已存在`
+  return ''
+})
+
 function providerModels(name: string): string[] {
   const entry = providersDraft.value[name]
   if (!entry) return []
@@ -179,9 +186,9 @@ function openEdit(name: string) {
 
 function saveModal() {
   const key = editingName.value
-  const name = (key ?? form.name).trim()
+  const name = form.name.trim()
   if (!name) { message.error('请填写提供商名称'); return }
-  if (!key && providersDraft.value[name]) { message.error(`名称「${name}」已存在`); return }
+  if (nameError.value) { message.error(nameError.value); return }
   if (!form.base_url.trim()) { message.error('请填写 Base URL'); return }
   const models = form.models_text.split(/[,，\n]/).map(s => s.trim()).filter(Boolean)
   // 保留原有厂商适配字段，仅覆盖表单管理的四项
@@ -195,7 +202,18 @@ function saveModal() {
   else delete entry.models
   if (form.timeout != null) entry.timeout = form.timeout
   else delete entry.timeout
-  providersDraft.value[name] = entry
+  if (key && name !== key) {
+    // 重命名：保序迁移条目（新名接管原位置），活动提供商引用同步改写
+    const renamed: Record<string, ProviderEntry> = {}
+    for (const [k, v] of Object.entries(providersDraft.value)) {
+      renamed[k === key ? name : k] = v
+    }
+    renamed[name] = entry
+    providersDraft.value = renamed
+    if (edits.active_provider === key) edits.active_provider = name
+  } else {
+    providersDraft.value[name] = entry
+  }
   showModal.value = false
 }
 

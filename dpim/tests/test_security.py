@@ -247,7 +247,7 @@ class TestAuthMiddleware:
         assert test_app.get("/settings").status_code == 401
         assert test_app.get("/agent/logs").status_code == 401
         assert test_app.delete("/graph").status_code == 401
-        assert test_app.post("/ingest", json={"content": "x"}).status_code == 401
+        assert test_app.post("/ingest", json={"content": "x", "event_type": "interaction"}).status_code == 401
         assert test_app.put(
             "/settings", json={"llm_base_url": "http://attacker/v1"},
             headers={"X-API-Key": "guess"},
@@ -276,11 +276,11 @@ class TestInputLimits:
         assert resp.status_code == 422
 
     def test_ingest_content_at_limit_accepted(self, test_app):
-        resp = test_app.post("/ingest", json={"content": "a" * 1_000_000})
+        resp = test_app.post("/ingest", json={"content": "a" * 1_000_000, "event_type": "interaction"})
         assert resp.status_code == 200
 
     def test_put_event_content_over_limit_rejected(self, test_app):
-        eid = test_app.post("/ingest", json={"content": "seed"}).json()["event_id"]
+        eid = test_app.post("/ingest", json={"content": "seed", "event_type": "interaction"}).json()["event_id"]
         resp = test_app.put(f"/events/{eid}", json={"content": "x" * 1_000_001})
         assert resp.status_code == 422
 

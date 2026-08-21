@@ -116,12 +116,12 @@ API 服务启动后访问 http://localhost:8000/docs 查看 OpenAPI 文档。
 
 ## 项目结构
 
-详见 `docs/项目结构描述管理.md`。
+详见 `docs/elder_design/项目结构描述管理.md`。
 
 ## 设计文档
 
 - `docs/DPIM设计大纲20260724.md` — 顶层概念与架构
 - `docs/DPIM设计详纲20260724.md` — 完整设计参考
-- `docs/项目结构描述管理.md` — 模块与函数清单
-- `docs/测试结论.md` — 测试记录
-- `docs/执行进度.md` — 实现状态追踪
+- `docs/elder_design/项目结构描述管理.md` — 模块与函数清单（已归档）
+- `docs/elder_design/测试结论.md` — 测试记录（已归档）
+- `docs/elder_design/执行进度.md` — 实现状态追踪

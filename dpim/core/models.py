@@ -234,7 +234,8 @@ class QueueMessage(BaseModel):
 class IngestRequest(BaseModel):
     # 内容上限：防无限写入撑爆 SQLite/FTS5（磁盘耗尽 DoS）
     content: str = Field(max_length=1_000_000)
-    event_type: str = "auto"
+    # 必填枚举：auto 模式已移除（历史上 auto 仅静默落库为 interaction，无 AI 分类）
+    event_type: EventType
 
 
 class IngestResponse(BaseModel):
@@ -258,6 +259,9 @@ class ModifyEventStatusRequest(BaseModel):
 class ModifyEventRequest(BaseModel):
     # 与 IngestRequest.content 同上限：修订路径同样防磁盘耗尽
     content: str = Field(max_length=1_000_000)
+    # 可选类型修订：None = 保持不变。仅改线层事件类型，
+    # 不联动已生成图节点（图层为派生物，节点层走图维护或删除重建）
+    event_type: EventType | None = None
 
 
 class CreateEdgeRequest(BaseModel):
@@ -311,7 +315,7 @@ class HealthResponse(BaseModel):
     ai_available: bool
     layers: dict[str, Any]
     last_event_at: str = ""
-    version: str = "0.2.0"
+    version: str = "0.2.1"
 
 
 # ── dpim-webui 新增模型 ────────────────────

@@ -215,7 +215,7 @@ def _build_args(cmd_name: str, kwargs: dict, fmt: str, api_url: str):
     # 业务字段填充
     if cmd_name == "ingest":
         args.content = pos[0] if pos else kwargs.get("content", "")
-        args.type = kwargs.get("type", "auto")
+        args.type = kwargs.get("type", "interaction")
     elif cmd_name == "search":
         args.query = pos[0] if pos else kwargs.get("query", "")
         args.type = kwargs.get("type", "all")
@@ -277,7 +277,7 @@ def _show_help():
   state-key           显示状态校验密钥
 
 \033[33m事件管理\033[0m
-  ingest <内容>       写入事件 [--type auto|interaction|data|source]
+  ingest <内容>       写入事件 [--type interaction|data|source]
   events              分页事件列表 [--type] [--status] [--limit N]
   event <id>          查看事件详情
   event edit <id>     修订事件内容

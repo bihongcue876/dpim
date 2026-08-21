@@ -34,7 +34,7 @@ def serve(host: str = "127.0.0.1", port: int = 8000, reload: bool = False):
 
 
 @cli.command()
-def ingest(content: str, event_type: str = "auto"):
+def ingest(content: str, event_type: str = typer.Option("interaction", help="事件类型：interaction / data / source")):
     """写入一条原始事件"""
     async def _run():
         db, es, gs = await _stores()

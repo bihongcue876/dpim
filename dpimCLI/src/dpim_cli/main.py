@@ -50,8 +50,8 @@ def _build_subparsers(parent: argparse.ArgumentParser):
     # ── 事件管理 ──
     sp = _sp("ingest", "写入事件")
     sp.add_argument("content", help="事件内容")
-    sp.add_argument("--type", default="auto", choices=["auto", "interaction", "data", "source"],
-                    help="事件类型 (默认: auto)")
+    sp.add_argument("--type", default="interaction", choices=["interaction", "data", "source"],
+                    help="事件类型 (默认: interaction)")
     sp.set_defaults(handler=commands.cmd_ingest)
 
     sp = _sp("events", "分页事件列表")

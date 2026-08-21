@@ -123,6 +123,36 @@ class TestEventStoreInsert:
         assert ev["content_hash"] == _content_hash(content)
 
 
+class TestEventStoreUpdateType:
+    @pytest.mark.asyncio
+    async def test_update_type_switches(self, event_store: EventStore):
+        eid, _ = await event_store.insert("retype me", event_type="interaction")
+        ok = await event_store.update_type(eid, "data")
+        assert ok is True
+        ev = await event_store.get(eid)
+        assert ev["event_type"] == "data"
+
+    @pytest.mark.asyncio
+    async def test_update_type_to_source(self, event_store: EventStore):
+        eid, _ = await event_store.insert("to source", event_type="data")
+        assert await event_store.update_type(eid, "source") is True
+        ev = await event_store.get(eid)
+        assert ev["event_type"] == "source"
+
+    @pytest.mark.asyncio
+    async def test_update_type_nonexistent(self, event_store: EventStore):
+        assert await event_store.update_type("nonexistent", "data") is False
+
+    @pytest.mark.asyncio
+    async def test_update_type_keeps_status_and_content(self, event_store: EventStore):
+        eid, _ = await event_store.insert_event("keep fields", event_type="interaction")
+        await event_store.update_type(eid, "data")
+        ev = await event_store.get(eid)
+        # 类型修订不触碰状态机与内容
+        assert ev["status"] == "indexed"
+        assert ev["raw_content"] == "keep fields"
+
+
 class TestEventStoreGet:
     @pytest.mark.asyncio
     async def test_get_nonexistent(self, event_store: EventStore):

@@ -61,11 +61,12 @@ def test_cmd_state_key(mock_client, capsys):
 
 
 def test_cmd_ingest_default_type(mock_client):
-    commands.cmd_ingest(make_args("ingest", content="hello", type="auto"))
+    # auto 模式已移除：默认类型为 interaction
+    commands.cmd_ingest(make_args("ingest", content="hello", type="interaction"))
     name, args, kwargs = mock_client[0]
     assert name == "ingest"
     assert args == ("hello",)
-    assert kwargs == {"event_type": "auto"}
+    assert kwargs == {"event_type": "interaction"}
 
 
 def test_cmd_ingest_explicit_type(mock_client):

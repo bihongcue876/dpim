@@ -103,7 +103,7 @@ const POLL_INTERVAL = 5000
 const MAX_POLL_ATTEMPTS = 1080
 
 const content = ref('')
-const eventType = ref('auto')
+const eventType = ref('interaction')
 const submitting = ref(false)
 const compensating = ref(false)
 const health = ref<HealthResponse | null>(null)
@@ -149,7 +149,6 @@ const submitDisabledHint = computed(() => {
 })
 
 const typeOpts = [
-  { label: 'auto（AI 自动分类）', value: 'auto' },
   { label: 'interaction（对话/决策）', value: 'interaction' },
   { label: 'data（事实资料）', value: 'data' },
   { label: 'source（原始数据，仅存储）', value: 'source' },
@@ -157,7 +156,6 @@ const typeOpts = [
 
 function renderTypeLabel(option: { label?: string; value: string }) {
   const map: Record<string, string> = {
-    auto: 'auto — AI 自动分类',
     interaction: 'interaction — 对话记录、决策过程',
     data: 'data — 事实资料、引用来源',
     source: 'source — 原始数据（仅存储，不进图谱）',

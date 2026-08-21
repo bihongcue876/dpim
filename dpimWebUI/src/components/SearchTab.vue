@@ -465,6 +465,9 @@ async function onFeedback(id: string, accepted: boolean) {
   min-height: 0;
   padding: 4px 24px 12px;
   overflow: hidden;
+  /* 统一面板底色：empty-area（flex:1 撑满的空状态区）背景透明，
+     若无此底色会透出页面最深的 --dpim-bg，形成一块突兀的"底部黑色区域" */
+  background: var(--dpim-surface, #161b22);
 }
 
 /* 搜索栏 */
@@ -555,14 +558,14 @@ async function onFeedback(id: string, accepted: boolean) {
   border-radius: 999px;
 }
 
-/* 结果卡片 */
+/* 结果卡片：bg 深色做内容槽（页面底已改 surface，卡片下沉一级区分层级） */
 .result-card {
   border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
   border-radius: var(--dpim-radius-sm, 8px);
   padding: 12px 14px;
   margin-bottom: 10px;
   cursor: pointer;
-  background: var(--dpim-surface, #161b22);
+  background: var(--dpim-bg, #0e1217);
   transition: border-color 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
 }
 .result-card:hover {

@@ -24,7 +24,7 @@ def test_app(db, event_store, graph_store):
 
 class TestIngestEndpoint:
     def test_ingest_returns_event_id(self, test_app):
-        resp = test_app.post("/ingest", json={"content": "test event"})
+        resp = test_app.post("/ingest", json={"event_type": "interaction", "content": "test event"})
         assert resp.status_code == 200
         data = resp.json()
         assert "event_id" in data
@@ -38,7 +38,7 @@ class TestIngestEndpoint:
         assert resp.json()["status"] == "indexed"
 
     def test_ingest_empty_content(self, test_app):
-        resp = test_app.post("/ingest", json={"content": ""})
+        resp = test_app.post("/ingest", json={"event_type": "interaction", "content": ""})
         assert resp.status_code == 200
 
 
@@ -55,7 +55,7 @@ class TestHealthEndpoint:
 
 class TestQueryEndpoint:
     def test_query_returns_results(self, test_app):
-        test_app.post("/ingest", json={"content": "Python programming"})
+        test_app.post("/ingest", json={"event_type": "interaction", "content": "Python programming"})
         resp = test_app.post("/query", json={"query": "Python"})
         assert resp.status_code == 200
         data = resp.json()
@@ -73,14 +73,14 @@ class TestDeleteEventEndpoint:
         assert resp.status_code == 404
 
     def test_delete_orphan_event(self, test_app):
-        create = test_app.post("/ingest", json={"content": "delete me"})
+        create = test_app.post("/ingest", json={"event_type": "interaction", "content": "delete me"})
         eid = create.json()["event_id"]
         resp = test_app.delete(f"/events/{eid}")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
     async def test_delete_protected_event(self, test_app):
-        create = test_app.post("/ingest", json={"content": "protected source"})
+        create = test_app.post("/ingest", json={"event_type": "interaction", "content": "protected source"})
         eid = create.json()["event_id"]
         api.graph_store.add_node(GraphNode(
             node_id="protected_node",
@@ -194,7 +194,7 @@ class TestCreateNodeEndpoint:
         assert node_id in ids
 
     def test_create_node_with_source_event(self, test_app):
-        ev = test_app.post("/ingest", json={"content": "source event"})
+        ev = test_app.post("/ingest", json={"event_type": "interaction", "content": "source event"})
         eid = ev.json()["event_id"]
         resp = test_app.post("/nodes", json={
             "title": "有来源的节点", "source_event_id": eid,
@@ -235,7 +235,7 @@ class TestClearGraphEndpoint:
 
 class TestModifyEventStatusEndpoint:
     def test_modify_status_allowed(self, test_app):
-        create = test_app.post("/ingest", json={"content": "status test"})
+        create = test_app.post("/ingest", json={"event_type": "interaction", "content": "status test"})
         eid = create.json()["event_id"]
         resp = test_app.put(
             f"/events/{eid}/status", json={"status": "skipped"},
@@ -290,8 +290,41 @@ class TestModifyEventStatusEndpoint:
 class TestModifyEventEndpoint:
     """PUT /events/{event_id} 事件内容修改"""
 
+    def test_ingest_requires_event_type(self, test_app):
+        # auto 模式移除后 event_type 必填：缺省 422
+        resp = test_app.post("/ingest", json={"content": "no type"})
+        assert resp.status_code == 422
+
+    def test_ingest_rejects_auto(self, test_app):
+        # 'auto' 不再是合法类型
+        resp = test_app.post("/ingest", json={"content": "legacy auto", "event_type": "auto"})
+        assert resp.status_code == 422
+
+    def test_update_event_type(self, test_app):
+        create = test_app.post("/ingest", json={"event_type": "interaction", "content": "type switch"})
+        eid = create.json()["event_id"]
+        resp = test_app.put(f"/events/{eid}", json={"content": "type switch", "event_type": "data"})
+        assert resp.status_code == 200
+        detail = test_app.get(f"/events/{eid}").json()
+        assert detail["event_type"] == "data"
+
+    def test_update_event_type_omitted_keeps(self, test_app):
+        # 不传 event_type 时类型保持不变
+        create = test_app.post("/ingest", json={"event_type": "source", "content": "keep type"})
+        eid = create.json()["event_id"]
+        resp = test_app.put(f"/events/{eid}", json={"content": "keep type revised"})
+        assert resp.status_code == 200
+        detail = test_app.get(f"/events/{eid}").json()
+        assert detail["event_type"] == "source"
+
+    def test_update_event_type_invalid(self, test_app):
+        create = test_app.post("/ingest", json={"event_type": "interaction", "content": "bad type"})
+        eid = create.json()["event_id"]
+        resp = test_app.put(f"/events/{eid}", json={"content": "bad type", "event_type": "auto"})
+        assert resp.status_code == 422
+
     def test_update_content(self, test_app):
-        create = test_app.post("/ingest", json={"content": "original content"})
+        create = test_app.post("/ingest", json={"event_type": "interaction", "content": "original content"})
         eid = create.json()["event_id"]
         resp = test_app.put(f"/events/{eid}", json={"content": "updated content"})
         assert resp.status_code == 200
@@ -300,7 +333,7 @@ class TestModifyEventEndpoint:
         assert data["event_id"] == eid
 
     def test_update_reflects_in_get(self, test_app):
-        create = test_app.post("/ingest", json={"content": "before edit"})
+        create = test_app.post("/ingest", json={"event_type": "interaction", "content": "before edit"})
         eid = create.json()["event_id"]
         test_app.put(f"/events/{eid}", json={"content": "after edit"})
         detail = test_app.get(f"/events/{eid}").json()
@@ -312,14 +345,14 @@ class TestModifyEventEndpoint:
 
     def test_update_refreshes_state_key(self, test_app):
         before = test_app.get("/state-hash").json()["hash"]
-        create = test_app.post("/ingest", json={"content": "key test"})
+        create = test_app.post("/ingest", json={"event_type": "interaction", "content": "key test"})
         eid = create.json()["event_id"]
         test_app.put(f"/events/{eid}", json={"content": "updated"})
         after = test_app.get("/state-hash").json()["hash"]
         assert before != after  # key should change
 
     def test_update_fts_stays_searchable(self, test_app):
-        create = test_app.post("/ingest", json={"content": "searchable phrase"})
+        create = test_app.post("/ingest", json={"event_type": "interaction", "content": "searchable phrase"})
         eid = create.json()["event_id"]
         test_app.put(f"/events/{eid}", json={"content": "updated searchable phrase"})
         # Search by updated content should still find it
@@ -365,7 +398,7 @@ class TestFeedbackEndpoint:
 
     def test_feedback_event_result_noop(self, test_app):
         """事件结果无置信度字段：反馈不报错、不落盘（保持兼容）。"""
-        ev = test_app.post("/ingest", json={"content": "feedback on event"})
+        ev = test_app.post("/ingest", json={"event_type": "interaction", "content": "feedback on event"})
         eid = ev.json()["event_id"]
         resp = test_app.post("/feedback", json={"result_id": eid, "accepted": True})
         assert resp.status_code == 200

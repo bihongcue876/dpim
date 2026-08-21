@@ -109,6 +109,10 @@ class Orchestrator:
             await self.event_store.insert_fts(event_id, event["raw_content"])
             await self.event_store.update_status(event_id, "indexed")
             event = await self.event_store.get(event_id)
+        # source 类型仅存储不构图：停留 indexed，补偿器反复入队也无副作用
+        if event["event_type"] == "source":
+            logger.info("Event %s indexed (source type, graph skipped)", event_id)
+            return
         # 降级 或 未启用 Agent 管线 → 停留 indexed，等待补偿
         if not ai_state.available or settings.agent_mode != "pipeline":
             logger.info("Event %s indexed (agent pipeline inactive)", event_id)

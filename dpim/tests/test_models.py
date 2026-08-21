@@ -150,13 +150,18 @@ class TestEvent:
 
 
 class TestIngestRequest:
-    def test_default_event_type(self):
-        req = IngestRequest(content="hello")
-        assert req.event_type == "auto"
+    def test_event_type_required(self):
+        # auto 模式已移除：event_type 必填，缺省应被 Pydantic 拦截
+        with pytest.raises(ValidationError):
+            IngestRequest(content="hello")
+
+    def test_invalid_type_rejected(self):
+        with pytest.raises(ValidationError):
+            IngestRequest(content="hello", event_type="auto")
 
     def test_explicit_type(self):
         req = IngestRequest(content="hello", event_type="data")
-        assert req.event_type == "data"
+        assert req.event_type.value == "data"
 
 
 class TestSearchRequest:
@@ -192,5 +197,5 @@ class TestSearchResponse:
 class TestHealthResponse:
     def test_defaults(self):
         h = HealthResponse(status="ok", ai_available=True, layers={})
-        assert h.version == "0.2.0"
+        assert h.version == "0.2.1"
         assert h.last_event_at == ""

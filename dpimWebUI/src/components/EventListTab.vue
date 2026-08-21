@@ -38,7 +38,16 @@
           <h4>事件详情</h4>
           <n-descriptions size="small" :column="1" label-placement="left">
             <n-descriptions-item label="ID">{{ detail.event_id }}</n-descriptions-item>
-            <n-descriptions-item label="类型">{{ detail.event_type }}</n-descriptions-item>
+            <n-descriptions-item label="类型">
+              <n-select
+                v-if="editing"
+                v-model:value="editType"
+                :options="createTypeOpts"
+                size="tiny"
+                style="width: 160px"
+              />
+              <n-tag v-else size="tiny" :bordered="false" :type="tagType(detail.event_type as string)">{{ detail.event_type }}</n-tag>
+            </n-descriptions-item>
             <n-descriptions-item label="状态">
               <div style="display:flex;align-items:center;gap:6px">
                 <n-tag size="tiny" :bordered="false" :type="statusTagType(detail.status as string)">{{ detail.status }}</n-tag>
@@ -117,9 +126,10 @@ const filterType = ref<string | undefined>()
 const filterStatus = ref<string | undefined>()
 const showNewModal = ref(false)
 const newContent = ref('')
-const newType = ref('auto')
+const newType = ref('interaction')
 const editing = ref(false)
 const editContent = ref('')
+const editType = ref('interaction')
 const saving = ref(false)
 const creating = ref(false)
 const generating = ref(false)
@@ -139,10 +149,9 @@ const typeOpts = [
   { label: 'source', value: 'source' },
 ]
 const createTypeOpts = [
-  { label: '自动识别', value: 'auto' },
-  { label: 'interaction', value: 'interaction' },
-  { label: 'data', value: 'data' },
-  { label: 'source', value: 'source' },
+  { label: 'interaction（对话/决策）', value: 'interaction' },
+  { label: 'data（事实资料）', value: 'data' },
+  { label: 'source（原始数据，仅存储）', value: 'source' },
 ]
 const statusOpts = [
   { label: '全部', value: undefined },
@@ -212,6 +221,7 @@ async function onSelectRow(eventId: string) {
 function startEdit() {
   if (!detail.value) return
   editContent.value = String(detail.value.raw_content ?? '')
+  editType.value = String(detail.value.event_type ?? 'interaction')
   editing.value = true
 }
 
@@ -226,19 +236,23 @@ async function saveEdit() {
   if (!ok) {
     // key 过期：刷新数据但保留编辑内容，让用户重试
     const savedEdit = editContent.value
+    const savedType = editType.value
     await onSelectRow(detail.value.event_id as string)
     editContent.value = savedEdit
+    editType.value = savedType
     editing.value = true
     message.warning('数据已被其他人修改，已更新最新内容，请复查后重新保存')
     return
   }
   saving.value = true
   try {
-    await api.putEvent(detail.value.event_id as string, editContent.value)
+    const origType = String(detail.value.event_type ?? '')
+    const newTypeVal = editType.value !== origType ? editType.value : undefined
+    await api.putEvent(detail.value.event_id as string, editContent.value, newTypeVal)
     await props.onCommitted()
     editing.value = false
     editContent.value = ''
-    message.success('事件内容已更新')
+    message.success(newTypeVal ? '事件内容与类型已更新' : '事件内容已更新')
     await onSelectRow(detail.value.event_id as string)
   } catch (e: any) {
     message.error('保存失败: ' + (e.message || '未知错误'))
@@ -360,11 +374,11 @@ async function doCreate() {
   if (!newContent.value.trim()) return
   creating.value = true
   try {
-    await api.ingest(newContent.value, newType.value === 'auto' ? undefined : newType.value)
+    await api.ingest(newContent.value, newType.value)
     await props.onCommitted()
     showNewModal.value = false
     newContent.value = ''
-    newType.value = 'auto'
+    newType.value = 'interaction'
     message.success('事件已创建')
     await load()
   } catch (e: any) {
@@ -403,6 +417,12 @@ async function doCreate() {
 .ev-time { color: var(--dpim-text-3, #7c8694); width: 84px; flex-shrink: 0; font-family: 'Cascadia Code', Consolas, monospace; font-size: 11px; }
 .ev-content { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dpim-text-2, #aab4c0); }
 .event-right { flex: 1; display: flex; flex-direction: column; padding: 16px 20px; overflow: hidden; }
+/* n-spin 容器补 flex 传递链：否则 detail-scroll 的 flex:1 失效，
+   内容超高时底部操作按钮被 overflow:hidden 裁掉且无法滚动 */
+.event-right :deep(.n-spin-container),
+.event-right :deep(.n-spin-content) {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+}
 .detail-scroll { flex: 1; overflow-y: auto; min-height: 0; }
 .detail-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
 .raw-content {
