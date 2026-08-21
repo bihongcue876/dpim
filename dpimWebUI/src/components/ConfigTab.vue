@@ -39,6 +39,14 @@
               <template v-else-if="field.type === 'text'">
                 <n-input v-model:value="edits[field.key]" size="small" :placeholder="String(orig(field.key) ?? '')" />
               </template>
+              <n-auto-complete
+                v-else-if="field.type === 'path'"
+                v-model:value="edits[field.key]"
+                size="small"
+                :options="pathOptions(field.key)"
+                :placeholder="String(orig(field.key) ?? '')"
+                :input-props="{ autocomplete: 'off' }"
+              />
               <n-input v-else-if="field.type === 'password'" v-model:value="edits[field.key]" type="password" show-password-on="click" size="small" :placeholder="passwordPlaceholder(field)" />
               <n-input-number v-else-if="field.type === 'number'" v-model:value="edits[field.key]" size="small" style="width:100%" :min="field.min ?? 0" :max="field.max ?? 9999" />
               <n-select v-else-if="field.type === 'select'" v-model:value="edits[field.key]" :options="field.options" size="small" />
@@ -228,7 +236,7 @@ const savedHint = ref('')
 interface ConfigField {
   key: string
   label: string
-  type: 'text' | 'password' | 'number' | 'select'
+  type: 'text' | 'password' | 'number' | 'select' | 'path'
   section?: string
   min?: number
   max?: number
@@ -282,8 +290,8 @@ function roleModelOptions(key: string): Array<{ label: string; value: string }> 
 }
 
 const fields = computed<ConfigField[]>(() => [
-  { key: 'memory_db_path', label: '记忆库路径', type: 'text', section: '存储' },
-  { key: 'graph_json_path', label: '图谱文件路径', type: 'text', section: '存储' },
+  { key: 'memory_db_path', label: '记忆库路径', type: 'path', section: '存储' },
+  { key: 'graph_json_path', label: '图谱文件路径', type: 'path', section: '存储' },
   { key: 'active_provider', label: '活动提供商', type: 'select', options: providerOptions.value, section: '模型与提供商' },
   { key: 'active_model', label: '使用模型', type: 'select', options: modelOptions.value, section: '模型与提供商' },
   { key: 'llm_max_tokens', label: '输出上限 tokens（0=服务端默认）', type: 'number', min: 0, max: 32768, section: '模型与提供商' },
@@ -322,6 +330,55 @@ const sections = computed(() => {
   return order.filter(s => groups[s]).map(s => ({ name: s, fields: groups[s] }))
 })
 
+// ── 存储路径历史记忆（localStorage，浏览器本地；不涉及后端） ──
+// 有效性闭环：当前生效路径（后端正在使用）必入历史；PUT 成功的路径入史置顶；
+// 提交失败的路径若在历史中则移除——「无效的不显示」。上限 8 条，超出淘汰最旧。
+const PATH_KEYS = ['memory_db_path', 'graph_json_path'] as const
+const PATH_HISTORY_STORE: Record<string, string> = {
+  memory_db_path: 'dpim_path_history_db',
+  graph_json_path: 'dpim_path_history_graph',
+}
+const PATH_HISTORY_MAX = 8
+const pathHistories = ref<Record<string, string[]>>({ memory_db_path: [], graph_json_path: [] })
+
+function loadPathHistory(key: string): string[] {
+  try {
+    const raw = localStorage.getItem(PATH_HISTORY_STORE[key])
+    const list = raw ? JSON.parse(raw) : []
+    return Array.isArray(list) ? list.filter(p => typeof p === 'string' && p.trim()) : []
+  } catch { return [] }
+}
+function savePathHistory(key: string, list: string[]) {
+  localStorage.setItem(PATH_HISTORY_STORE[key], JSON.stringify(list.slice(0, PATH_HISTORY_MAX)))
+}
+/** 当前生效路径并入历史首位（后端正在使用 = 已验证有效） */
+function mergeCurrentIntoHistory() {
+  for (const k of PATH_KEYS) {
+    const cur = String(original.value[k as keyof SettingsResponse] ?? '').trim()
+    const list = loadPathHistory(k).filter(p => p !== cur)
+    pathHistories.value[k] = cur ? [cur, ...list].slice(0, PATH_HISTORY_MAX) : list.slice(0, PATH_HISTORY_MAX)
+    savePathHistory(k, pathHistories.value[k])
+  }
+}
+/** 提交结果回写历史：成功置顶去重；失败移除（路径失效/不可用即不再显示） */
+function commitPathHistory(changed: Record<string, any>, ok: boolean) {
+  for (const k of PATH_KEYS) {
+    const val = String(changed[k] ?? '').trim()
+    if (!val) continue
+    let list = loadPathHistory(k)
+    list = ok
+      ? [val, ...list.filter(p => p !== val)].slice(0, PATH_HISTORY_MAX)
+      : list.filter(p => p !== val)
+    pathHistories.value[k] = list
+    savePathHistory(k, list)
+  }
+}
+/** auto-complete 选项：当前生效路径带「（当前）」标记 */
+function pathOptions(key: string): Array<{ label: string; value: string }> {
+  const cur = String(original.value[key as keyof SettingsResponse] ?? '').trim()
+  return pathHistories.value[key].map(p => ({ label: p === cur ? `${p}（当前）` : p, value: p }))
+}
+
 async function refreshOriginal() {
   // 只刷新后端最新值（显示 + 比较基准），不重置用户编辑
   try {
@@ -346,6 +403,7 @@ async function load() {
       ? (original.value[f.key as keyof SettingsResponse] ?? null)
       : (original.value[f.key as keyof SettingsResponse] ?? '')
   }
+  mergeCurrentIntoHistory()
 }
 
 onMounted(load)
@@ -364,8 +422,8 @@ async function onSubmit() {
 
   // key 一致，提交
   submitting.value = true
+  const changed: Record<string, any> = {}
   try {
-    const changed: Record<string, any> = {}
     for (const f of fields.value) {
       if (f.key === 'backend_url') {
         // 前端本地配置，不提交到后端 API
@@ -397,10 +455,12 @@ async function onSubmit() {
       return
     }
     await api.putSettings(changed)
+    commitPathHistory(changed, true)
     savedHint.value = '配置已保存（部分项需重启生效）'
     await props.onCommitted()
     await load()
   } catch (e: any) {
+    commitPathHistory(changed, false)  // 提交失败的路径若在历史中则移除（无效不显示）
     staleHint.value = e.message
   } finally {
     submitting.value = false

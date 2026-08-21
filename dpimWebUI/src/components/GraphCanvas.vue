@@ -58,10 +58,11 @@ function nodeRadius(n: SimNode): number {
 
 function destroy() {
   destroyed = true
-  if (resizeObs) { resizeObs.disconnect(); resizeObs = null }
   if (simulation) { simulation.stop(); simulation = null }
   if (svg && svg.parentNode) svg.parentNode.removeChild(svg)
   svg = null; svgSel = null; mainG = null; zoom = null
+  // 注意：不 disconnect ResizeObserver —— 观察的是常驻容器 div，
+  // 重建 SVG 不影响观察；断开会导致后续容器尺寸变化（面板收起等）无人响应
 }
 
 function build() {
@@ -130,81 +131,121 @@ function render() {
 
   if (simulation) simulation.stop()
 
-  // --- ForceAtlas2 初始布局（连通分量天然分离） ---
-  let fa2Positions: Record<string, { x: number; y: number }> = {}
-  try {
-    const g = new Graph()
-    for (const n of simNodes) g.addNode(n.id, { x: Math.random() * 100 - 50, y: Math.random() * 100 - 50 })
-    for (const link of simLinks) {
-      try { g.addEdge(link.source as string, link.target as string) } catch { /* 重复边跳过 */ }
-    }
-    const settings = forceatlas2.inferSettings(g)
-    fa2Positions = forceatlas2(g, {
-      iterations: 100,
-      settings: { ...settings, gravity: 2, barnesHutOptimize: true },
-    })
-  } catch { /* FA2 回退 */ }
-
-  // 将 FA2 位置缩放到画布范围
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
-  let hasPos = false
-  for (const n of simNodes) {
-    const pos = fa2Positions[n.id]
-    if (pos && isFinite(pos.x) && isFinite(pos.y)) {
-      minX = Math.min(minX, pos.x); maxX = Math.max(maxX, pos.x)
-      minY = Math.min(minY, pos.y); maxY = Math.max(maxY, pos.y)
-      hasPos = true
-    }
-  }
-  const scale = hasPos
-    ? Math.min((w - 80) / (maxX - minX || 1), (h - 80) / (maxY - minY || 1))
-    : 1
-  const cx = hasPos ? (minX + maxX) / 2 : 0
-  const cy = hasPos ? (minY + maxY) / 2 : 0
-  for (const n of simNodes) {
-    const pos = fa2Positions[n.id]
-    if (pos && isFinite(pos.x) && isFinite(pos.y)) {
-      n.x = (pos.x - cx) * scale + w / 2
-      n.y = (pos.y - cy) * scale + h / 2
-    } else {
-      n.x = w / 2 + (Math.random() - 0.5) * 60
-      n.y = h / 2 + (Math.random() - 0.5) * 60
-    }
-  }
-
-  // --- 连通分量检测 + 各分量独立定心 ---
+  // --- 连通分量检测（先分离再布局，分量间互不粘连） ---
   const adj = new Map<string, string[]>()
   for (const n of simNodes) adj.set(n.id, [])
+  const rawEdges: [string, string][] = []
   for (const link of simLinks) {
     const s = typeof link.source === 'string' ? link.source : (link.source as SimNode).id
     const t = typeof link.target === 'string' ? link.target : (link.target as SimNode).id
-    adj.get(s)?.push(t); adj.get(t)?.push(s)
+    if (!adj.has(s) || !adj.has(t)) continue
+    adj.get(s)!.push(t); adj.get(t)!.push(s)
+    rawEdges.push([s, t])
   }
-  const visited = new Set<string>()
-  const compCenters = new Map<string, { x: number; y: number }>()
+  const seen = new Set<string>()
+  const components: string[][] = []
   for (const n of simNodes) {
-    if (visited.has(n.id)) continue
-    const comp: string[] = [n.id]; visited.add(n.id)
+    if (seen.has(n.id)) continue
+    const comp = [n.id]; seen.add(n.id)
     const queue = [n.id]
     while (queue.length) {
-      const id = queue.shift()!
-      for (const nb of adj.get(id) || []) {
-        if (!visited.has(nb)) { visited.add(nb); queue.push(nb); comp.push(nb) }
+      const cur = queue.shift()!
+      for (const nb of adj.get(cur) || []) {
+        if (!seen.has(nb)) { seen.add(nb); queue.push(nb); comp.push(nb) }
       }
     }
-    let cx2 = 0, cy2 = 0, cnt = 0
-    for (const id of comp) {
-      const node = simNodes.find(n => n.id === id)
-      if (node && node.x != null && node.y != null) { cx2 += node.x; cy2 += node.y; cnt++ }
-    }
-    const center = cnt > 0 ? { x: cx2 / cnt, y: cy2 / cnt } : { x: w / 2, y: h / 2 }
-    for (const id of comp) compCenters.set(id, center)
+    components.push(comp)
+  }
+  // 稳定排序：大分量在前，同规模按首节点出现序 —— 同样数据每次刷新排布一致
+  const orderOf = new Map(simNodes.map((n, i) => [n.id, i] as const))
+  components.sort((a, b) => b.length - a.length || (orderOf.get(a[0]) ?? 0) - (orderOf.get(b[0]) ?? 0))
+
+  // 边按分量归类（一次性，避免每分量全量过滤）
+  const compIndexOf = new Map<string, number>()
+  components.forEach((c, i) => c.forEach(id => compIndexOf.set(id, i)))
+  const compEdgeLists: [string, string][][] = components.map(() => [])
+  for (const [s, t] of rawEdges) {
+    const ci = compIndexOf.get(s)
+    if (ci != null && compIndexOf.get(t) === ci) compEdgeLists[ci].push([s, t])
   }
 
-  // FA2 定好位置后，D3 仅负责交互与轻微碰撞避让
+  // --- 确定性初始位置：黄金角螺旋（phyllotaxis），替代 Math.random ---
+  function spiralInit(ids: string[]): Map<string, { x: number; y: number }> {
+    const pos = new Map<string, { x: number; y: number }>()
+    ids.forEach((id, i) => {
+      const r = 14 * Math.sqrt(i + 1)
+      const a = i * 2.399963229728653
+      pos.set(id, { x: r * Math.cos(a), y: r * Math.sin(a) })
+    })
+    return pos
+  }
+
+  // --- 每分量独立 FA2：确定性起点 → 收敛结果稳定；分量间无引力干扰 ---
+  function layoutComponent(ids: string[], edgeSet: [string, string][]): Map<string, { x: number; y: number }> {
+    const init = spiralInit(ids)
+    if (ids.length <= 2) return init // 1-2 个节点：初始位置即最终位置
+    try {
+      const g = new Graph()
+      for (const [id, p] of init) g.addNode(id, { x: p.x, y: p.y })
+      for (const [s, t] of edgeSet) {
+        try { g.addEdge(s, t) } catch { /* 重复边跳过 */ }
+      }
+      const settings = forceatlas2.inferSettings(g)
+      const out = forceatlas2(g, {
+        iterations: 100,
+        settings: { ...settings, gravity: 1, barnesHutOptimize: true },
+      })
+      const final = new Map<string, { x: number; y: number }>()
+      for (const id of ids) {
+        const p = out[id]
+        if (p && isFinite(p.x) && isFinite(p.y)) final.set(id, { x: p.x, y: p.y })
+        else final.set(id, init.get(id)!)
+      }
+      return final
+    } catch {
+      return init // FA2 失败回退：确定性螺旋位置
+    }
+  }
+
+  // --- 分量网格打包：每个分量独占一格，从根上分开 ---
+  const nodeById = new Map(simNodes.map(n => [n.id, n] as const))
+  const cols = Math.max(1, Math.ceil(Math.sqrt(components.length)))
+  const rows = Math.ceil(components.length / cols)
+  const pad = 30
+  const cellW = (w - pad * 2) / cols
+  const cellH = (h - pad * 2) / rows
+  const compCenters = new Map<string, { x: number; y: number }>()
+  components.forEach((comp, idx) => {
+    const col = idx % cols
+    const row = Math.floor(idx / cols)
+    const cellCx = pad + cellW * (col + 0.5)
+    const cellCy = pad + cellH * (row + 0.5)
+    const pos = layoutComponent(comp, compEdgeLists[idx])
+
+    // 分量包围盒 → 等比缩放进本格（四周留边距），居中于格心
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+    for (const p of pos.values()) {
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x)
+      minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y)
+    }
+    const bw = maxX - minX || 1, bh = maxY - minY || 1
+    const scale = Math.min((cellW - 72) / bw, (cellH - 72) / bh)
+    const safeScale = isFinite(scale) && scale > 0 ? Math.min(scale, 4) : 1
+    const ccx = (minX + maxX) / 2, ccy = (minY + maxY) / 2
+    for (const id of comp) {
+      const p = pos.get(id)!
+      const node = nodeById.get(id)
+      if (!node) continue
+      node.x = cellCx + (p.x - ccx) * safeScale
+      node.y = cellCy + (p.y - ccy) * safeScale
+      compCenters.set(id, { x: cellCx, y: cellCy })
+    }
+  })
+
+  // FA2/网格定好位置后，D3 仅负责交互与轻微碰撞避让（link 力弱化，避免撑开已缩放的分量）
   simulation = d3.forceSimulation<SimNode>(simNodes)
     .force('link', d3.forceLink<SimNode, SimLink>(simLinks)
-      .id(d => d.id).distance(120).strength(0.12))
+      .id(d => d.id).distance(80).strength(0.05))
     .force('collision', d3.forceCollide<SimNode>(d => nodeRadius(d) + 20).strength(0.5))
     .force('x', d3.forceX<SimNode>(d => (compCenters.get(d.id)?.x ?? w / 2)).strength(0.01))
     .force('y', d3.forceY<SimNode>(d => (compCenters.get(d.id)?.y ?? h / 2)).strength(0.01))
@@ -413,8 +454,10 @@ watch(() => [props.nodes, props.edges], () => {
 }, { deep: true })
 
 // Watch refreshEpoch (e.g. panel toggle) — force full re-render
+// 面板收起/展开带 0.25s max-height 过渡：立即重建会拿到过渡前的旧尺寸，
+// 等 300ms 过渡结束后再按最终尺寸重建（ResizeObserver 兜底）
 watch(() => props.refreshEpoch, () => {
-  if (!destroyed) refresh()
+  setTimeout(() => { if (!destroyed) refresh() }, 300)
 })
 
 // Watch highlight changes
@@ -452,6 +495,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  if (resizeObs) { resizeObs.disconnect(); resizeObs = null }
+  clearTimeout(resizeTimer)
   destroy()
 })
 

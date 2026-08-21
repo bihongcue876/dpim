@@ -27,6 +27,9 @@
           <n-tab-pane name="ingest" tab="信息传入" :display-directive="'show'">
             <IngestTab />
           </n-tab-pane>
+          <n-tab-pane name="help" tab="帮助" :display-directive="'show'">
+            <HelpTab />
+          </n-tab-pane>
         </n-tabs>
       </n-layout>
     </n-message-provider>
@@ -45,6 +48,7 @@ import EventListTab from '@/components/EventListTab.vue'
 import GraphTab from '@/components/GraphTab.vue'
 import SearchTab from '@/components/SearchTab.vue'
 import IngestTab from '@/components/IngestTab.vue'
+import HelpTab from '@/components/HelpTab.vue'
 import { useStateKey } from '@/composables/useStateKey'
 import * as api from '@/api/client'
 import type { HealthResponse } from '@/api/client'
