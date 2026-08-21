@@ -18,7 +18,7 @@
           <n-tab-pane name="events" tab="信息列表" :display-directive="'show'">
             <EventListTab :validate="validate" :on-committed="onCommitted" />
           </n-tab-pane>
-          <n-tab-pane name="graph" tab="信息图" :display-directive="'show'">
+          <n-tab-pane name="graph" tab="信息图谱" :display-directive="'show'">
             <GraphTab :key-status="keyStatus" />
           </n-tab-pane>
           <n-tab-pane name="search" tab="检索" :display-directive="'show'">
