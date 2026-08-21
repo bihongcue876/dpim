@@ -42,7 +42,8 @@ describe('IngestTab', () => {
     await ta.setValue('测试内容')
     await wrapper.findAll('button').find(b => b.text().includes('提交处理'))!.trigger('click')
     await new Promise(r => setTimeout(r, 50))
-    expect(api.ingest).toHaveBeenCalledWith('测试内容', 'auto')
+    // auto 模式已移除：默认提交 interaction 类型
+    expect(api.ingest).toHaveBeenCalledWith('测试内容', 'interaction')
     expect(wrapper.text()).toContain('1722000000000-ab')
     // 已写入 localStorage
     const stored = JSON.parse(localStorage.getItem('dpim_ingest_history') || '[]')

@@ -205,10 +205,12 @@ export async function putEventStatus(eventId: string, status: string): Promise<v
   })
 }
 
-export async function putEvent(eventId: string, content: string): Promise<void> {
+export async function putEvent(eventId: string, content: string, eventType?: string): Promise<void> {
+  const body: Record<string, string> = { content }
+  if (eventType) body.event_type = eventType
   await req(`/events/${eventId}`, {
     method: 'PUT',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify(body),
   })
 }
 
@@ -266,7 +268,7 @@ export async function deleteNode(nodeId: string, force = false): Promise<void> {
   })
 }
 
-export async function ingest(content: string, eventType = 'auto'): Promise<{ event_id: string; status: string }> {
+export async function ingest(content: string, eventType: string): Promise<{ event_id: string; status: string }> {
   return req('/ingest', {
     method: 'POST',
     body: JSON.stringify({ content, event_type: eventType }),
