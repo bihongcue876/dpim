@@ -78,12 +78,20 @@ describe('ConfigTab', () => {
     expect(wrapper.text()).toContain('新增提供商')
   })
 
-  it('renders masked main API key field (password, blank-keep)', async () => {
+  it('does not render main API key field (primary key managed via .env/dpim.json)', async () => {
     const wrapper = mount(ConfigTab, { props })
     await flush()
-    expect(wrapper.text()).toContain('主配置 API Key')
-    // 掩码现值在「当前」列展示，输入框留空 = 保持不变
-    expect(wrapper.text()).toContain('sk-****1234')
+    // 主配置 API Key 行已移除：primary 密钥经 .env（DPIM_LLM_API_KEY）或 dpim.json 管理
+    expect(wrapper.text()).not.toContain('主配置 API Key')
+  })
+
+  it('renders agent role models as selects with follow option', async () => {
+    const wrapper = mount(ConfigTab, { props })
+    await flush()
+    // 管线四个角色模型为下拉框（不再是手敲文本框）
+    expect(wrapper.text()).toContain('Cr 模型')
+    expect(wrapper.text()).toContain('Meta 模型')
+    expect(wrapper.text()).not.toContain('空=活动提供商')
   })
 
   it('submit does not send anything when unchanged', async () => {

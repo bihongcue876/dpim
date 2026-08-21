@@ -66,8 +66,14 @@ class Settings:
         )
         cfg = self._read_dpim_config()
         agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
-        self.memory_db_path = getenv("DPIM_MEMORY_DB_PATH", "./data/memory.db")
-        self.graph_json_path = getenv("DPIM_GRAPH_JSON_PATH", "./data/graph.json")
+        storage_cfg = cfg.get("storage", {}) if isinstance(cfg, dict) else {}
+        # 读取链：env（部署覆盖）→ dpim.json storage（前端修改持久化）→ 内置默认
+        self.memory_db_path = getenv(
+            "DPIM_MEMORY_DB_PATH", str(storage_cfg.get("memory_db_path") or "./data/memory.db")
+        )
+        self.graph_json_path = getenv(
+            "DPIM_GRAPH_JSON_PATH", str(storage_cfg.get("graph_json_path") or "./data/graph.json")
+        )
         # ── 主 provider（向后兼容，DPIM_LLM_*）──
         self.llm_base_url = getenv("DPIM_LLM_BASE_URL", "http://localhost:11434/v1")
         self.llm_api_key = getenv("DPIM_LLM_API_KEY", "")
@@ -152,7 +158,8 @@ class Settings:
         self.agent_maintain_cooldown = int(
             getenv("DPIM_AGENT_MAINTAIN_COOLDOWN", "300")
         )
-        self.log_level = getenv("DPIM_LOG_LEVEL", "INFO")
+        # 日志级别读取链同存储路径：env → dpim.json → 默认（前端可改并持久化）
+        self.log_level = getenv("DPIM_LOG_LEVEL", str(cfg.get("log_level") or "INFO"))
         self._validate()
 
     def _validate(self) -> None:
@@ -189,7 +196,7 @@ class Settings:
             return {}
 
     def save_dpim_config(self) -> None:
-        """把当前 BYOK/Agent 配置持久化到 dpim.json（前端改配置后调用）。"""
+        """把当前 BYOK/Agent/存储配置持久化到 dpim.json（前端改配置后调用）。"""
         payload = {
             "active_provider": self.active_provider,
             "active_model": self.active_model,
@@ -202,6 +209,11 @@ class Settings:
                 "gr_model": self.agent_gr_model,
                 "meta_model": self.agent_meta_model,
             },
+            "storage": {
+                "memory_db_path": self.memory_db_path,
+                "graph_json_path": self.graph_json_path,
+            },
+            "log_level": self.log_level,
         }
         path = Path(self.config_file)
         path.parent.mkdir(parents=True, exist_ok=True)

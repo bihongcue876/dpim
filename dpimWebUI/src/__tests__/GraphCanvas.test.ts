@@ -50,4 +50,28 @@ describe('GraphCanvas', () => {
     expect(wrapper.find('svg').exists()).toBe(true)
     expect(wrapper.find('circle.glow').exists()).toBe(true)
   })
+
+  it('rebuilds svg at new container size after refreshEpoch (panel collapse)', async () => {
+    const wrapper = mount(GraphCanvas, {
+      props: { nodes: [], edges: [], highlightNodeId: null },
+    })
+    await waitFrame()
+    sizeContainer(wrapper)
+    await wrapper.setProps({ nodes, edges })
+    await waitFrame()
+    const svgBefore = wrapper.find('svg')
+    expect(svgBefore.attributes('width')).toBe('400')
+
+    // 模拟面板收起：容器长高 + refreshEpoch+1（GraphTab 折叠面板时的联动）
+    Object.defineProperty(wrapper.element, 'clientWidth', { value: 400, configurable: true })
+    Object.defineProperty(wrapper.element, 'clientHeight', { value: 600, configurable: true })
+    await wrapper.setProps({ refreshEpoch: 1 })
+    // epoch 重建延迟 300ms（等 CSS 过渡结束）
+    await new Promise(r => setTimeout(r, 450))
+
+    const svgAfter = wrapper.find('svg')
+    expect(svgAfter.exists()).toBe(true)
+    expect(svgAfter.attributes('width')).toBe('400')
+    expect(svgAfter.attributes('height')).toBe('600')
+  })
 })

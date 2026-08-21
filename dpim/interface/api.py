@@ -485,7 +485,8 @@ async def update_settings(body: SettingsUpdateRequest):
     # 配置变更后立即健康检查一次：切换 provider/模型即刻生效，无需重启
     if compensator is not None:
         await compensator._check_llm()
-    return _ok(message="Settings updated and persisted to dpim.json")
+    msg = "Settings updated and persisted to dpim.json; storage paths apply after restart"
+    return _ok(message=msg)
 
 
 @app.get("/health", response_model=HealthResponse)

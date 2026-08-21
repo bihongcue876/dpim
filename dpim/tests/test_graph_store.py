@@ -420,6 +420,16 @@ class TestGraphStoreEgoGraph:
         assert result["n4"] == 1.0 / 3
 
     @pytest.mark.asyncio
+    async def test_ego_graph_reverse_hop_reachable(self, graph_store_with_data: GraphStore):
+        """双向扩散：n1→n2 出边，从 n2（仅入边邻居）也能跳回 n1。
+
+        检索召回不区分边方向；方向语义仍在边数据/前端展示中。
+        """
+        result = graph_store_with_data.ego_graph(["n2"], hops=1)
+        assert "n1" in result  # 反向（入边）邻居可达
+        assert result["n1"] == 0.5
+
+    @pytest.mark.asyncio
     async def test_ego_graph_nonexistent_seed(self, graph_store: GraphStore):
         result = graph_store.ego_graph(["no_such_node"], hops=2)
         assert result == {}

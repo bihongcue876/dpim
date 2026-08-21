@@ -110,3 +110,40 @@ def test_provider_entry_vendor_fields(monkeypatch):
     assert conf.structured_mode == "tools"
     assert conf.timeout == s.llm_timeout  # 未显式声明 timeout → 回退全局
     assert s.role_provider("cr").max_tokens == 8192  # 角色透传厂商参数
+
+
+def test_storage_paths_roundtrip_via_dpim_json(monkeypatch, tmp_path):
+    """v1.16：存储路径/日志级别持久化 dpim.json — save 后新实例读回，重启保留语义。"""
+    cfg_file = tmp_path / "dpim.json"
+    monkeypatch.setenv("DPIM_CONFIG_FILE", str(cfg_file))
+    monkeypatch.delenv("DPIM_MEMORY_DB_PATH", raising=False)
+    monkeypatch.delenv("DPIM_GRAPH_JSON_PATH", raising=False)
+    monkeypatch.delenv("DPIM_LOG_LEVEL", raising=False)
+    s = Settings()
+    assert s.memory_db_path == "./data/memory.db"  # 无 storage 段 → 内置默认
+
+    s.memory_db_path = str(tmp_path / "mem.db")
+    s.graph_json_path = str(tmp_path / "graph.json")
+    s.log_level = "DEBUG"
+    s.save_dpim_config()
+
+    s2 = Settings()  # 模拟重启
+    assert s2.memory_db_path == str(tmp_path / "mem.db")
+    assert s2.graph_json_path == str(tmp_path / "graph.json")
+    assert s2.log_level == "DEBUG"
+
+
+def test_storage_paths_env_overrides_dpim_json(monkeypatch, tmp_path):
+    """env 显式设置压制 dpim.json（部署覆盖语义，与 providers 行为一致）。"""
+    cfg_file = tmp_path / "dpim.json"
+    monkeypatch.setenv("DPIM_CONFIG_FILE", str(cfg_file))
+    monkeypatch.setenv("DPIM_MEMORY_DB_PATH", "/env/override.db")
+    monkeypatch.delenv("DPIM_LOG_LEVEL", raising=False)
+    s = Settings()
+    s.memory_db_path = "/json/path.db"
+    s.log_level = "DEBUG"
+    s.save_dpim_config()
+
+    s2 = Settings()
+    assert s2.memory_db_path == "/env/override.db"  # env 胜出
+    assert s2.log_level == "DEBUG"  # 未设 env → dpim.json 生效

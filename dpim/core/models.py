@@ -410,6 +410,9 @@ class SettingsUpdateRequest(BaseModel):
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     llm_model_name: str | None = None
+    # 存储路径（v1.16）：可经前端修改，持久化 dpim.json，重启生效（数据文件不自动迁移）
+    memory_db_path: str | None = None
+    graph_json_path: str | None = None
     llm_timeout: int | None = Field(default=None, ge=1, le=3600)
     llm_max_tokens: int | None = Field(default=None, ge=0, le=32768)
     llm_enable_thinking: bool | None = None

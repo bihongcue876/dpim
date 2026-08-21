@@ -532,6 +532,8 @@ export interface SettingsUpdateRequest {
   llm_base_url?: string;
   llm_api_key?: string;          // 掩码/空 = 保留现值；其他非空值 = 替换
   llm_model_name?: string;
+  memory_db_path?: string;       // v1.16：持久化 dpim.json，重启生效（数据文件不自动迁移）
+  graph_json_path?: string;      // v1.16：同上
   llm_timeout?: number;
   llm_max_tokens?: number | null;
   llm_enable_thinking?: boolean | null;

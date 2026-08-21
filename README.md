@@ -43,7 +43,7 @@ uv run python main.py status                                 # 查看状态
 ```bash
 cd dpimCLI
 pip install -e .
-dpim --help   # 24 条命令
+dpim --help   # 13 命令 / 23 操作（详见 dpimCLI/README.md）
 dpim shell    # 交互式 Shell
 ```
 

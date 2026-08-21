@@ -26,28 +26,42 @@ def _build_subparsers(parent: argparse.ArgumentParser):
     """为所有命令构建子解析器。"""
     sub = parent.add_subparsers(dest="command", metavar="")
 
+    def _sp(name: str, help_: str, global_opts: bool = True):
+        """新建子解析器；global_opts 时挂全局选项（允许 --api/--format 放命令后）。
+
+        default=argparse.SUPPRESS：用户未提供时不写 namespace，
+        避免子 parser 的默认值覆盖命令前置的全局参数（argparse 陷阱）。
+        """
+        sp = sub.add_parser(name, help=help_)
+        if global_opts:
+            sp.add_argument("--api", metavar="URL",
+                            default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+            sp.add_argument("--format", choices=["table", "json", "yaml"],
+                            default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        return sp
+
     # ── 系统状态 ──
-    sp = sub.add_parser("status", help="查看系统健康状态")
+    sp = _sp("status", "查看系统健康状态")
     sp.set_defaults(handler=commands.cmd_status)
 
-    sp = sub.add_parser("state-key", help="显示状态校验密钥")
+    sp = _sp("state-key", "显示状态校验密钥")
     sp.set_defaults(handler=commands.cmd_state_key)
 
     # ── 事件管理 ──
-    sp = sub.add_parser("ingest", help="写入事件")
+    sp = _sp("ingest", "写入事件")
     sp.add_argument("content", help="事件内容")
     sp.add_argument("--type", default="auto", choices=["auto", "interaction", "data", "source"],
                     help="事件类型 (默认: auto)")
     sp.set_defaults(handler=commands.cmd_ingest)
 
-    sp = sub.add_parser("events", help="分页事件列表")
+    sp = _sp("events", "分页事件列表")
     sp.add_argument("--type", help="按类型筛选 (interaction/data/source)")
     sp.add_argument("--status", help="按状态筛选 (raw/indexed/linked/failed/skipped)")
     sp.add_argument("--limit", type=int, default=20, help="每页数量 (默认: 20)")
     sp.add_argument("--offset", type=int, default=0, help="偏移量 (默认: 0)")
     sp.set_defaults(handler=commands.cmd_events)
 
-    sp = sub.add_parser("event", help="事件操作: view / edit / retry / skip / unskip / delete")
+    sp = _sp("event", "事件操作: view / edit / retry / skip / unskip / delete")
     sp.add_argument("action", nargs="?", default="view",
                     choices=["view", "edit", "retry", "skip", "unskip", "delete"],
                     help="操作类型 (默认: view)")
@@ -56,13 +70,13 @@ def _build_subparsers(parent: argparse.ArgumentParser):
     sp.set_defaults(handler=commands.cmd_event)
 
     # ── 节点管理 ──
-    sp = sub.add_parser("nodes", help="分页节点列表")
+    sp = _sp("nodes", "分页节点列表")
     sp.add_argument("--type", help="按类型筛选 (system/interaction/data)")
     sp.add_argument("--limit", type=int, default=20, help="每页数量 (默认: 20)")
     sp.add_argument("--offset", type=int, default=0, help="偏移量 (默认: 0)")
     sp.set_defaults(handler=commands.cmd_nodes)
 
-    sp = sub.add_parser("node", help="节点操作: view / create / edit / delete")
+    sp = _sp("node", "节点操作: view / create / edit / delete")
     sp.add_argument("node_id", nargs="?", default="", help="节点 ID")
     sp.add_argument("content", nargs="?", default="", help="新内容 (仅 edit)")
     sp.add_argument("--action", default="",
@@ -77,7 +91,7 @@ def _build_subparsers(parent: argparse.ArgumentParser):
     sp.set_defaults(handler=commands.cmd_node)
 
     # ── 边管理 ──
-    sp = sub.add_parser("edge", help="边操作: create / delete")
+    sp = _sp("edge", "边操作: create / delete")
     sp.add_argument("action", nargs="?", default="create",
                     choices=["create", "delete"], help="操作类型 (默认: create)")
     sp.add_argument("--source", required=True, help="源节点 ID")
@@ -87,7 +101,7 @@ def _build_subparsers(parent: argparse.ArgumentParser):
     sp.set_defaults(handler=commands.cmd_edge)
 
     # ── 检索与反馈 ──
-    sp = sub.add_parser("search", help="混合检索")
+    sp = _sp("search", "混合检索")
     sp.add_argument("query", help="搜索关键词")
     sp.add_argument("--type", default="all",
                     choices=["all", "interaction", "data", "system"],
@@ -97,7 +111,7 @@ def _build_subparsers(parent: argparse.ArgumentParser):
     sp.add_argument("--offset", type=int, default=0, help="偏移量 (默认: 0)")
     sp.set_defaults(handler=commands.cmd_search)
 
-    sp = sub.add_parser("feedback", help="检索结果反馈")
+    sp = _sp("feedback", "检索结果反馈")
     sp.add_argument("result_id", help="结果 ID (node_id)")
     group = sp.add_mutually_exclusive_group(required=True)
     group.add_argument("--accept", action="store_true", help="采纳结果")
@@ -105,7 +119,7 @@ def _build_subparsers(parent: argparse.ArgumentParser):
     sp.set_defaults(handler=commands.cmd_feedback)
 
     # ── 配置管理 ──
-    sp = sub.add_parser("config", help="配置管理: list / set")
+    sp = _sp("config", "配置管理: list / set")
     sp.add_argument("action", nargs="?", default="list",
                     choices=["list", "set"], help="操作类型 (默认: list)")
     sp.add_argument("key", nargs="?", default="", help="配置项名称 (仅 set)")
@@ -113,13 +127,13 @@ def _build_subparsers(parent: argparse.ArgumentParser):
     sp.set_defaults(handler=commands.cmd_config)
 
     # ── 图谱管理 ──
-    sp = sub.add_parser("graph", help="图谱管理")
+    sp = _sp("graph", "图谱管理")
     sp.add_argument("action", nargs="?", default="clear",
                     choices=["clear"], help="操作类型 (默认: clear)")
     sp.set_defaults(handler=commands.cmd_graph_clear)
 
     # ── Shell ──
-    sp = sub.add_parser("shell", help="进入交互式 Shell 模式")
+    sp = _sp("shell", "进入交互式 Shell 模式")
     sp.set_defaults(handler=None)
 
     return sub
