@@ -41,15 +41,14 @@ class EventStore:
     def __init__(self, db: Database):
         self.db = db
 
-    async def insert(self, raw_content: str, event_type: str = "auto") -> tuple[str, str]:
+    async def insert(self, raw_content: str, event_type: str = "interaction") -> tuple[str, str]:
         event_id = _make_event_id()
         created_at = datetime.now(timezone.utc).isoformat()
         c_hash = _content_hash(raw_content)
-        et = event_type if event_type != "auto" else "interaction"
         await self.db.conn.execute(
             "INSERT INTO events (event_id,created_at,raw_content,content_hash,event_type)"
             " VALUES (?,?,?,?,?)",
-            (event_id, created_at, raw_content, c_hash, et),
+            (event_id, created_at, raw_content, c_hash, event_type),
         )
         await self.db.conn.commit()
         return event_id, "raw"
@@ -97,6 +96,24 @@ class EventStore:
                 (status, event_id),
             )
         await self.db.conn.commit()
+
+    async def update_type(self, event_id: str, event_type: str) -> bool:
+        """修订事件类型（interaction / data / source）。
+
+        仅改线层 event_type：不联动已生成图节点（图层为派生物），
+        也不改状态机——source 改回 interaction/data 后如需重新构图，
+        走既有 PUT /events/{id}/status 重试入队路径。
+        返回是否存在该事件。
+        """
+        event = await self.get(event_id)
+        if event is None:
+            return False
+        await self.db.conn.execute(
+            "UPDATE events SET event_type = ? WHERE event_id = ?",
+            (event_type, event_id),
+        )
+        await self.db.conn.commit()
+        return True
 
     async def delete(self, event_id: str) -> dict | None:
         event = await self.get(event_id)
@@ -174,7 +191,7 @@ class EventStore:
         items = [dict(r) for r in rows]
         return items, total
 
-    async def insert_event(self, raw_content: str, event_type: str = "auto") -> tuple[str, str]:
+    async def insert_event(self, raw_content: str, event_type: str = "interaction") -> tuple[str, str]:
         """写入事件 → 建 FTS 索引 → 标记 indexed，一条调用完成完整写入。
 
         外部无需再手动调用 insert_fts 和 update_status。

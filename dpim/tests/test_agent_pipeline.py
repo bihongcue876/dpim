@@ -302,6 +302,26 @@ async def test_apply_to_store_creates_nodes_and_links(db, event_store, graph_sto
 # ── Ingest 管线 ──
 
 
+async def test_ingest_source_type_skips_pipeline(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """source 类型仅存储不构图：即使 AI 可用也不进入管线，停留 indexed"""
+    called = []
+
+    async def _fail(*a, **kw):
+        called.append(1)
+        raise AssertionError("source 事件不应触发任何 LLM 调用")
+
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", _fail)
+    orch = make_orchestrator(db, event_store, graph_store)
+    eid, _ = await event_store.insert_event("仅存档的原始资料", "source")
+    await orch._handle_ingest({"event_id": eid})
+    event = await event_store.get(eid)
+    assert event["status"] == "indexed"  # 基础索引完成，但不构图
+    assert graph_store.total_nodes() == 0
+    assert called == []
+
+
 async def test_ingest_pipeline_success(
     db, event_store, graph_store, enable_ai, monkeypatch
 ):

@@ -264,7 +264,7 @@ export interface FeedbackPayload {
 // ---- 写入事件 ----
 export interface IngestRequest {
   content: string;
-  event_type?: EventType | 'auto';  // 默认 'auto'
+  event_type: EventType;  // v1.17：必填枚举，auto 模式已移除
 }
 
 export interface IngestResponse {
@@ -315,6 +315,7 @@ export interface ModifyEventStatusResponse {
 // ---- 修改事件内容 ----
 export interface ModifyEventRequest {
   content: string;
+  event_type?: EventType;  // v1.17：可选类型修订，缺省保持不变（仅改线层，不联动图节点）
 }
 
 export interface ModifyEventResponse {

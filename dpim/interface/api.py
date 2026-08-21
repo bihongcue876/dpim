@@ -136,7 +136,7 @@ def _stores():
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(body: IngestRequest):
     es, gs = _stores()
-    eid, status = await es.insert_event(body.content, body.event_type)
+    eid, status = await es.insert_event(body.content, body.event_type.value)
     refresh_key()
     # Agent 管线启用时，入队让管线即时处理（异步，不阻塞写入返回）
     if settings.agent_mode == "pipeline" and ai_state.available and orchestrator:
@@ -241,6 +241,9 @@ async def modify_event(event_id: str, body: ModifyEventRequest):
     ok = await es.update_content(event_id, body.content, gs)
     if not ok:
         raise HTTPException(status_code=404, detail="Event not found")
+    # 可选类型修订：仅改线层，不联动已生成图节点
+    if body.event_type is not None:
+        await es.update_type(event_id, body.event_type.value)
     await gs.flush()
     refresh_key()
     return _ok(event_id=event_id, message="Event content updated")
