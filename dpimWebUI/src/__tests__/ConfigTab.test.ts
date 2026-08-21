@@ -181,4 +181,69 @@ describe('ConfigTab', () => {
     wrapper.unmount()
     document.body.innerHTML = ''
   })
+
+  it('renames provider and submits renamed key', async () => {
+    document.body.innerHTML = ''
+    const wrapper = mount(ConfigTab, { props, attachTo: document.body })
+    await flush()
+    // 编辑唯一 provider「siliconflow」→ 改名「sf2」
+    const editBtn = wrapper.findAll('button').find(b => b.text() === '编辑')
+    await editBtn!.trigger('click')
+    await flush(20)
+    const nameInput = document.querySelector('input[placeholder="如 siliconflow"]') as HTMLInputElement
+    expect(nameInput).toBeTruthy()
+    expect(nameInput.value).toBe('siliconflow') // 编辑弹窗名称可编辑且预填现名
+    nameInput.value = 'sf2'
+    nameInput.dispatchEvent(new Event('input'))
+    const saveBtn = Array.from(document.querySelectorAll('button'))
+      .find(b => b.textContent!.trim() === '保存')
+    await saveBtn!.dispatchEvent(new Event('click'))
+    await flush(20)
+    // 卡片以新名展示
+    expect(wrapper.text()).toContain('sf2')
+    // 提交 → providers 以新名发送，旧名消失
+    const submitBtn = wrapper.findAll('button').find(b => b.text().includes('提交配置'))
+    await submitBtn!.trigger('click')
+    await flush(100)
+    const payload = (putSettings as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(payload.providers).toHaveProperty('sf2')
+    expect(payload.providers).not.toHaveProperty('siliconflow')
+    expect(payload.providers.sf2.api_key).toBe('sk-****7666') // 改名保留密钥掩码（幂等回传）
+    wrapper.unmount()
+    document.body.innerHTML = ''
+  })
+
+  it('blocks renaming provider to an existing name (duplicate check)', async () => {
+    document.body.innerHTML = ''
+    const wrapper = mount(ConfigTab, { props, attachTo: document.body })
+    await flush()
+    // 先新增 provider「deepseek」
+    const addBtn = wrapper.findAll('button').find(b => b.text().includes('新增提供商'))
+    await addBtn!.trigger('click')
+    await flush(20)
+    let nameInput = document.querySelector('input[placeholder="如 siliconflow"]') as HTMLInputElement
+    nameInput.value = 'deepseek'
+    nameInput.dispatchEvent(new Event('input'))
+    const urlInput = document.querySelector('input[placeholder="https://api.siliconflow.cn/v1"]') as HTMLInputElement
+    urlInput.value = 'http://localhost:5091/v1'
+    urlInput.dispatchEvent(new Event('input'))
+    let saveBtn = Array.from(document.querySelectorAll('button'))
+      .find(b => b.textContent!.trim() === '保存')
+    await saveBtn!.dispatchEvent(new Event('click'))
+    await flush(20)
+    // 编辑第一张卡（排序后 deepseek 在前）→ 改名「siliconflow」→ 查重报错、保存禁用
+    const editBtn = wrapper.findAll('button').find(b => b.text() === '编辑')
+    await editBtn!.trigger('click')
+    await flush(20)
+    nameInput = document.querySelector('input[placeholder="如 siliconflow"]') as HTMLInputElement
+    nameInput.value = 'siliconflow'
+    nameInput.dispatchEvent(new Event('input'))
+    await flush(20)
+    expect(document.body.textContent).toContain('名称「siliconflow」已存在')
+    saveBtn = Array.from(document.querySelectorAll('button'))
+      .find(b => b.textContent!.trim() === '保存')!
+    expect((saveBtn as HTMLButtonElement).disabled).toBe(true)
+    wrapper.unmount()
+    document.body.innerHTML = ''
+  })
 })
