@@ -143,7 +143,12 @@
             <div class="card-footer">
               <div class="footer-left">
                 <span class="card-conf">置信度 {{ (r.confidence || 0).toFixed(2) }}</span>
-                <span v-if="r.source_events && r.source_events.length" class="card-events" :title="r.source_events.join('\n')">源事件 {{ r.source_events.length }}</span>
+                <n-button
+                  v-if="r.source_events && r.source_events.length"
+                  size="tiny" quaternary type="info"
+                  :title="r.source_events.join('\n')"
+                  @click.stop="onJumpSourceEvent(r)"
+                >源事件 {{ r.source_events.length }} ▸</n-button>
               </div>
               <div class="footer-actions">
                 <n-button size="tiny" :type="feedbackState[r.node_id] === 'accepted' ? 'success' : 'default'" secondary :disabled="!!feedbackState[r.node_id]" @click.stop="onFeedback(r.node_id, true)">有用</n-button>
@@ -167,7 +172,12 @@
           <div class="card-footer">
             <div class="footer-left">
               <span class="card-conf">置信度 {{ (r.confidence || 0).toFixed(2) }}</span>
-              <span v-if="r.source_events && r.source_events.length" class="card-events" :title="r.source_events.join('\n')">源事件 {{ r.source_events.length }}</span>
+              <n-button
+                v-if="r.source_events && r.source_events.length"
+                size="tiny" quaternary type="info"
+                :title="r.source_events.join('\n')"
+                @click.stop="onJumpSourceEvent(r)"
+              >源事件 {{ r.source_events.length }} ▸</n-button>
             </div>
             <div class="footer-actions">
               <n-button size="tiny" :type="feedbackState[r.node_id] === 'accepted' ? 'success' : 'default'" secondary :disabled="!!feedbackState[r.node_id]" @click.stop="onFeedback(r.node_id, true)">有用</n-button>
@@ -472,6 +482,13 @@ async function browseRecent() {
 function onViewNode(r: SearchResult) {
   localStorage.setItem('dpim_focus_node', r.node_id)
   window.dispatchEvent(new CustomEvent('dpim:focus-node', { detail: { nodeId: r.node_id } }))
+}
+
+/** 跳转源事件：dispatch dpim:focus-event → App 切到信息列表 tab → 事件详情定位 */
+function onJumpSourceEvent(r: SearchResult) {
+  const first = r.source_events?.[0]
+  if (!first) return
+  window.dispatchEvent(new CustomEvent('dpim:focus-event', { detail: { event_id: first } }))
 }
 
 async function onFeedback(id: string, accepted: boolean) {

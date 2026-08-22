@@ -77,6 +77,7 @@
                 <div v-for="sr in nodeDetail.source_refs" :key="sr.event_id" class="source-ref-row">
                   <span class="mono-text">{{ sr.event_id.slice(0, 16) }}…</span>
                   <n-tag size="tiny" :bordered="false" :type="sr.valid ? 'success' : 'error'">{{ sr.valid ? '有效' : '无效' }}</n-tag>
+                  <n-button size="tiny" quaternary type="info" :disabled="!sr.valid" @click="onJumpSourceEvent(sr.event_id)">查看源事件 ▸</n-button>
                 </div>
               </template>
 
@@ -374,6 +375,11 @@ function onDeleteNode() {
     positiveText: '确认删除', negativeText: '取消',
     onPositiveClick: doDeleteNode,
   })
+}
+
+/** 跳转源事件：dispatch dpim:focus-event → App 切到信息列表 tab → 事件详情定位 */
+function onJumpSourceEvent(eventId: string) {
+  window.dispatchEvent(new CustomEvent('dpim:focus-event', { detail: { event_id: eventId } }))
 }
 
 async function doClearGraph() {
