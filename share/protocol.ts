@@ -341,7 +341,7 @@ export interface CreateNodeResponse {
 export interface SearchRequest {
   query: string;
   source_filter?: SourceFilter;  // 默认 'all'
-  max_hops?: number;            // 默认 2
+  max_hops?: number;            // 默认 2；0 = 不扩散（事件原文/知识节点纯检索），1-5 = 扩散跳数（v1.18）
   limit?: number;               // 默认 20
   offset?: number;              // 默认 0
 }

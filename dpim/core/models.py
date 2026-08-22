@@ -282,8 +282,9 @@ class SearchRequest(BaseModel):
     query: str
     source_filter: str = "all"
     # 服务端范围约束（前端只约束 UI，直连 API 需 Pydantic 拦截）：
-    # max_hops 防全图遍历，limit/offset 防超大分页拖垮内存
-    max_hops: int = Field(default=2, ge=1, le=5)
+    # max_hops 防全图遍历（0 = 不扩散，事件原文/知识节点纯检索用；1-5 = 扩散跳数），
+    # limit/offset 防超大分页拖垮内存
+    max_hops: int = Field(default=2, ge=0, le=5)
     limit: int = Field(default=20, ge=1, le=100)
     offset: int = Field(default=0, ge=0, le=1_000_000)
 

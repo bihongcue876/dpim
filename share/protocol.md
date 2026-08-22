@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.17
+> 版本：1.18
 > 日期：2026-08-21
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改/节点压缩，POST /agent/maintain，23 端点）+ 安全加固（API Key 掩码 + 可选 API 访问认证 + 输入上限/值域约束 + 日志全文开关）+ 防冗余节点硬规则（redundant_node）+ 节点规模高水位自动维护（AGENT_MAINTAIN_MAX_NODES / COOLDOWN）+ 存储路径/日志级别 dpim.json 持久化 + 事件类型必填化（auto 移除）与类型修订（PUT /events 可改 event_type）+ source 类型管线跳过构图
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改/节点压缩，POST /agent/maintain，23 端点）+ 安全加固（API Key 掩码 + 可选 API 访问认证 + 输入上限/值域约束 + 日志全文开关）+ 防冗余节点硬规则（redundant_node）+ 节点规模高水位自动维护（AGENT_MAINTAIN_MAX_NODES / COOLDOWN）+ 存储路径/日志级别 dpim.json 持久化 + 事件类型必填化（auto 移除）与类型修订（PUT /events 可改 event_type）+ source 类型管线跳过构图 + max_hops 允许 0（纯检索不扩散）
 
 ---
 
@@ -491,7 +491,7 @@ content
 - `SettingsUpdateRequest` 值域约束（越界 422）：`agent_mode ∈ {disabled, pipeline}`、`log_level ∈ {DEBUG, INFO, WARNING, ERROR}`、数值字段范围与前端输入框一致（如 `max_graph_hops 1-5`、`rrf_k 1-200`、`jaccard_threshold 0-1` 等）；`memory_db_path` / `graph_json_path` 为可选字符串（v1.16），修改后持久化 dpim.json、重启生效（运行中句柄不切换，数据文件不自动迁移）。
 - `IngestRequest.content` / `ModifyEventRequest.content` 上限 **1,000,000 字符**（超限 422，防磁盘耗尽 DoS）。
 - `IngestRequest.event_type` **必填枚举**（v1.17）：`interaction / data / source`，缺省或非法值（含 `auto`）422。
-- `SearchRequest` 服务端范围约束（越界 422）：`max_hops 1-5`、`limit 1-100`、`offset ≥ 0`。
+- `SearchRequest` 服务端范围约束（越界 422）：`max_hops 0-5`（v1.18：0 = 不扩散，事件原文/知识节点纯检索用；1-5 = 图扩散跳数）、`limit 1-100`、`offset ≥ 0`。
 
 **事件内容修改请求（PUT /events/{event_id}，v1.17 扩展）：**
 
@@ -595,6 +595,7 @@ content
 > 2026-08-20：规约升级至 v1.15。节点压缩：图维护新增 compresses 操作（MaintenanceCompress），仅 data 节点可概括压缩——覆盖 content + 可选精炼 title + 补充 new_edges；source_refs 保留不动（溯源锚定不破坏）；system/interaction 永不压缩；候选扫描新增 compress_candidates（data 节点有效源证 ≥ 3 或内容 ≥ 500 字符）；Gr/Meta 提示词新增压缩决策与审查规则。事件压缩仍不实施（compressed 状态预留）。
 > 2026-08-20：规约升级至 v1.16。存储路径与日志级别持久化：① `SettingsUpdateRequest` 新增 `memory_db_path` / `graph_json_path` 字段（此前前端虽有输入框但请求被白名单静默丢弃，属缺陷修复）；② 读取链统一为 env → dpim.json（storage 段 / log_level 键）→ 内置默认，`save_dpim_config()` 持久化存储路径与日志级别，前端修改重启保留；③ 存储路径修改重启生效（运行中句柄不切换，数据文件不自动迁移）；④ `.env` 精简为部署级安全开关与临时覆盖，日常配置全部走 WebUI/dpim.json；⑤ 前端「主配置 API Key」行移除（primary 密钥经 .env 或 dpim.json 管理，providers 注册表保留卡片化编辑），Agent 四角色模型字段改下拉框（跟随使用模型/当前提供商模型列表）。⑥ 图扩散双向化：ego_graph 扩散改无向邻域（A→B 时命中 B 也能跳回 A，提升召回；方向语义保留在边数据与前端展示；溯源靠 source_refs 锚定不受影响）。
 > 2026-08-21：规约升级至 v1.17。事件类型治理：① `IngestRequest.event_type` 必填枚举化（interaction / data / source，缺省或 `auto` 均 422）——auto 模式移除（历史上 auto 仅静默落库为 interaction，并无 AI 分类，属名不副实的假模式）；② `PUT /events/{event_id}` 新增可选 `event_type` 修订（缺省保持不变；仅改线层，不联动已生成图节点，不改状态机）；③ 管线补 source 类型跳过：`_handle_ingest` 遇 source 停留 indexed 不调用 LLM 构图（补齐「source 仅存储不进图谱」宣称与实现间的缺口，此前 source 事件实际会被构图）。
+> 2026-08-21：规约升级至 v1.18。检索值域修正：`SearchRequest.max_hops` 下限 1 → 0（0 = 不扩散，事件原文/知识节点纯 FTS 检索用）——此前前端这两类检索传 `max_hops=0` 被 Pydantic `ge=1` 拦成 422（"Input should be greater than or equal to 1"），事件原文/知识节点检索完全不可用；`ego_graph(hops=0)`（radius=0 + center=False）本就返回空集，0 的语义即"不扩散只 FTS"。
 
 ---
 
