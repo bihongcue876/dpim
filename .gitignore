@@ -59,6 +59,9 @@ dpim/tests/.pytest_tmp_ws/
 docs/
 .workbuddy
 
+# 发布产物（可下载/可分发的已打包交付物，不入库）
+/release/
+
 # Agent 本地协作引导（仅本地使用，不入库）
 AGENTS.md
 
