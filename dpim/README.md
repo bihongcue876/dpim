@@ -1,5 +1,7 @@
 # DPIM — Double-Place Intelligence Memory
 
+> 由Deepseek v4 flash 0731编写于2026-8
+
 双区智能贮存：独立于 LLM 上下文窗口的外部记忆模块。
 
 ---

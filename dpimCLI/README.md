@@ -1,5 +1,7 @@
 # DPIM CLI
 
+> 由Deepseek v4 flash 0731编写于2026-8
+
 DPIM 命令行交互工具 — 通过 HTTP API 管理双区智能内存（事件线层 + 知识图谱层）。
 
 纯 REST 客户端，不含业务逻辑：所有数据操作均转发给 DPIM 后端服务（`dpim/interface/api.py`，23 端点）。适合脚本化批处理、状态观察、以及交给其他 AI Agent 作为只读/受控操作入口使用。
