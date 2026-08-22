@@ -1,0 +1,22 @@
+# 统一行尾：文本文件一律 LF，避免 Windows autocrlf=true 造成的 CRLF/LF 噪音差异
+# 注意：以下锁文件用 -text（不转换、保持入库字节），需放在 `*` 通配之前以免被覆盖
+*.lock -text
+*-lock.yaml -text
+package-lock.json -text
+
+# 二进制/生成文件不参与行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.pdf binary
+*.zip binary
+*.7z binary
+*.db binary
+
+# 其余文本统一 LF
+* text=auto eol=lf
