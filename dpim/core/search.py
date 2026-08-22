@@ -15,6 +15,31 @@ def _time_decay(event_type: str, days: float) -> float:
     return 1.0
 
 
+def retain_relevant_expansion(
+    graph_store: GraphStore, keys: dict[str, float], query: str
+) -> dict[str, float]:
+    """图扩散召回相关性过滤：仅保留 title/content 与查询切词有重叠的节点。
+
+    无向扩散会把「与种子相连但与查询无关」的节点（如搜「游戏」带出「八段锦」）
+    混入召回。此过滤把扩散结果限定在与查询有词面重叠的节点上，
+    显著降低无关噪声（用户诉求：尽量无关的不做）。
+    """
+    from core.text_utils import tokenize_query
+
+    tokens = [t for t in tokenize_query(query) if len(t) >= 2]
+    if not tokens:
+        return keys
+    out: dict[str, float] = {}
+    for k, v in keys.items():
+        node = graph_store.get_node(k)
+        if node is None:
+            continue
+        text = f"{node.title or ''} {node.content or ''}".lower()
+        if any(t.lower() in text for t in tokens):
+            out[k] = v
+    return out
+
+
 async def search(
     request: SearchRequest,
     event_store: EventStore,
@@ -73,9 +98,12 @@ async def search(
         paged = sorted_results[request.offset : request.offset + request.limit]
         return SearchResponse(results=paged, total=total, degraded=True)
 
-    # Step 2: Graph diffusion
+    # Step 2: Graph diffusion（扩散召回做相关性过滤：无向扩散会把与查询无关的邻居
+    # 如搜「游戏」带出「八段锦」混入结果，按查询词重叠过滤掉）
     seeds = [k for k in c1 if graph_store.get_node(k) is not None]
-    c2 = graph_store.ego_graph(seeds, hops=request.max_hops)
+    c2 = retain_relevant_expansion(
+        graph_store, graph_store.ego_graph(seeds, hops=request.max_hops), request.query
+    )
 
     # Step 3: RRF fusion（两路：FTS5 + 图扩散）
     k = settings.rrf_k
