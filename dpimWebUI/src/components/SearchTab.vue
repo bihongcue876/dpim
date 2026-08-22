@@ -179,12 +179,17 @@
       </template>
     </div>
 
-    <!-- 分页 -->
-    <div v-if="searched && totalPages > 1" class="pagination-bar">
-      <n-button size="tiny" @click="goToPage(currentPage - 1)" :disabled="currentPage <= 1">上一页</n-button>
-      <span class="page-num">{{ currentPage }} / {{ totalPages }}</span>
-      <n-button size="tiny" @click="goToPage(currentPage + 1)" :disabled="currentPage >= totalPages">下一页</n-button>
-    </div>
+    <!-- 分页：完整页码条（上一页/页码/下一页，page-slot 压缩长列表），固定在底部可见 -->
+    <n-pagination
+      v-if="searched && totalPages > 1"
+      v-model:page="currentPage"
+      :item-count="realTotal"
+      :page-size="resultLimit"
+      :page-slot="7"
+      size="small"
+      class="pagination-bar"
+      @update:page="goToPage"
+    />
 
     <!-- 空状态：仅在确实无结果时渲染——若无条件渲染，它会与 .search-results（同为 flex:1）
          平分剩余高度，导致结果区只占一半、下方留出空白（"结果未顶到底部"） -->
@@ -640,23 +645,14 @@ async function onFeedback(id: string, accepted: boolean) {
 .card-events { color: var(--dpim-text-3, #7c8694); font-size: 11px; cursor: help; border-bottom: 1px dotted var(--dpim-border-strong, rgba(255,255,255,0.16)); }
 .footer-actions { display: flex; align-items: center; gap: 6px; }
 
-/* 分页栏 */
+/* 分页栏：n-pagination 根元素，固定在底部居中 */
 .pagination-bar {
   flex-shrink: 0;
   display: flex;
-  align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: 10px 0 4px;
+  padding: 10px 0 6px;
   border-top: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
   margin-top: 8px;
-}
-.page-num {
-  font-size: 12px;
-  color: var(--dpim-text-3, #7c8694);
-  min-width: 50px;
-  text-align: center;
-  font-family: 'Cascadia Code', Consolas, monospace;
 }
 .page-indicator {
   color: var(--dpim-text-3, #7c8694);

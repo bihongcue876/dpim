@@ -28,6 +28,8 @@ vi.mock('@/api/client', () => ({
   postFeedback: vi.fn().mockResolvedValue(undefined),
 }))
 
+import * as api from '@/api/client'
+
 describe('SearchTab', () => {
   it('renders hybrid tab by default', () => {
     const wrapper = mount(SearchTab)
@@ -70,6 +72,28 @@ describe('SearchTab', () => {
         await new Promise(r => setTimeout(r, 100))
         expect(wrapper.text()).toContain('结果一')
         expect(wrapper.text()).toContain('结果二')
+      }
+    }
+  })
+
+  it('shows full pagination bar when total exceeds one page', async () => {
+    const wrapper = mount(SearchTab)
+    // total 44 条 / 每页 20 = 3 页：应显示完整页码条（可见所有页数，不会"看不见所有节点"）
+    ;(api.query as any).mockResolvedValueOnce({
+      results: [
+        { node_id: 'n1', title: '结果一', snippet: '内容', score: 0.5, source_type: 'interaction', confidence: 0.9, source_events: ['e1'], degraded: false },
+      ],
+      total: 44,
+      degraded: false,
+    })
+    const input = wrapper.find('input')
+    if (input) {
+      await input.setValue('测试')
+      const btn = wrapper.findAll('button').find(b => b.text().includes('搜索'))
+      if (btn) {
+        await btn.trigger('click')
+        await new Promise(r => setTimeout(r, 100))
+        expect(wrapper.find('.pagination-bar').exists()).toBe(true)
       }
     }
   })
