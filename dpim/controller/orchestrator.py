@@ -30,7 +30,7 @@ from core.event_store import EventStore
 from core.graph_store import GraphStore
 from core.llm import is_transient_error
 from core.models import QueueMessage, SearchRequest, SearchResponse, SearchResult
-from core.search import _build_results
+from core.search import _build_results, retain_relevant_expansion
 from core.state import ai_state
 
 logger = logging.getLogger(__name__)
@@ -212,6 +212,10 @@ class Orchestrator:
                 expanded = await tool_graph_expand(
                     self.graph_store, seeds, hops=request.max_hops
                 )
+                # 扩散召回相关性过滤：无向扩散会把与查询无关的邻居混入（搜「游戏」带出「八段锦」）
+                expanded = retain_relevant_expansion(
+                    self.graph_store, expanded, request.query
+                )
                 results = await _build_results(expanded, self.event_store, self.graph_store, {})
             else:
                 fts = await tool_direct_search(self.event_store, self.graph_store, request)
@@ -221,6 +225,8 @@ class Orchestrator:
                     c2 = await tool_graph_expand(
                         self.graph_store, seeds, hops=request.max_hops
                     )
+                    # 扩散召回相关性过滤（同 graph_query 分支）
+                    c2 = retain_relevant_expansion(self.graph_store, c2, request.query)
                     ranked = tool_rrf_merge(c1, c2)
                     results = await _build_results(
                         dict(ranked), self.event_store, self.graph_store, {}

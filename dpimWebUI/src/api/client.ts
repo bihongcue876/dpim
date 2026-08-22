@@ -179,12 +179,14 @@ export async function compensate(): Promise<{ message?: string }> {
 export async function listEvents(params: {
   status?: string
   type?: string
+  query?: string
   limit?: number
   offset?: number
 }): Promise<PaginatedResponse<EventListItem>> {
   const q = new URLSearchParams()
   if (params.status) q.set('status', params.status)
   if (params.type) q.set('type', params.type)
+  if (params.query) q.set('query', params.query)
   if (params.limit) q.set('limit', String(params.limit))
   if (params.offset) q.set('offset', String(params.offset))
   return req(`/events?${q}`)
@@ -240,11 +242,13 @@ export async function clearGraph(): Promise<void> {
 
 export async function listNodes(params: {
   type?: string
+  query?: string
   limit?: number
   offset?: number
 }): Promise<PaginatedResponse<NodeListItem>> {
   const q = new URLSearchParams()
   if (params.type) q.set('type', params.type)
+  if (params.query) q.set('query', params.query)
   if (params.limit) q.set('limit', String(params.limit))
   if (params.offset) q.set('offset', String(params.offset))
   return req(`/nodes?${q}`)

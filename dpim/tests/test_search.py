@@ -135,6 +135,48 @@ class TestSearchEdgeCases:
             assert len(resp_first.results) == 1
 
 
+class TestDiffusionRelevanceFilter:
+    """图扩散召回相关性过滤：无向扩散把与查询无关的邻居（如搜「游戏」带出「八段锦」）混入结果，
+    按查询词面重叠过滤剔除（用户诉求：尽量无关的不要做）。"""
+
+    @pytest.mark.asyncio
+    async def test_retain_relevant_expansion_drops_unrelated(self, populated_stores):
+        from core.search import retain_relevant_expansion
+
+        es, gs = populated_stores
+        n3 = GraphNode(
+            node_id="n3", title="八段锦健身", content="八段锦是一套传统健身功法",
+            node_type=NodeType.data,
+            source_refs=[SourceRef(event_id="e3x", valid=True, hash="h3")],
+            confidence=0.7, metadata=NodeMetadata(evidence_quote="八段锦"),
+        )
+        gs.add_node(n3)
+        gs.add_edge(GraphEdge(source="n1", target="n3", relation="related_to", evidence_event_id="e1"))
+        # n1 含「Python」保留；n2（Java）/ n3（八段锦）无词面重叠被剔除
+        kept = retain_relevant_expansion(gs, {"n1": 0.8, "n2": 0.5, "n3": 0.7}, "Python")
+        assert "n1" in kept
+        assert "n2" not in kept
+        assert "n3" not in kept
+
+    @pytest.mark.asyncio
+    async def test_search_drops_unrelated_diffusion(self, populated_stores):
+        es, gs = populated_stores
+        n3 = GraphNode(
+            node_id="n3", title="八段锦健身", content="八段锦是一套传统健身功法",
+            node_type=NodeType.data,
+            source_refs=[SourceRef(event_id="e3x", valid=True, hash="h3")],
+            confidence=0.7, metadata=NodeMetadata(evidence_quote="八段锦"),
+        )
+        gs.add_node(n3)
+        await gs.upsert_node_fts("n3", "八段锦健身", "八段锦是一套传统健身功法")
+        gs.add_edge(GraphEdge(source="n1", target="n3", relation="related_to", evidence_event_id="e1"))
+        req = SearchRequest(query="Python", max_hops=2)
+        resp = await search(req, es, gs, degraded=False)
+        titles = [r.title for r in resp.results]
+        assert any(t == "Python ML" for t in titles)
+        assert all("八段锦" not in t for t in titles)
+
+
 class TestSearchControlledVariables:
     """控制变量：RRF 融合、时间衰减、源过滤"""
 

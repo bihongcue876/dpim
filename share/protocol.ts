@@ -341,7 +341,7 @@ export interface CreateNodeResponse {
 export interface SearchRequest {
   query: string;
   source_filter?: SourceFilter;  // 默认 'all'
-  max_hops?: number;            // 默认 2
+  max_hops?: number;            // 默认 2；0 = 不扩散（事件原文/知识节点纯检索），1-5 = 扩散跳数（v1.18）
   limit?: number;               // 默认 20
   offset?: number;              // 默认 0
 }
@@ -454,7 +454,7 @@ export interface PaginatedResponse<T> {
   offset: number;
 }
 
-/** 事件列表摘要项 (GET /events) */
+/** 事件列表摘要项 (GET /events；v1.19 支持可选 query 关键词检索，可叠加 status/type 过滤) */
 export interface EventListItem {
   event_id: string;
   created_at: string;
@@ -466,7 +466,7 @@ export interface EventListItem {
 /** 事件详情 (GET /events/{event_id}) */
 export interface EventDetail extends Event {}
 
-/** 节点列表摘要项 (GET /nodes) */
+/** 节点列表摘要项 (GET /nodes；v1.19 支持可选 query 关键词检索，可叠加 type 过滤) */
 export interface NodeListItem {
   node_id: string;
   title: string;

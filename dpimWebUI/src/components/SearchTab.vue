@@ -143,7 +143,12 @@
             <div class="card-footer">
               <div class="footer-left">
                 <span class="card-conf">置信度 {{ (r.confidence || 0).toFixed(2) }}</span>
-                <span v-if="r.source_events && r.source_events.length" class="card-events" :title="r.source_events.join('\n')">源事件 {{ r.source_events.length }}</span>
+                <n-button
+                  v-if="r.source_events && r.source_events.length"
+                  size="tiny" quaternary type="info"
+                  :title="r.source_events.join('\n')"
+                  @click.stop="onJumpSourceEvent(r)"
+                >源事件 {{ r.source_events.length }} ▸</n-button>
               </div>
               <div class="footer-actions">
                 <n-button size="tiny" :type="feedbackState[r.node_id] === 'accepted' ? 'success' : 'default'" secondary :disabled="!!feedbackState[r.node_id]" @click.stop="onFeedback(r.node_id, true)">有用</n-button>
@@ -167,7 +172,12 @@
           <div class="card-footer">
             <div class="footer-left">
               <span class="card-conf">置信度 {{ (r.confidence || 0).toFixed(2) }}</span>
-              <span v-if="r.source_events && r.source_events.length" class="card-events" :title="r.source_events.join('\n')">源事件 {{ r.source_events.length }}</span>
+              <n-button
+                v-if="r.source_events && r.source_events.length"
+                size="tiny" quaternary type="info"
+                :title="r.source_events.join('\n')"
+                @click.stop="onJumpSourceEvent(r)"
+              >源事件 {{ r.source_events.length }} ▸</n-button>
             </div>
             <div class="footer-actions">
               <n-button size="tiny" :type="feedbackState[r.node_id] === 'accepted' ? 'success' : 'default'" secondary :disabled="!!feedbackState[r.node_id]" @click.stop="onFeedback(r.node_id, true)">有用</n-button>
@@ -179,15 +189,21 @@
       </template>
     </div>
 
-    <!-- 分页 -->
-    <div v-if="searched && totalPages > 1" class="pagination-bar">
-      <n-button size="tiny" @click="goToPage(currentPage - 1)" :disabled="currentPage <= 1">上一页</n-button>
-      <span class="page-num">{{ currentPage }} / {{ totalPages }}</span>
-      <n-button size="tiny" @click="goToPage(currentPage + 1)" :disabled="currentPage >= totalPages">下一页</n-button>
-    </div>
+    <!-- 分页：完整页码条（上一页/页码/下一页，page-slot 压缩长列表），固定在底部可见 -->
+    <n-pagination
+      v-if="searched && totalPages > 1"
+      v-model:page="currentPage"
+      :item-count="realTotal"
+      :page-size="resultLimit"
+      :page-slot="7"
+      size="small"
+      class="pagination-bar"
+      @update:page="goToPage"
+    />
 
-    <!-- 空状态 -->
-    <div class="empty-area" v-if="!loading">
+    <!-- 空状态：仅在确实无结果时渲染——若无条件渲染，它会与 .search-results（同为 flex:1）
+         平分剩余高度，导致结果区只占一半、下方留出空白（"结果未顶到底部"） -->
+    <div class="empty-area" v-if="!loading && results.length === 0">
       <n-empty v-if="searched && results.length === 0" description="无匹配结果" size="small">
         <template #extra>
           <n-button size="small" @click="clearResults">清除条件重试</n-button>
@@ -200,8 +216,9 @@
       </n-empty>
     </div>
 
-    <!-- 加载中 -->
-    <div v-if="loading" class="loading-area">
+    <!-- 加载中：仅首次搜索（无旧结果）时撑满居中；已有结果时结果区保持满高，
+         加载反馈由搜索按钮自身的 loading 承担，避免与结果区平分高度 -->
+    <div v-if="loading && results.length === 0" class="loading-area">
       <n-spin size="small" />
     </div>
   </div>
@@ -314,6 +331,37 @@ async function doSearch() {
   await fetchPage(1)
 }
 
+/** 事件 → 检索结果渲染结构（事件原文 / 浏览最近共用） */
+function toEventResult(ev: { event_id: string; raw_content: string; event_type: string }): SearchResult {
+  return {
+    node_id: ev.event_id,
+    title: ev.event_id,
+    snippet: ev.raw_content.slice(0, 200),
+    score: 0,
+    source_events: [ev.event_id],
+    source_type: ev.event_type,
+    confidence: 0.5,
+    degraded: false,
+  }
+}
+
+/** 节点 → 检索结果渲染结构（知识节点 / 浏览最近共用） */
+function toNodeResult(
+  n: { node_id: string; title: string; node_type: string; confidence?: number },
+  d: { content?: string; source_refs?: Array<{ event_id: string }> } | null,
+): SearchResult {
+  return {
+    node_id: n.node_id,
+    title: n.title,
+    snippet: d?.content?.slice(0, 200) || '',
+    score: 0,
+    source_events: d?.source_refs?.map(sr => sr.event_id) || [],
+    source_type: n.node_type,
+    confidence: n.confidence ?? 0.5,
+    degraded: false,
+  }
+}
+
 /** 根据页码加载数据（翻页或首次搜索共用） */
 async function fetchPage(page: number) {
   const seq = ++fetchSeq
@@ -322,40 +370,50 @@ async function fetchPage(page: number) {
 
   try {
     const limit = resultLimit.value
-    const params: {
-      query: string
-      limit: number
-      offset: number
-      source_filter?: string
-      max_hops?: number
-    } = {
-      query: query.value,
-      limit,
-      offset: (page - 1) * limit,
-    }
+    const offset = (page - 1) * limit
 
-    if (searchMode.value === 'hybrid') {
-      params.source_filter = sourceFilter.value
-      params.max_hops = maxHops.value
-    } else if (searchMode.value === 'events') {
-      params.source_filter = 'interaction'
-      params.max_hops = 0
+    if (searchMode.value === 'events') {
+      // 事件原文：直接检索事件表（GET /events?query，FTS 关键词），不再走混合检索过滤
+      const res = await api.listEvents({ query: query.value, limit, offset })
+      if (seq !== fetchSeq) return // 过期响应，丢弃
+      results.value = res.items.map(toEventResult)
+      realTotal.value = res.total
+    } else if (searchMode.value === 'nodes') {
+      // 知识节点：直接检索节点表（GET /nodes?query，FTS 关键词）
+      const res = await api.listNodes({ query: query.value, limit, offset })
+      if (seq !== fetchSeq) return
+      const detailPromises = res.items.map(n => api.getNode(n.node_id).catch(() => null))
+      const details = await Promise.all(detailPromises)
+      if (seq !== fetchSeq) return
+      results.value = res.items.map((n, i) => toNodeResult(n, details[i]))
+      realTotal.value = res.total
     } else {
-      params.source_filter = 'data'
-      params.max_hops = 0
-    }
+      // 综合检索：混合检索（FTS + 图扩散 RRF）
+      const params: {
+        query: string
+        limit: number
+        offset: number
+        source_filter?: string
+        max_hops?: number
+      } = {
+        query: query.value,
+        limit,
+        offset,
+        source_filter: sourceFilter.value,
+        max_hops: maxHops.value,
+      }
+      const res = await api.query(params)
+      if (seq !== fetchSeq) return
+      realTotal.value = res.total
+      degraded.value = res.degraded
 
-    const res = await api.query(params)
-    if (seq !== fetchSeq) return // 过期响应，丢弃
-    realTotal.value = res.total
-    degraded.value = res.degraded
-
-    // 客户端置信度过滤（仅影响当前页展示，不影响分页总数）
-    let filtered = res.results
-    if (minConfidence.value > 0) {
-      filtered = filtered.filter(r => (r.confidence || 0) >= minConfidence.value)
+      // 客户端置信度过滤（仅影响当前页展示，不影响分页总数）
+      let filtered = res.results
+      if (minConfidence.value > 0) {
+        filtered = filtered.filter(r => (r.confidence || 0) >= minConfidence.value)
+      }
+      results.value = filtered
     }
-    results.value = filtered
 
     // 清除旧反馈状态
     for (const key of Object.keys(feedbackState)) delete feedbackState[key]
@@ -398,16 +456,7 @@ async function browseRecent() {
     if (searchMode.value === 'events') {
       const res = await api.listEvents({ limit: resultLimit.value || 20 })
       if (seq !== fetchSeq) return // 过期响应，丢弃
-      results.value = res.items.map(ev => ({
-        node_id: ev.event_id,
-        title: ev.event_id,
-        snippet: ev.raw_content.slice(0, 200),
-        score: 0,
-        source_events: [ev.event_id],
-        source_type: ev.event_type,
-        confidence: 0.5,
-        degraded: false,
-      }))
+      results.value = res.items.map(toEventResult)
       realTotal.value = res.total
     } else {
       const res = await api.listNodes({ limit: resultLimit.value || 20 })
@@ -415,19 +464,7 @@ async function browseRecent() {
       const detailPromises = res.items.map(n => api.getNode(n.node_id).catch(() => null))
       const details = await Promise.all(detailPromises)
       if (seq !== fetchSeq) return // 过期响应，丢弃
-      results.value = res.items.map((n, i) => {
-        const d = details[i]
-        return {
-          node_id: n.node_id,
-          title: n.title,
-          snippet: d?.content?.slice(0, 200) || '',
-          score: 0,
-          source_events: d?.source_refs?.map(sr => sr.event_id) || [],
-          source_type: n.node_type,
-          confidence: n.confidence,
-          degraded: false,
-        }
-      })
+      results.value = res.items.map((n, i) => toNodeResult(n, details[i]))
       realTotal.value = res.total
     }
     searched.value = true
@@ -445,6 +482,13 @@ async function browseRecent() {
 function onViewNode(r: SearchResult) {
   localStorage.setItem('dpim_focus_node', r.node_id)
   window.dispatchEvent(new CustomEvent('dpim:focus-node', { detail: { nodeId: r.node_id } }))
+}
+
+/** 跳转源事件：dispatch dpim:focus-event → App 切到信息列表 tab → 事件详情定位 */
+function onJumpSourceEvent(r: SearchResult) {
+  const first = r.source_events?.[0]
+  if (!first) return
+  window.dispatchEvent(new CustomEvent('dpim:focus-event', { detail: { event_id: first } }))
 }
 
 async function onFeedback(id: string, accepted: boolean) {
@@ -618,23 +662,14 @@ async function onFeedback(id: string, accepted: boolean) {
 .card-events { color: var(--dpim-text-3, #7c8694); font-size: 11px; cursor: help; border-bottom: 1px dotted var(--dpim-border-strong, rgba(255,255,255,0.16)); }
 .footer-actions { display: flex; align-items: center; gap: 6px; }
 
-/* 分页栏 */
+/* 分页栏：n-pagination 根元素，固定在底部居中 */
 .pagination-bar {
   flex-shrink: 0;
   display: flex;
-  align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: 10px 0 4px;
+  padding: 10px 0 6px;
   border-top: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
   margin-top: 8px;
-}
-.page-num {
-  font-size: 12px;
-  color: var(--dpim-text-3, #7c8694);
-  min-width: 50px;
-  text-align: center;
-  font-family: 'Cascadia Code', Consolas, monospace;
 }
 .page-indicator {
   color: var(--dpim-text-3, #7c8694);

@@ -285,7 +285,8 @@ class TestInputLimits:
         assert resp.status_code == 422
 
     def test_query_max_hops_out_of_range(self, test_app):
-        assert test_app.post("/query", json={"query": "x", "max_hops": 0}).status_code == 422
+        # v1.18：max_hops 允许 0（= 不扩散，事件原文/知识节点纯检索）；上界仍 5
+        assert test_app.post("/query", json={"query": "x", "max_hops": 0}).status_code == 200
         assert test_app.post("/query", json={"query": "x", "max_hops": 6}).status_code == 422
         assert test_app.post("/query", json={"query": "x", "max_hops": 1000}).status_code == 422
 
