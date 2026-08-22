@@ -368,10 +368,33 @@ async def state_hash():
 async def list_events(
     status: str | None = None,
     type: str | None = None,
+    query: str | None = None,
     limit: int = 20,
     offset: int = 0,
 ):
     es, gs = _stores()
+    if query and query.strip():
+        # 关键词检索（v1.19）：直接走事件 FTS（含中文降级），再叠加 status/type 过滤与分页。
+        # 供检索页「事件原文」模式使用——不再经由 /query 的 source_filter 过滤（那会滤成图节点而非事件）
+        rows = await es.search_fts(query.strip(), limit=2000)
+        filtered = [
+            e for e in rows
+            if (status is None or e["status"] == status)
+            and (type is None or e["event_type"] == type)
+        ]
+        total = len(filtered)
+        sliced = filtered[offset : offset + min(limit, 100)]
+        items = [
+            EventListItem(
+                event_id=e["event_id"],
+                created_at=e["created_at"],
+                raw_content=e["raw_content"],
+                event_type=e["event_type"],
+                status=e["status"],
+            )
+            for e in sliced
+        ]
+        return EventListResponse(items=items, total=total, limit=limit, offset=offset)
     items, total = await es.list_events(
         status=status, event_type=type, limit=min(limit, 100), offset=offset,
     )
@@ -393,10 +416,34 @@ async def get_event(event_id: str):
 @app.get("/nodes", response_model=NodeListResponse)
 async def list_nodes(
     type: str | None = None,
+    query: str | None = None,
     limit: int = 20,
     offset: int = 0,
 ):
     es, gs = _stores()
+    if query and query.strip():
+        # 关键词检索（v1.19）：直接走节点 FTS（含中文降级），再叠加 type 过滤与分页。
+        # 供检索页「知识节点」模式使用——不再经由 /query 的 source_filter 过滤
+        rows = await gs.search_node_fts(query.strip(), limit=2000)
+        filtered: list[dict[str, Any]] = []
+        for row in rows:
+            node = gs.get_node(row["node_id"])
+            if node is None:
+                continue
+            if type is not None and node.node_type.value != type:
+                continue
+            filtered.append({
+                "node_id": node.node_id,
+                "title": node.title,
+                "node_type": node.node_type.value,
+                "confidence": node.confidence,
+            })
+        total = len(filtered)
+        sliced = filtered[offset:offset + min(limit, 100)]
+        return NodeListResponse(
+            items=[NodeListItem(**n) for n in sliced],
+            total=total, limit=limit, offset=offset,
+        )
     all_nodes = gs.list_nodes(node_type=type)
     total = len(all_nodes)
     sliced = all_nodes[offset:offset + limit]

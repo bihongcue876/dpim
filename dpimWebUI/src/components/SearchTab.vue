@@ -316,6 +316,37 @@ async function doSearch() {
   await fetchPage(1)
 }
 
+/** 事件 → 检索结果渲染结构（事件原文 / 浏览最近共用） */
+function toEventResult(ev: { event_id: string; raw_content: string; event_type: string }): SearchResult {
+  return {
+    node_id: ev.event_id,
+    title: ev.event_id,
+    snippet: ev.raw_content.slice(0, 200),
+    score: 0,
+    source_events: [ev.event_id],
+    source_type: ev.event_type,
+    confidence: 0.5,
+    degraded: false,
+  }
+}
+
+/** 节点 → 检索结果渲染结构（知识节点 / 浏览最近共用） */
+function toNodeResult(
+  n: { node_id: string; title: string; node_type: string; confidence?: number },
+  d: { content?: string; source_refs?: Array<{ event_id: string }> } | null,
+): SearchResult {
+  return {
+    node_id: n.node_id,
+    title: n.title,
+    snippet: d?.content?.slice(0, 200) || '',
+    score: 0,
+    source_events: d?.source_refs?.map(sr => sr.event_id) || [],
+    source_type: n.node_type,
+    confidence: n.confidence ?? 0.5,
+    degraded: false,
+  }
+}
+
 /** 根据页码加载数据（翻页或首次搜索共用） */
 async function fetchPage(page: number) {
   const seq = ++fetchSeq
@@ -324,40 +355,50 @@ async function fetchPage(page: number) {
 
   try {
     const limit = resultLimit.value
-    const params: {
-      query: string
-      limit: number
-      offset: number
-      source_filter?: string
-      max_hops?: number
-    } = {
-      query: query.value,
-      limit,
-      offset: (page - 1) * limit,
-    }
+    const offset = (page - 1) * limit
 
-    if (searchMode.value === 'hybrid') {
-      params.source_filter = sourceFilter.value
-      params.max_hops = maxHops.value
-    } else if (searchMode.value === 'events') {
-      params.source_filter = 'interaction'
-      params.max_hops = 0
+    if (searchMode.value === 'events') {
+      // 事件原文：直接检索事件表（GET /events?query，FTS 关键词），不再走混合检索过滤
+      const res = await api.listEvents({ query: query.value, limit, offset })
+      if (seq !== fetchSeq) return // 过期响应，丢弃
+      results.value = res.items.map(toEventResult)
+      realTotal.value = res.total
+    } else if (searchMode.value === 'nodes') {
+      // 知识节点：直接检索节点表（GET /nodes?query，FTS 关键词）
+      const res = await api.listNodes({ query: query.value, limit, offset })
+      if (seq !== fetchSeq) return
+      const detailPromises = res.items.map(n => api.getNode(n.node_id).catch(() => null))
+      const details = await Promise.all(detailPromises)
+      if (seq !== fetchSeq) return
+      results.value = res.items.map((n, i) => toNodeResult(n, details[i]))
+      realTotal.value = res.total
     } else {
-      params.source_filter = 'data'
-      params.max_hops = 0
-    }
+      // 综合检索：混合检索（FTS + 图扩散 RRF）
+      const params: {
+        query: string
+        limit: number
+        offset: number
+        source_filter?: string
+        max_hops?: number
+      } = {
+        query: query.value,
+        limit,
+        offset,
+        source_filter: sourceFilter.value,
+        max_hops: maxHops.value,
+      }
+      const res = await api.query(params)
+      if (seq !== fetchSeq) return
+      realTotal.value = res.total
+      degraded.value = res.degraded
 
-    const res = await api.query(params)
-    if (seq !== fetchSeq) return // 过期响应，丢弃
-    realTotal.value = res.total
-    degraded.value = res.degraded
-
-    // 客户端置信度过滤（仅影响当前页展示，不影响分页总数）
-    let filtered = res.results
-    if (minConfidence.value > 0) {
-      filtered = filtered.filter(r => (r.confidence || 0) >= minConfidence.value)
+      // 客户端置信度过滤（仅影响当前页展示，不影响分页总数）
+      let filtered = res.results
+      if (minConfidence.value > 0) {
+        filtered = filtered.filter(r => (r.confidence || 0) >= minConfidence.value)
+      }
+      results.value = filtered
     }
-    results.value = filtered
 
     // 清除旧反馈状态
     for (const key of Object.keys(feedbackState)) delete feedbackState[key]
@@ -400,16 +441,7 @@ async function browseRecent() {
     if (searchMode.value === 'events') {
       const res = await api.listEvents({ limit: resultLimit.value || 20 })
       if (seq !== fetchSeq) return // 过期响应，丢弃
-      results.value = res.items.map(ev => ({
-        node_id: ev.event_id,
-        title: ev.event_id,
-        snippet: ev.raw_content.slice(0, 200),
-        score: 0,
-        source_events: [ev.event_id],
-        source_type: ev.event_type,
-        confidence: 0.5,
-        degraded: false,
-      }))
+      results.value = res.items.map(toEventResult)
       realTotal.value = res.total
     } else {
       const res = await api.listNodes({ limit: resultLimit.value || 20 })
@@ -417,19 +449,7 @@ async function browseRecent() {
       const detailPromises = res.items.map(n => api.getNode(n.node_id).catch(() => null))
       const details = await Promise.all(detailPromises)
       if (seq !== fetchSeq) return // 过期响应，丢弃
-      results.value = res.items.map((n, i) => {
-        const d = details[i]
-        return {
-          node_id: n.node_id,
-          title: n.title,
-          snippet: d?.content?.slice(0, 200) || '',
-          score: 0,
-          source_events: d?.source_refs?.map(sr => sr.event_id) || [],
-          source_type: n.node_type,
-          confidence: n.confidence,
-          degraded: false,
-        }
-      })
+      results.value = res.items.map((n, i) => toNodeResult(n, details[i]))
       realTotal.value = res.total
     }
     searched.value = true

@@ -209,6 +209,54 @@ class TestCreateNodeEndpoint:
         assert resp.status_code == 422  # Pydantic Field(max_length=60)
 
 
+class TestListSearchEndpoint:
+    """GET /events?query 与 GET /nodes?query 关键词检索（v1.19）"""
+
+    def test_events_query_finds(self, test_app):
+        test_app.post("/ingest", json={
+            "event_type": "interaction", "content": "关键词检索专有测试短语",
+        })
+        resp = test_app.get("/events", params={"query": "专有测试短语"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] >= 1
+        assert any("专有测试短语" in e["raw_content"] for e in data["items"])
+
+    def test_events_query_with_type_filter(self, test_app):
+        test_app.post("/ingest", json={
+            "event_type": "data", "content": "分类过滤关键词检索事件",
+        })
+        resp = test_app.get("/events", params={"query": "分类过滤", "type": "data"})
+        assert resp.status_code == 200
+        assert resp.json()["total"] >= 1
+        resp2 = test_app.get("/events", params={"query": "分类过滤", "type": "interaction"})
+        assert resp2.json()["total"] == 0
+
+    def test_events_query_no_hit(self, test_app):
+        resp = test_app.get("/events", params={"query": "zzz_nonexistent_keyword_yyy"})
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+    def test_nodes_query_finds(self, test_app):
+        test_app.post("/nodes", json={"title": "节点关键词检索目标", "content": "node searchable marker"})
+        resp = test_app.get("/nodes", params={"query": "node searchable marker"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] >= 1
+        assert any(n["title"] == "节点关键词检索目标" for n in data["items"])
+
+    def test_nodes_query_with_type_filter(self, test_app):
+        resp = test_app.get("/nodes", params={"query": "node searchable marker", "type": "system"})
+        assert resp.status_code == 200
+        # 目标节点是 data 类型，system 过滤后应为 0
+        assert resp.json()["total"] == 0
+
+    def test_nodes_query_no_hit(self, test_app):
+        resp = test_app.get("/nodes", params={"query": "zzz_nonexistent_keyword_yyy"})
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+
 class TestClearGraphEndpoint:
     """DELETE /graph 清空图数据"""
 
