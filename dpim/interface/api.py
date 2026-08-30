@@ -234,6 +234,10 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
                 "isolated_nodes": [
                     c for c in candidates["isolated_nodes"] if c["node_id"] == scope
                 ],
+                "link_candidates": [
+                    c for c in candidates.get("link_candidates", [])
+                    if scope in (c["node_a"], c["node_b"])
+                ],
             }
         n_merge = len(candidates["merge_candidates"])
         n_zombie = len(candidates["zombie_nodes"])
@@ -241,11 +245,12 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
         n_compress = len(candidates["compress_candidates"])
         n_oversplit = len(candidates["oversplit_events"])
         n_isolated = len(candidates["isolated_nodes"])
-        if not any([n_merge, n_zombie, n_lowconf, n_compress, n_oversplit, n_isolated]):
+        n_link = len(candidates.get("link_candidates", []))
+        if not any([n_merge, n_zombie, n_lowconf, n_compress, n_oversplit, n_isolated, n_link]):
             scope_note = f"节点 {scope}" if scope else "全图"
             return _command_response(
                 f"无需压缩：{scope_note}扫描未发现候选"
-                "（无重合节点对 / 僵尸节点 / 冗长内容 / 过碎事件 / 孤立节点）——已足够简练"
+                "（无重合节点对 / 僵尸节点 / 冗长内容 / 过碎事件 / 待连线对）——已足够简练"
             )
         await orchestrator.enqueue(
             QueueMessage(
@@ -257,15 +262,15 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
         refresh_key()
         logger.info(
             "Command compress (scope=%s) -> maintain_graph "
-            "(merge=%d zombie=%d lowconf=%d compress=%d oversplit=%d isolated=%d)",
+            "(merge=%d zombie=%d lowconf=%d compress=%d oversplit=%d isolated=%d link=%d)",
             scope or "*", n_merge, n_zombie, n_lowconf, n_compress, n_oversplit,
-            n_isolated,
+            n_isolated, n_link,
         )
         scope_note = f"（限定节点 {scope}）" if scope else ""
         return _command_response(
             f"压缩指令已入队{scope_note}：发现候选（重合对 {n_merge} / "
             f"僵尸 {n_zombie} / 孤立低置信 {n_lowconf} / 冗长可压缩 {n_compress} / "
-            f"同源过碎 {n_oversplit} / 孤立待连线 {n_isolated}），"
+            f"同源过碎 {n_oversplit} / 孤立待连线 {n_isolated} / 待连线对 {n_link}），"
             "Gr 计划 → Meta 审核 → 执行稍后完成，结果见图页与日志"
         )
 
@@ -303,17 +308,22 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
                 "isolated_nodes": [
                     c for c in candidates["isolated_nodes"] if c["node_id"] == cmd.scope
                 ],
+                "link_candidates": [
+                    c for c in candidates.get("link_candidates", [])
+                    if cmd.scope in (c["node_a"], c["node_b"])
+                ],
             }
         n_merge = len(candidates["merge_candidates"])
         n_zombie = len(candidates["zombie_nodes"])
         n_lowconf = len(candidates["low_conf_isolated"])
         n_oversplit = len(candidates["oversplit_events"])
         n_isolated = len(candidates["isolated_nodes"])
-        if not any([n_merge, n_zombie, n_lowconf, n_oversplit, n_isolated]):
+        n_link = len(candidates.get("link_candidates", []))
+        if not any([n_merge, n_zombie, n_lowconf, n_oversplit, n_isolated, n_link]):
             scope_note = f"节点 {cmd.scope}" if cmd.scope else "全图"
             return _command_response(
                 f"无需优化：{scope_note}扫描未发现结构优化候选"
-                "（无冗余对 / 过碎事件 / 僵尸 / 孤立节点）——图结构已良好"
+                "（无冗余对 / 过碎事件 / 僵尸 / 孤立节点 / 待连线对）——图结构已良好"
             )
         await orchestrator.enqueue(
             QueueMessage(
@@ -326,15 +336,16 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
         refresh_key()
         logger.info(
             "Command update (scope=%s) -> maintain_graph update "
-            "(merge=%d zombie=%d lowconf=%d oversplit=%d isolated=%d)",
+            "(merge=%d zombie=%d lowconf=%d oversplit=%d isolated=%d link=%d)",
             cmd.scope or "*", n_merge, n_zombie, n_lowconf, n_oversplit, n_isolated,
+            n_link,
         )
         scope_note = f"（限定节点 {cmd.scope}）" if cmd.scope else ""
         return _command_response(
             f"优化指令已入队{scope_note}（两阶段）："
             f"减碎（重合对 {n_merge} / 同源过碎 {n_oversplit} / 僵尸 {n_zombie} / "
-            f"低置信 {n_lowconf}，可补缺失要点）→ 连线（孤立待连 {n_isolated}）；"
-            "执行稍后完成，结果见图页与日志"
+            f"低置信 {n_lowconf}，可补缺失要点）→ 连线（孤立待连 {n_isolated} / "
+            f"待连线对 {n_link}）；执行稍后完成，结果见图页与日志"
         )
 
     # ── 确定层：合并 / 删除 / 建系统节点（无 LLM，同步执行）──

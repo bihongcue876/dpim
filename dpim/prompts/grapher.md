@@ -63,6 +63,8 @@
   event_id + 节点清单（node_id/title/node_type/snippet）
 - candidates.isolated_nodes：孤立节点（无任何边、有有效源证、置信度 ≥0.4）——
   node_id/title/node_type/snippet
+- candidates.link_candidates：待连线对（词面相关但之间无边的节点对）——
+  node_a/node_b/title_a/title_b/type_a/type_b/overlap
 - candidates.total_nodes：图规模
 - candidates.size_pressure：规模压力（总节点数是否达到高水位，true=资料库太过庞大）
 
@@ -87,11 +89,14 @@
 4. 修改（updates）：仅当现有内容有明显错误/过时且你确定修正不引入新论断；
    修改内容必须仍能被其源证事件支撑（证据锚定精神）。
 5. 删边（edge_removes）：仅明显错误的边（关系与内容矛盾）。
-6. 补边（edge_adds，治「图不连通」）：对 isolated_nodes 中的孤立节点，
-   若你能从其 title/content 判断它与某个已有节点语义相关 → 用 edge_adds
-   补一条边连回图里（source/target 必须是已有 node_id，relation 用简短
-   动词短语如 related_to / subtopic_of / extends，并给 reason）。
-   判断不了相关性就不要硬连——宁可保持孤立，严禁凭空想象关系。
+6. 补边（edge_adds，治「图不连通」）：两类来源——
+   a) isolated_nodes 中的孤立节点：从其 title/content 判断与某已有节点语义
+      相关 → 补一条边连回图；
+   b) link_candidates 中的待连线对（词面相关但之间无边的节点对）：若语义上
+      确实存在关系（一方从属/支撑/延伸/对比另一方）→ 补一条边。
+   source/target 必须是已有 node_id，relation 用简短动词短语
+   （related_to / subtopic_of / extends 等），每条给 reason。
+   语义关系不明确就不要硬连——宁可保持现状，严禁凭空想象关系。
 7. 压缩（compresses）：仅 compress_candidates 中的 data 节点可概括压缩——
    把冗长/碎片化 content 概括为精炼表述（不得引入新论断、不得丢失关键语义，
    概括后仍须被其源证事件支撑，概括内容不得比原内容更长）；可同时精炼

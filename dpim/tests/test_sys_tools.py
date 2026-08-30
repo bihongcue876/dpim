@@ -794,6 +794,37 @@ class TestCompressMaintenance:
         assert any(x["node_id"] == "low1" for x in c["low_conf_isolated"])
 
     @pytest.mark.asyncio
+    async def test_link_candidates_flagged(self, graph_store):
+        """待连线对（v1.25）：词面相关但未连边 → link_candidates；
+        已连边的不进；高重合同类型对归 merge_candidates 不重复进 link。"""
+        from tests.factories import make_edge, make_node
+        # a-b：共享「游戏」词，overlap 0.5（同类型 <0.6）→ link
+        await make_node(graph_store, "a", "玩法", "游戏 玩法", event_id="e1")
+        await make_node(graph_store, "b", "平台", "游戏 平台", event_id="e2")
+        # c-d：几乎相同内容 → merge 候选，不进 link
+        await make_node(graph_store, "c", "游戏评测", "游戏 评测", event_id="e3")
+        await make_node(graph_store, "d", "游戏评测二", "游戏 评测", event_id="e4")
+        # e-f：相关但已连边 → 不进 link
+        await make_node(graph_store, "e", "剧情", "游戏 剧情", event_id="e5")
+        await make_node(graph_store, "f", "结局", "游戏 结局", event_id="e6")
+        await make_edge(graph_store, "e", "f", event_id="e5")
+        c = scan_maintenance_candidates(graph_store)
+        link_pairs = {(x["node_a"], x["node_b"]) for x in c["link_candidates"]}
+        assert ("a", "b") in link_pairs or ("b", "a") in link_pairs
+        # c-d 重合 ≥0.85 → merge 候选，不在 link 中
+        assert not any(
+            {"c", "d"} <= {x["node_a"], x["node_b"]} for x in c["link_candidates"]
+        )
+        assert any(
+            {"c", "d"} <= {m["target_id"], m["source_id"]}
+            for m in c["merge_candidates"]
+        )
+        # e-f 已连边 → 不进 link
+        assert not any(
+            {"e", "f"} <= {x["node_a"], x["node_b"]} for x in c["link_candidates"]
+        )
+
+    @pytest.mark.asyncio
     async def test_compress_candidate_excludes_system_interaction(self, graph_store):
         """system / interaction 节点（即使冗长）不进压缩候选。"""
         from tests.factories import make_node

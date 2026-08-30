@@ -354,6 +354,7 @@ class Orchestrator:
             candidates.get("compress_candidates"),
             candidates.get("oversplit_events"),
             candidates.get("isolated_nodes"),
+            candidates.get("link_candidates"),
         ])
 
     @staticmethod
@@ -381,6 +382,10 @@ class Orchestrator:
             "isolated_nodes": [
                 c for c in candidates["isolated_nodes"] if c["node_id"] == scope
             ],
+            "link_candidates": [
+                c for c in candidates.get("link_candidates", [])
+                if scope in (c["node_a"], c["node_b"])
+            ],
             "total_nodes": candidates["total_nodes"],
             # 保留规模压力标记：合并底线硬规则依赖它判断是否放宽
             "size_pressure": candidates.get("size_pressure", False),
@@ -395,6 +400,11 @@ class Orchestrator:
         p1 = {k: list(candidates.get(k, [])) for k in reduce_keys}
         p1["total_nodes"] = candidates.get("total_nodes")
         p1["size_pressure"] = candidates.get("size_pressure", False)
+        # 过碎事件注入原文摘录：node_adds 的 evidence_quote 必须引自真实原文
+        for o in p1["oversplit_events"]:
+            if "event_content" not in o:
+                ev = await self.event_store.get(o["event_id"])
+                o["event_content"] = (ev["raw_content"][:1500] if ev else "")
         if any(p1[k] for k in reduce_keys):
             await self._maintenance_phase(
                 p1, mode_task="update_reduce",
@@ -402,15 +412,18 @@ class Orchestrator:
             )
         else:
             logger.info("Update round phase1: no reduce candidates")
-        # Phase 2 连线：在 Phase 1 执行后的新图上重新扫描孤立节点——
-        # 端点保证真实存在（先连线后减碎会让新边指向被合并掉的节点）
+        # Phase 2 连线：在 Phase 1 执行后的新图上重新扫描——
+        # 孤立节点 + 待连线对（相关但未连边）；端点保证真实存在
+        #（先连线后减碎会让新边指向被合并掉的节点）
         candidates2 = scan_maintenance_candidates(self.graph_store)
         if scope:
             candidates2 = self._scope_candidates(candidates2, scope)
         iso = candidates2.get("isolated_nodes", [])
-        if iso:
+        links = candidates2.get("link_candidates", [])
+        if iso or links:
             p2 = {
                 "isolated_nodes": iso,
+                "link_candidates": links,
                 "total_nodes": candidates2.get("total_nodes"),
                 "size_pressure": candidates2.get("size_pressure", False),
             }
@@ -418,7 +431,7 @@ class Orchestrator:
                 p2, mode_task="update_connect", allowed={"edge_adds"},
             )
         else:
-            logger.info("Update round phase2: no isolated nodes to connect")
+            logger.info("Update round phase2: no isolated nodes or link pairs")
 
     async def _maintenance_phase(
         self,

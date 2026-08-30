@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.24 (对话指令系统（^compress ^update ^merge ^delete ^data ^interaction ^source ^node ^help）+ 同源聚合治碎 + 节点语义与源证管理 + 连通性治理（edge_adds/title 解析修复）+ ^update 两阶段结构优化（node_adds 补缺失要点）；23 端点)
+// 版本 1.25 (对话指令（^compress ^update ^merge ^delete ^data ^interaction ^source ^node ^help）+ 同源聚合 + 节点语义与源证管理 + 连通性治理 + ^update 两阶段优化 + 待连线对候选 link_candidates；23 端点)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================

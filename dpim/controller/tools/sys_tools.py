@@ -370,6 +370,9 @@ _COMPRESS_FLOOR_CONTENT = 200
 _OVERSPLIT_MIN_NODES = 6
 # 过碎候选列出的节点清单上限（防超大事件撑爆 Gr 上下文）
 _OVERSPLIT_NODE_CAP = 15
+# 待连线对（v1.25）：未连边的节点对，词重叠达到该阈值即认为「可能存在合理关系」，
+# 交 Gr 判断是否补边——治「图不连通」的主力候选（孤立节点只是其特例）
+_LINK_MIN_OVERLAP = 0.35
 
 
 def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
@@ -385,6 +388,8 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
      （同源聚合粗化用；源证相同的节点对可豁免合并底线，见硬规则）
     - isolated_nodes：无任何边的孤立节点（置信度 ≥ 0.4 且有有效源证）——
       供 Gr 用 edge_adds 连回相关节点（治「图不连通」）
+    - link_candidates：未连边的相关节点对（词重叠 ≥ _LINK_MIN_OVERLAP，任意
+      类型组合，双方非 system 且之间无边）——Gr 判断存在合理关系则补边
     - size_pressure：总节点数 ≥ 高水位（规模压力下才允许放宽合并）
     """
     from core.text_utils import tokenize_query
@@ -401,6 +406,7 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
 
     seen: set[tuple[str, str]] = set()
     merge_candidates: list[dict] = []
+    link_candidates: list[dict] = []
     for nid, toks in token_sets.items():
         if not toks:
             continue
@@ -418,13 +424,14 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
                 continue
             seen.add(key)
             pnode = graph_store.get_node(pid)
-            if pnode is None or pnode.node_type != node.node_type:
-                continue  # 仅同类型可合并
+            if pnode is None:
+                continue
             ptoks = token_sets.get(pid, set())
             if not ptoks:
                 continue
             overlap = len(toks & ptoks) / min(len(toks), len(ptoks))
-            if overlap >= _MAINTENANCE_OVERLAP:
+            same_type = pnode.node_type == node.node_type
+            if same_type and overlap >= _MAINTENANCE_OVERLAP:
                 # 内容更完整者作 target
                 if len(node.content) >= len(pnode.content):
                     target_id, source_id = nid, pid
@@ -436,6 +443,25 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
                     "overlap": round(overlap, 3),
                     "target_title": graph_store.get_node(target_id).title,
                     "source_title": graph_store.get_node(source_id).title,
+                })
+            elif (
+                overlap >= _LINK_MIN_OVERLAP
+                and node.node_type.value != "system"
+                and pnode.node_type.value != "system"
+                and not graph_store.graph.has_edge(nid, pid)
+                and not graph_store.graph.has_edge(pid, nid)
+            ):
+                # 待连线对（v1.25）：词面相关但未连边——交 Gr 判断是否存在
+                # 合理关系（related_to / subtopic_of 等）；跨类型或同类型
+                # 低重合（不足合并阈值）均可，是治「图不连通」的主力候选
+                link_candidates.append({
+                    "node_a": nid,
+                    "node_b": pid,
+                    "title_a": node.title,
+                    "title_b": pnode.title,
+                    "type_a": node.node_type.value,
+                    "type_b": pnode.node_type.value,
+                    "overlap": round(overlap, 3),
                 })
 
     zombie_nodes: list[dict] = []
@@ -526,6 +552,10 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
             "node_type": ndata.node_type.value,
             "confidence": ndata.confidence,
             "snippet": (ndata.content or "")[:100],
+            # 首条有效源证事件（补节点/补边锚定用）
+            "event_id": next(
+                (sr.event_id for sr in ndata.source_refs if sr.valid), ""
+            ),
         })
 
     return {
@@ -535,6 +565,7 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
         "compress_candidates": compress_candidates[:_MAINTENANCE_CANDIDATE_CAP],
         "oversplit_events": oversplit_events[:_MAINTENANCE_CANDIDATE_CAP],
         "isolated_nodes": isolated_nodes[:_MAINTENANCE_CANDIDATE_CAP],
+        "link_candidates": link_candidates[:_MAINTENANCE_CANDIDATE_CAP],
         "total_nodes": graph_store.total_nodes(),
         # 规模压力：总节点数达到高水位（资料库太过庞大）→ 允许放宽合并调节；
         # 未达高水位时仅近似等价（重合 ≥ jaccard_threshold）可合并（硬规则见下）
