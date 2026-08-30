@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.22 (对话指令系统（仅 ^英文动词）+ 同源聚合治碎 + 节点语义（一节点一要点/多事件关联/子节点）+ PUT /nodes 源事件增删（最少 1 条有效源证）；23 端点)
+// 版本 1.24 (对话指令系统（^compress ^update ^merge ^delete ^data ^interaction ^source ^node ^help）+ 同源聚合治碎 + 节点语义与源证管理 + 连通性治理（edge_adds/title 解析修复）+ ^update 两阶段结构优化（node_adds 补缺失要点）；23 端点)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -183,6 +183,17 @@ export interface MaintenanceEdgeAdd {
   reason?: string;
 }
 
+/** v1.24：update 模式补缺失要点（锚定已有事件，quote 为原文连续子串） */
+export interface MaintenanceNodeAdd {
+  title: string;          // ≤60 字符
+  content: string;
+  node_type: 'interaction' | 'data';  // system 禁止
+  event_id: string;       // 锚定的已有事件
+  evidence_quote: string; // 事件原文连续子串（本地硬校验）
+  parent_node_id?: string; // 可选：挂为该节点子节点（subtopic_of 边）
+  reason?: string;
+}
+
 /** 维护压缩：仅 data 节点概括覆盖 content + 可选精炼 title + 可选补边 */
 export interface MaintenanceCompress {
   node_id: string;
@@ -198,6 +209,8 @@ export interface GraphMaintenancePlan {
   deletes: MaintenanceDelete[];
   updates: MaintenanceUpdate[];
   edge_removes: MaintenanceEdgeRemove[];
+  edge_adds?: MaintenanceEdgeAdd[];   // v1.23：把孤立节点连回图
+  node_adds?: MaintenanceNodeAdd[];   // v1.24：update 模式补缺失要点
   compresses: MaintenanceCompress[];
   confidence: number;
 }

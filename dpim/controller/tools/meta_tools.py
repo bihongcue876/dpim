@@ -79,17 +79,25 @@ async def tool_meta_review_search(
 
 
 async def tool_meta_review_maintenance(
-    graph_store: Any, plan: Any, candidates: dict, feedback: str = ""
+    graph_store: Any,
+    plan: Any,
+    candidates: dict,
+    feedback: str = "",
+    event_content_map: dict[str, str] | None = None,
 ) -> MetaCogVerdict:
     """审核图维护计划（任务三 review_maintenance）。
 
     本地硬规则（类型边界/存在性/删除保护）先行，通过后调 LLM 做语义复核
     （合并是否真重合、删除是否过度、修改是否违背证据）。LLM 复核失败不阻塞
     （本地已把关），按通过处理。
+    event_content_map（v1.24）：补节点（node_adds）锚定事件的原文映射，
+    供 evidence_quote 子串硬校验；None 时跳过该规则（无 node_adds 场景）。
     """
     from .sys_tools import run_maintenance_local_checks
 
-    local_issues = run_maintenance_local_checks(graph_store, plan, candidates)
+    local_issues = run_maintenance_local_checks(
+        graph_store, plan, candidates, event_content_map=event_content_map
+    )
     if local_issues:
         return empty_verdict(local_issues)
 

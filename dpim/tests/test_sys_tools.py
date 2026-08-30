@@ -4,6 +4,7 @@ import pytest
 
 from controller.tools import tool_apply_to_store, tool_graph_query
 from controller.tools.sys_tools import (
+    filter_plan_channels,
     find_redundant_node,
     run_local_checks,
     run_maintenance_local_checks,
@@ -563,6 +564,121 @@ class TestApplyMaintenance:
         assert edge is not None
         assert edge.relation == "related_to"
         assert edge.evidence_event_id == "e1"  # source 节点首条有效源证
+
+
+class TestPlanChannelFilter:
+    """阶段通道过滤（v1.24）：防 Gr 越界输出不属于当前维护阶段的通道。"""
+
+    def test_filter_drops_disallowed_channels(self):
+        from core.models import (
+            GraphMaintenancePlan,
+            MaintenanceCompress,
+            MaintenanceDelete,
+            MaintenanceMerge,
+            MaintenanceNodeAdd,
+        )
+        plan = GraphMaintenancePlan(
+            merges=[MaintenanceMerge(target_id="t", source_ids=["s"], reason="x")],
+            deletes=[MaintenanceDelete(node_id="d", reason="x")],
+            edge_adds=[],
+            node_adds=[MaintenanceNodeAdd(
+                title="补点", content="内容", node_type=NodeType.data,
+                event_id="e1", evidence_quote="q", reason="x",
+            )],
+            compresses=[MaintenanceCompress(node_id="c", content="概括", reason="x")],
+            confidence=0.9,
+        )
+        filtered = filter_plan_channels(
+            plan, {"merges", "deletes", "edge_removes", "node_adds"}
+        )
+        assert filtered.merges and filtered.node_adds
+        assert not filtered.compresses and not filtered.edge_adds
+        assert not filtered.updates
+        # allowed=None 不过滤（compress 全通道）
+        assert filter_plan_channels(plan, None) is plan
+
+
+class TestNodeAddMaintenance:
+    """补缺失要点（v1.24，update 模式）：锚定已有事件，quote 子串硬校验。"""
+
+    @pytest.mark.asyncio
+    async def test_node_add_local_checks(self, event_store, graph_store):
+        eid, _ = await event_store.insert("八段锦讲呼吸与动作要领", "data")
+        from core.models import GraphMaintenancePlan, MaintenanceNodeAdd
+        from tests.factories import make_node
+        await make_node(graph_store, "hub", "八段锦主题", "内容", event_id="e9")
+        plan = GraphMaintenancePlan(
+            node_adds=[
+                # 合法：quote 是原文子串 + 父节点存在
+                MaintenanceNodeAdd(
+                    title="呼吸要领", content="八段锦呼吸要领内容",
+                    node_type=NodeType.data, event_id=eid,
+                    evidence_quote="八段锦讲呼吸", parent_node_id="hub", reason="缺失要点",
+                ),
+                # quote 不是原文子串 → hallucination
+                MaintenanceNodeAdd(
+                    title="坏引用", content="内容", node_type=NodeType.data,
+                    event_id=eid, evidence_quote="原文里没有这句话", reason="x",
+                ),
+                # 锚定事件不存在 → hallucination
+                MaintenanceNodeAdd(
+                    title="坏事件", content="内容", node_type=NodeType.data,
+                    event_id="ghost", evidence_quote="q", reason="x",
+                ),
+                # system 类型 → 禁止
+                MaintenanceNodeAdd(
+                    title="坏类型", content="内容", node_type=NodeType.system,
+                    event_id=eid, evidence_quote="八段锦讲呼吸", reason="x",
+                ),
+                # 父节点不存在 → illegal
+                MaintenanceNodeAdd(
+                    title="坏父节点", content="内容", node_type=NodeType.data,
+                    event_id=eid, evidence_quote="八段锦讲呼吸",
+                    parent_node_id="ghost_parent", reason="x",
+                ),
+            ],
+            confidence=0.9,
+        )
+        issues = run_maintenance_local_checks(
+            graph_store, plan, None, event_content_map={eid: "八段锦讲呼吸与动作要领"}
+        )
+        assert not any("呼吸要领" in i.description for i in issues)  # 合法项通过
+        assert any("坏引用" in i.description and i.type == "hallucination" for i in issues)
+        assert any("锚定事件不存在" in i.description for i in issues)
+        assert any("坏类型" in i.description for i in issues)
+        assert any("父节点不存在" in i.description for i in issues)
+
+    @pytest.mark.asyncio
+    async def test_node_add_execution(self, db, event_store, graph_store):
+        """补节点执行：源证锚定事件（hash 一致）+ FTS 可检索 + subtopic_of 挂边。"""
+        eid, _ = await event_store.insert("八段锦讲呼吸与动作要领", "data")
+        ev = await event_store.get(eid)
+        c_hash = ev["content_hash"]
+        from core.models import GraphMaintenancePlan, MaintenanceNodeAdd
+        from tests.factories import make_node
+        await make_node(graph_store, "hub", "八段锦主题", "内容", event_id="e9")
+        plan = GraphMaintenancePlan(
+            node_adds=[MaintenanceNodeAdd(
+                title="呼吸要领", content="八段锦呼吸要领内容",
+                node_type=NodeType.data, event_id=eid,
+                evidence_quote="八段锦讲呼吸", parent_node_id="hub", reason="缺失要点",
+            )],
+            confidence=0.9,
+        )
+        stats = await tool_apply_maintenance(event_store, graph_store, plan)
+        assert len(stats["nodes_added"]) == 1
+        nid = stats["nodes_added"][0]
+        node = graph_store.get_node(nid)
+        assert node.title == "呼吸要领"
+        assert {sr.event_id for sr in node.source_refs} == {eid}
+        assert node.source_refs[0].hash == c_hash  # hash 供核对不变式
+        edge = graph_store.get_edge(nid, "hub")
+        assert edge is not None and edge.relation == "subtopic_of"
+        assert edge.evidence_event_id == eid
+        r = await graph_store.search_node_fts("呼吸要领")
+        assert any(x["node_id"] == nid for x in r)
+        # 反向索引：事件 → 新节点
+        assert nid in graph_store.get_nodes_for_event(eid)
 
     @pytest.mark.asyncio
     async def test_data_append_noop_not_counted(self, db, event_store, graph_store):

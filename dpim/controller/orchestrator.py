@@ -7,6 +7,7 @@ from typing import Any
 
 from controller.task_memory import TaskMemory
 from controller.tools import (
+    filter_plan_channels,
     scan_maintenance_candidates,
     tool_analyze_intent,
     tool_apply_maintenance,
@@ -310,6 +311,9 @@ class Orchestrator:
         仅处理「调整/合并/删改」已有图结构；保守优先：
         无候选或计划被 Meta 驳回即放弃本轮，不做修正循环。
         自动触发（AI 恢复，payload.auto=True）受最小图规模约束，手动不受限。
+        mode=update（v1.24，^update 指令）：两阶段结构优化——
+        Phase1 减碎+补缺（merges/deletes/edge_removes/node_adds）→ 重新扫描 →
+        Phase2 连线（edge_adds 把孤立节点连回图）；一轮封顶不循环。
         """
         if not ai_state.available or settings.agent_mode != "pipeline":
             logger.info("Graph maintenance skipped (AI unavailable or pipeline inactive)")
@@ -325,59 +329,136 @@ class Orchestrator:
             )
             return
         candidates = scan_maintenance_candidates(self.graph_store)
-        # 指令范围限定（^compress <node_id>）：候选只保留与 scope 相关节点，
-        # 执行层因此只会动到该节点附近——范围外候选一律不进计划
         scope = payload.get("scope")
         if scope:
-            candidates = {
-                "merge_candidates": [
-                    c for c in candidates["merge_candidates"]
-                    if scope in (c["target_id"], c["source_id"])
-                ],
-                "zombie_nodes": [
-                    c for c in candidates["zombie_nodes"] if c["node_id"] == scope
-                ],
-                "low_conf_isolated": [
-                    c for c in candidates["low_conf_isolated"] if c["node_id"] == scope
-                ],
-                "compress_candidates": [
-                    c for c in candidates["compress_candidates"] if c["node_id"] == scope
-                ],
-                "oversplit_events": [
-                    c for c in candidates["oversplit_events"]
-                    if scope in {n["node_id"] for n in c["nodes"]}
-                ],
-                "isolated_nodes": [
-                    c for c in candidates["isolated_nodes"] if c["node_id"] == scope
-                ],
-                "total_nodes": candidates["total_nodes"],
-                # 保留规模压力标记：合并底线硬规则依赖它判断是否放宽
-                "size_pressure": candidates.get("size_pressure", False),
-            }
-        if not any([
+            candidates = self._scope_candidates(candidates, scope)
+        try:
+            if payload.get("mode") == "update":
+                await self._run_update_round(candidates, scope)
+            else:
+                if not self._has_any_candidate(candidates):
+                    logger.info("Graph maintenance: no candidates")
+                    return
+                await self._maintenance_phase(
+                    candidates, mode_task="compress", allowed=None
+                )
+        except Exception:
+            logger.exception("Graph maintenance error")
+
+    @staticmethod
+    def _has_any_candidate(candidates: dict) -> bool:
+        return any([
             candidates.get("merge_candidates"),
             candidates.get("zombie_nodes"),
             candidates.get("low_conf_isolated"),
             candidates.get("compress_candidates"),
             candidates.get("oversplit_events"),
             candidates.get("isolated_nodes"),
-        ]):
-            logger.info("Graph maintenance: no candidates")
-            return
-        try:
-            plan = await tool_maintain_propose(self.graph_store, candidates)
-            verdict = await tool_meta_review_maintenance(
-                self.graph_store, plan, candidates
+        ])
+
+    @staticmethod
+    def _scope_candidates(candidates: dict, scope: str) -> dict:
+        """指令范围限定（^compress/^update <node_id>）：候选只保留与 scope
+        相关项，执行层因此只会动到该节点附近——范围外候选一律不进计划。"""
+        return {
+            "merge_candidates": [
+                c for c in candidates["merge_candidates"]
+                if scope in (c["target_id"], c["source_id"])
+            ],
+            "zombie_nodes": [
+                c for c in candidates["zombie_nodes"] if c["node_id"] == scope
+            ],
+            "low_conf_isolated": [
+                c for c in candidates["low_conf_isolated"] if c["node_id"] == scope
+            ],
+            "compress_candidates": [
+                c for c in candidates["compress_candidates"] if c["node_id"] == scope
+            ],
+            "oversplit_events": [
+                c for c in candidates["oversplit_events"]
+                if scope in {n["node_id"] for n in c["nodes"]}
+            ],
+            "isolated_nodes": [
+                c for c in candidates["isolated_nodes"] if c["node_id"] == scope
+            ],
+            "total_nodes": candidates["total_nodes"],
+            # 保留规模压力标记：合并底线硬规则依赖它判断是否放宽
+            "size_pressure": candidates.get("size_pressure", False),
+        }
+
+    async def _run_update_round(self, candidates: dict, scope: str | None) -> None:
+        """^update 两阶段结构优化（v1.24）：减碎+补缺 → 重扫 → 连线。一轮封顶。"""
+        # Phase 1 减碎+补缺：聚合过碎 / 清僵尸与低置信 / 删错误边 / 补缺失要点
+        reduce_keys = (
+            "merge_candidates", "oversplit_events", "zombie_nodes", "low_conf_isolated",
+        )
+        p1 = {k: list(candidates.get(k, [])) for k in reduce_keys}
+        p1["total_nodes"] = candidates.get("total_nodes")
+        p1["size_pressure"] = candidates.get("size_pressure", False)
+        if any(p1[k] for k in reduce_keys):
+            await self._maintenance_phase(
+                p1, mode_task="update_reduce",
+                allowed={"merges", "deletes", "edge_removes", "node_adds"},
             )
-            if verdict.verdict != "pass":
-                logger.warning(
-                    "Graph maintenance plan rejected: %s", issues_text(verdict.issues)
-                )
-                return
-            stats = await tool_apply_maintenance(self.event_store, self.graph_store, plan)
-            logger.info("Graph maintenance applied: %s", stats)
-        except Exception:
-            logger.exception("Graph maintenance error")
+        else:
+            logger.info("Update round phase1: no reduce candidates")
+        # Phase 2 连线：在 Phase 1 执行后的新图上重新扫描孤立节点——
+        # 端点保证真实存在（先连线后减碎会让新边指向被合并掉的节点）
+        candidates2 = scan_maintenance_candidates(self.graph_store)
+        if scope:
+            candidates2 = self._scope_candidates(candidates2, scope)
+        iso = candidates2.get("isolated_nodes", [])
+        if iso:
+            p2 = {
+                "isolated_nodes": iso,
+                "total_nodes": candidates2.get("total_nodes"),
+                "size_pressure": candidates2.get("size_pressure", False),
+            }
+            await self._maintenance_phase(
+                p2, mode_task="update_connect", allowed={"edge_adds"},
+            )
+        else:
+            logger.info("Update round phase2: no isolated nodes to connect")
+
+    async def _maintenance_phase(
+        self,
+        candidates: dict,
+        mode_task: str,
+        allowed: set[str] | None,
+    ) -> None:
+        """单阶段维护：Gr 计划（按模式约束通道）→ Meta 审核 → 执行。"""
+        plan = await tool_maintain_propose(
+            self.graph_store, candidates, mode_task=mode_task
+        )
+        # 防御：丢弃不属于当前阶段的通道（Gr 越界输出）
+        plan = filter_plan_channels(plan, allowed)
+        if not any([
+            plan.merges, plan.deletes, plan.updates, plan.edge_removes,
+            plan.edge_adds, plan.node_adds, plan.compresses,
+        ]):
+            logger.info("Maintenance phase %s: empty plan (nothing to do)", mode_task)
+            return
+        # 补节点需要锚定事件原文做 evidence_quote 子串硬校验
+        event_content_map: dict[str, str] | None = None
+        if plan.node_adds:
+            event_content_map = {}
+            for na in plan.node_adds:
+                if na.event_id not in event_content_map:
+                    ev = await self.event_store.get(na.event_id)
+                    event_content_map[na.event_id] = (
+                        ev["raw_content"] if ev else ""
+                    )
+        verdict = await tool_meta_review_maintenance(
+            self.graph_store, plan, candidates, event_content_map=event_content_map
+        )
+        if verdict.verdict != "pass":
+            logger.warning(
+                "Maintenance plan rejected (%s): %s",
+                mode_task, issues_text(verdict.issues),
+            )
+            return
+        stats = await tool_apply_maintenance(self.event_store, self.graph_store, plan)
+        logger.info("Maintenance phase %s applied: %s", mode_task, stats)
 
     async def _handle_compensate(self, payload: dict):
         raw_events = await self.event_store.list_by_status("raw")

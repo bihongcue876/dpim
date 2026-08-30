@@ -5,6 +5,7 @@ from .graph_tools import tool_graph_propose, tool_maintain_propose
 from .info_tools import tool_info_split
 from .meta_tools import tool_meta_review, tool_meta_review_maintenance, tool_meta_review_search
 from .sys_tools import (
+    filter_plan_channels,
     scan_maintenance_candidates,
     tool_apply_maintenance,
     tool_apply_to_store,
@@ -15,6 +16,7 @@ from .sys_tools import (
 )
 
 __all__ = [
+    "filter_plan_channels",
     "scan_maintenance_candidates",
     "tool_analyze_intent",
     "tool_apply_maintenance",

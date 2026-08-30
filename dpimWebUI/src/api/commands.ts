@@ -12,7 +12,13 @@ export const COMMAND_CANDIDATES: CommandCandidate[] = [
   {
     name: '^compress',
     args: ' [节点ID]',
-    desc: '图压缩维护：扫描→Gr→Meta→执行，全图足够简练则不做任何改动',
+    desc: '图压缩维护：删繁就简（合并/清僵尸/压缩冗长），可补边',
+    needsAI: true,
+  },
+  {
+    name: '^update',
+    args: ' [节点ID]',
+    desc: '图结构优化两阶段：减碎+补缺失要点 → 连线孤岛',
     needsAI: true,
   },
   {

@@ -839,3 +839,70 @@ async def test_maintain_graph_auto_runs_when_large_enough(
     roles = [c[0] for c in fake.calls]
     assert "gr" in roles  # 自动触发走维护链路
 
+
+async def test_update_round_two_phases(db, event_store, graph_store, enable_ai, monkeypatch):
+    """^update 两阶段：Phase1 减碎（删僵尸）→ 重扫 → Phase2 连线（孤岛补边）。
+
+    补边端点必须是幸存节点；维护 Gr 调用恰好两次（一轮封顶）；
+    task_mode 顺序 update_reduce → update_connect。
+    """
+    from core.models import (
+        MaintenanceDelete,
+        MaintenanceEdgeAdd,
+    )
+    from tests.factories import make_node
+
+    z = await make_node(graph_store, "z1", "僵尸", "内容", event_id="e1")
+    z.source_refs[0].valid = False  # 僵尸：Phase1 删除候选
+    await make_node(graph_store, "hub", "枢纽", "内容", event_id="e2")
+    await make_node(graph_store, "iso", "孤岛", "内容", event_id="e3")  # Phase2 连线
+
+    plans = [
+        GraphMaintenancePlan(deletes=[MaintenanceDelete(node_id="z1", reason="僵尸")]),
+        GraphMaintenancePlan(edge_adds=[MaintenanceEdgeAdd(
+            source="iso", target="hub", relation="related_to", reason="同主题",
+        )]),
+    ]
+
+    class TwoPhaseFake(FakeLLM):
+        def __init__(self):
+            super().__init__()
+            self._i = 0
+
+        async def chat_structured(self, role, response_model, system, user,
+                                  temperature=0.2, **kw):
+            self.calls.append((role, response_model.__name__, user))
+            if response_model is GraphMaintenancePlan:
+                plan = plans[min(self._i, len(plans) - 1)]
+                self._i += 1
+                return plan
+            if response_model is MetaCogVerdict:
+                return MetaCogVerdict(verdict="pass", issues=[])
+            raise AssertionError(f"unexpected response_model: {response_model}")
+
+    fake = TwoPhaseFake()
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    await orch._handle_maintain_graph({"mode": "update"})
+
+    # Phase1：僵尸被删；Phase2：孤岛连回枢纽（端点均为幸存节点）
+    assert graph_store.get_node("z1") is None
+    edge = graph_store.get_edge("iso", "hub")
+    assert edge is not None and edge.evidence_event_id == "e3"
+    # 维护 Gr 调用恰好两次，task_mode 顺序正确
+    gr_calls = [c for c in fake.calls if c[1] == "GraphMaintenancePlan"]
+    assert len(gr_calls) == 2
+    assert "update_reduce" in gr_calls[0][2]
+    assert "update_connect" in gr_calls[1][2]
+
+
+async def test_update_round_no_candidates_skips_llm(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """^update：两阶段均无候选 → 零 LLM 调用。"""
+    fake = FakeLLM()
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    await orch._handle_maintain_graph({"mode": "update"})
+    assert fake.calls == []
+

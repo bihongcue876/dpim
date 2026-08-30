@@ -544,8 +544,33 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
     }
 
 
+def filter_plan_channels(plan: Any, allowed: set[str] | None) -> Any:
+    """按维护阶段模式丢弃不属于当前阶段的计划通道（防御 Gr 越界输出）。
+
+    allowed=None 表示不过滤（compress 全通道）。过滤后若所有通道为空，
+    调用方可据 GraphMaintenancePlan 判空跳过本阶段。
+    """
+    from core.models import GraphMaintenancePlan
+
+    if allowed is None:
+        return plan
+    return GraphMaintenancePlan(
+        merges=plan.merges if "merges" in allowed else [],
+        deletes=plan.deletes if "deletes" in allowed else [],
+        updates=plan.updates if "updates" in allowed else [],
+        edge_removes=plan.edge_removes if "edge_removes" in allowed else [],
+        edge_adds=plan.edge_adds if "edge_adds" in allowed else [],
+        node_adds=plan.node_adds if "node_adds" in allowed else [],
+        compresses=plan.compresses if "compresses" in allowed else [],
+        confidence=plan.confidence,
+    )
+
+
 def run_maintenance_local_checks(
-    graph_store: Any, plan: Any, candidates: dict | None = None
+    graph_store: Any,
+    plan: Any,
+    candidates: dict | None = None,
+    event_content_map: dict[str, str] | None = None,
 ) -> list[MetaCogIssue]:
     """维护计划本地硬规则（无 LLM）：存在性 / 类型边界 / 删除保护 / 合并底线。
 
@@ -556,6 +581,9 @@ def run_maintenance_local_checks(
     一律驳回（仅近似等价可合并）；传入 candidates 为 None 时跳过该项。
     同源豁免（v1.21）：同一过碎事件（oversplit_events）拆出的节点对不受
     合并底线约束——它们本就是同一件事的碎片，聚合粗化正是压缩的目的。
+    node_adds（v1.24，update 模式补缺失要点）：event_id 须为已知事件
+    （event_content_map 提供原文），evidence_quote 须为其原文连续子串
+    （hallucination 硬校验）；system 类型禁止；parent_node_id 须存在。
     任何问题即 fail 级 issues。
     """
     issues: list[MetaCogIssue] = []
@@ -682,6 +710,40 @@ def run_maintenance_local_checks(
                 description=f"补边缺少关系短语：{e.source}→{e.target}",
                 suggestion="补充 relation 或删除该项",
             ))
+    for na in plan.node_adds:
+        if na.node_type.value == "system":
+            issues.append(MetaCogIssue(
+                type="illegal_edge",
+                description=f"补节点禁止 system 类型：{na.title}",
+                suggestion="删除该项",
+            ))
+        elif not (na.title or "").strip() or not (na.content or "").strip():
+            issues.append(MetaCogIssue(
+                type="empty_node",
+                description=f"补节点标题或内容为空：{na.title}",
+                suggestion="补充后重试或删除该项",
+            ))
+        elif event_content_map is not None and na.event_id not in event_content_map:
+            issues.append(MetaCogIssue(
+                type="hallucination",
+                description=f"补节点锚定事件不存在：{na.event_id}",
+                suggestion="删除该项",
+            ))
+        elif (
+            event_content_map is not None
+            and (na.evidence_quote or "") not in (event_content_map.get(na.event_id) or "")
+        ):
+            issues.append(MetaCogIssue(
+                type="hallucination",
+                description=f"补节点 evidence_quote 不是事件原文子串：{na.title}",
+                suggestion="引用事件原文的连续片段或删除该项",
+            ))
+        elif na.parent_node_id and graph_store.get_node(na.parent_node_id) is None:
+            issues.append(MetaCogIssue(
+                type="illegal_edge",
+                description=f"补节点父节点不存在：{na.parent_node_id}",
+                suggestion="删除 parent_node_id 或改用已有节点",
+            ))
     for c in plan.compresses:
         node = graph_store.get_node(c.node_id)
         if node is None:
@@ -735,19 +797,22 @@ def run_maintenance_local_checks(
 async def tool_apply_maintenance(
     event_store: Any, graph_store: Any, plan: Any
 ) -> dict[str, Any]:
-    """执行审核通过的图维护计划（合并/删除/修改/删边/压缩），返回执行统计。
+    """执行审核通过的图维护计划（合并/删除/修改/删边/补边/补节点/压缩），返回执行统计。
 
     - 合并：graph_store.merge_nodes（target 吸收源证/内容/边迁移后删 source）
     - 删除：执行层再兜底保护（system 跳过；data 有有效源证跳过）
     - 修改：interaction 覆盖内容；data 转为追加行（不得概括，证据锚定精神）
     - 删边：按 (source, target)
+    - 补边：端点须存在（本地检查已拦）；evidence 取 source 首条有效源证
+    - 补节点（v1.24，update 模式）：锚定已有事件建新节点（源证/反向索引/FTS），
+      可选 parent_node_id 挂 subtopic_of 子节点边
     - 压缩：仅 data 可否概括（覆盖 content + 可选精炼 title + 补边）；
       source_refs 保留不动（溯源锚定不破坏）；补边 evidence 取该节点首个有效源证事件
     - FTS 同步 + flush 落盘
     """
     stats: dict[str, Any] = {
         "merged": [], "deleted": [], "updated": [],
-        "edges_removed": [], "edges_added": [], "compressed": [],
+        "edges_removed": [], "edges_added": [], "nodes_added": [], "compressed": [],
     }
 
     for m in plan.merges:
@@ -809,6 +874,32 @@ async def tool_apply_maintenance(
                 relation=e.relation, evidence_event_id=evidence,
             ))
             stats["edges_added"].append(f"{e.source}→{e.target}")
+
+    for na in plan.node_adds:
+        ev = await event_store.get(na.event_id)
+        if ev is None:
+            continue  # 兜底：锚定事件已不存在（本地检查已拦）
+        nid = uuid.uuid4().hex[:16]
+        node = GraphNode(
+            node_id=nid,
+            title=na.title,
+            content=na.content,
+            node_type=na.node_type,
+            source_refs=[SourceRef(
+                event_id=na.event_id, valid=True, hash=ev["content_hash"],
+            )],
+            confidence=0.8,
+            metadata=NodeMetadata(evidence_quote=na.evidence_quote, tags=[]),
+        )
+        graph_store.add_node(node)
+        await graph_store.upsert_node_fts(nid, node.title, node.content)
+        if na.parent_node_id and graph_store.get_node(na.parent_node_id) is not None:
+            # 子节点挂边：child --subtopic_of--> parent（证据取锚定事件）
+            graph_store.add_edge(GraphEdge(
+                source=nid, target=na.parent_node_id,
+                relation="subtopic_of", evidence_event_id=na.event_id,
+            ))
+        stats["nodes_added"].append(nid)
 
     for c in plan.compresses:
         node = graph_store.get_node(c.node_id)

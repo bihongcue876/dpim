@@ -59,6 +59,12 @@ class TestParseCommand:
         cmd = parse_command("^compress d1")
         assert cmd and cmd.kind == "compress" and cmd.scope == "d1"
 
+    def test_update(self):
+        cmd = parse_command("^update")
+        assert cmd and cmd.kind == "update" and cmd.scope == ""
+        cmd = parse_command("^update n1")
+        assert cmd and cmd.kind == "update" and cmd.scope == "n1"
+
     def test_merge(self):
         cmd = parse_command("^merge t1 s1")
         assert cmd and cmd.kind == "merge"
@@ -225,6 +231,50 @@ class TestCompressCommand:
         resp = test_app.post("/ingest", json={"content": "^compress ghost", "event_type": "data"})
         assert "未执行" in resp.json()["message"]
         assert "ghost" in resp.json()["message"]
+        assert len(test_app.enqueued) == 0  # type: ignore[attr-defined]
+
+
+class TestUpdateCommand:
+    """^update 图结构优化（v1.24）：两阶段——减碎+补缺 → 连线。"""
+
+    def test_refuses_when_ai_unavailable(self, test_app):
+        resp = test_app.post("/ingest", json={"content": "^update", "event_type": "interaction"})
+        data = resp.json()
+        assert data["command_triggered"] is True
+        assert "未执行" in data["message"]
+        assert len(test_app.enqueued) == 0  # type: ignore[attr-defined]
+
+    async def test_enqueues_two_phase(self, test_app, graph_store, ai_on, monkeypatch):
+        """有结构候选（孤立节点）→ 入队 payload mode=update，消息注明两阶段。"""
+        monkeypatch.setattr(settings, "agent_mode", "pipeline")
+        await make_node(graph_store, "iso1", "孤岛", "内容", event_id="e1")
+        resp = test_app.post("/ingest", json={"content": "^update", "event_type": "interaction"})
+        data = resp.json()
+        assert data["command_triggered"] is True and data["event_id"] == ""
+        assert "已入队" in data["message"] and "两阶段" in data["message"]
+        msg = test_app.enqueued[0]  # type: ignore[attr-defined]
+        assert msg.type == "maintain_graph"
+        assert msg.payload == {"mode": "update"}
+
+    async def test_enqueues_scoped(self, test_app, graph_store, ai_on, monkeypatch):
+        monkeypatch.setattr(settings, "agent_mode", "pipeline")
+        await make_node(graph_store, "iso1", "孤岛", "内容", event_id="e1")
+        test_app.post("/ingest", json={"content": "^update iso1", "event_type": "data"})
+        msg = test_app.enqueued[0]  # type: ignore[attr-defined]
+        assert msg.payload == {"mode": "update", "scope": "iso1"}
+
+    def test_no_candidates_reports_immediately(self, test_app, ai_on, monkeypatch):
+        """无结构候选 → 立即「无需优化」，不入队。"""
+        monkeypatch.setattr(settings, "agent_mode", "pipeline")
+        resp = test_app.post("/ingest", json={"content": "^update", "event_type": "interaction"})
+        data = resp.json()
+        assert "无需优化" in data["message"]
+        assert len(test_app.enqueued) == 0  # type: ignore[attr-defined]
+
+    def test_scoped_missing_node_refused(self, test_app, ai_on, monkeypatch):
+        monkeypatch.setattr(settings, "agent_mode", "pipeline")
+        resp = test_app.post("/ingest", json={"content": "^update ghost", "event_type": "data"})
+        assert "未执行" in resp.json()["message"] and "ghost" in resp.json()["message"]
         assert len(test_app.enqueued) == 0  # type: ignore[attr-defined]
 
 

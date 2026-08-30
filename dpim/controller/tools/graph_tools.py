@@ -47,18 +47,21 @@ async def tool_graph_propose(
 
 
 async def tool_maintain_propose(
-    graph_store: Any, candidates: dict, feedback: str = ""
+    graph_store: Any, candidates: dict, feedback: str = "", mode_task: str = "compress"
 ) -> Any:
     """图维护计划（任务二 maintain_graph）：基于扫描候选做合并/删除/修改决策。
 
-    单次调用打包全部上下文（candidates + 图统计 + 上一轮反馈 + Schema）。
+    单次调用打包全部上下文（candidates + 图统计 + 任务模式 + 上一轮反馈 + Schema）。
     保守优先：不确定就不动，空计划合法。
+    mode_task（v1.24）：compress=删繁就简全通道 / update_reduce=减碎+补缺 /
+    update_connect=仅补边连线——Gr 据此约束输出通道。
     """
     from core.models import GraphMaintenancePlan
 
     system = prompt_loader.load("gr")
     user = compact_json({
         "task": "maintain_graph",
+        "task_mode": mode_task,
         "candidates": candidates,
         "previous_feedback": feedback or None,
         "output_schema": GraphMaintenancePlan.model_json_schema(),

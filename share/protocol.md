@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.23
+> 版本：1.24
 > 日期：2026-08-29
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改/节点压缩，POST /agent/maintain，23 端点）+ 安全加固（API Key 掩码 + 可选 API 访问认证 + 输入上限/值域约束 + 日志全文开关）+ 防冗余节点硬规则（redundant_node）+ 节点规模高水位自动维护（AGENT_MAINTAIN_MAX_NODES / COOLDOWN）+ 存储路径/日志级别 dpim.json 持久化 + 事件类型必填化（auto 移除）与类型修订（PUT /events 可改 event_type）+ source 类型管线跳过构图 + max_hops 允许 0（纯检索不扩散）+ GET /events、GET /nodes 支持 query 关键词检索（事件原文/知识节点独立检索）+ 对话指令系统（^compress ^merge ^delete ^data ^node 等；语义层需 AI、确定层无 LLM 同步执行、存储类纯离线可用）+ 高水位默认 900→200 / 冷却 300→60 + 压缩底线（内容 <200 字符不再压缩）与合并底线（无规模压力仅近似等价可合并）+ 指令语法收紧（仅 ^英文动词 空格分隔一种形式，其余一律普通文本落库）+ ^help 用法指令 + 前端指令候选弹层（信息传入框，opencode 风格）+ 节点语义（一节点一要点 / 多事件关联 / 子节点层级）+ PUT /nodes 源事件增删（最少保留 1 条有效源证）+ 维护补边通道（edge_adds，孤立节点连线回图）+ 构图边 title 解析修复（弱模型 title 引用不再静默丢边）
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改/节点压缩，POST /agent/maintain，23 端点）+ 安全加固（API Key 掩码 + 可选 API 访问认证 + 输入上限/值域约束 + 日志全文开关）+ 防冗余节点硬规则（redundant_node）+ 节点规模高水位自动维护（AGENT_MAINTAIN_MAX_NODES / COOLDOWN）+ 存储路径/日志级别 dpim.json 持久化 + 事件类型必填化（auto 移除）与类型修订（PUT /events 可改 event_type）+ source 类型管线跳过构图 + max_hops 允许 0（纯检索不扩散）+ GET /events、GET /nodes 支持 query 关键词检索（事件原文/知识节点独立检索）+ 对话指令系统（^compress ^merge ^delete ^data ^node 等；语义层需 AI、确定层无 LLM 同步执行、存储类纯离线可用）+ 高水位默认 900→200 / 冷却 300→60 + 压缩底线（内容 <200 字符不再压缩）与合并底线（无规模压力仅近似等价可合并）+ 指令语法收紧（仅 ^英文动词 空格分隔一种形式，其余一律普通文本落库）+ ^help 用法指令 + 前端指令候选弹层（信息传入框，opencode 风格）+ 节点语义（一节点一要点 / 多事件关联 / 子节点层级）+ PUT /nodes 源事件增删（最少保留 1 条有效源证）+ 维护补边通道（edge_adds，孤立节点连线回图）+ 构图边 title 解析修复（弱模型 title 引用不再静默丢边）+ ^update 两阶段结构优化（减碎+补缺失要点 node_adds → 连线，一轮封顶）
 
 ---
 
@@ -226,10 +226,16 @@ raw → indexed → linked
 
 **触发**：
 - 手动：`POST /agent/maintain`（入队 `maintain_graph`，与写入共用串行队列）
-- 对话指令：信息传入框输入 `/compress`、`^压缩 [节点ID]`（同手动触发，不受阈值约束；可带节点 ID 限定范围）
+- 对话指令：`^compress [节点ID]`（压缩维护轮，删繁就简）与 `^update [节点ID]`（结构优化轮，v1.24）入队 `maintain_graph`；不受节点规模阈值约束，可带节点 ID 限定范围
 - 自动（AI 恢复）：AI 恢复触发补偿时顺带入队一次（`AGENT_MAINTAIN_AUTO` 默认开启；图节点数 < `AGENT_MAINTAIN_MIN_NODES` 时自动触发跳过，手动不受限）
 - 自动（节点规模高水位）：总节点数达到 `AGENT_MAINTAIN_MAX_NODES`（默认 **200**）后每个冷却周期（`AGENT_MAINTAIN_COOLDOWN`，默认 **60s**）自动入队一次；达到高水位即视为「资料库太过庞大」，此时计划附带规模压力标记，允许放宽合并调节
 - AI 不可用或管线未启用时跳过
+
+**两阶段结构优化（v1.24，^update 专属）**：
+- Phase 1 减碎+补缺：候选 = merge_candidates + oversplit_events（附事件原文摘录）+ zombie_nodes + low_conf_isolated；通道 = merges / deletes / edge_removes / **node_adds**（补缺失要点：锚定已有事件，evidence_quote 须为事件原文连续子串——本地硬校验；可选 parent_node_id 挂 subtopic_of 子节点边；system 禁止）
+- Phase 2 连线：**在 Phase 1 执行后的新图上重新扫描** → isolated_nodes；通道 = edge_adds（端点保证幸存——先连线后减碎会让新边指向被合并掉的节点）
+- 每阶段空候选即跳过；总封顶一次两阶段，不循环（防震荡）
+- 通道收敛（防御）：Gr 越界输出的通道由执行前过滤丢弃（update_reduce 仅 merges/deletes/edge_removes/node_adds；update_connect 仅 edge_adds；compress 全通道禁 node_adds）
 
 **压缩与合并底线（v1.20，防过度整理的损失螺旋；v1.21 补同源豁免）**：
 - 压缩底线：概括必然有损——内容已足够精炼（< 200 字符，确定性：不进压缩候选）或证据已颗粒分明的节点禁止再压缩；压缩后内容不得比原文更长（本地硬规则 + Meta 审查）
@@ -264,6 +270,7 @@ raw → indexed → linked
 | updates | MaintenanceUpdate[] | 调整内容（node_id + content + reason） |
 | edge_removes | MaintenanceEdgeRemove[] | 删除边（source + target + reason） |
 | edge_adds | MaintenanceEdgeAdd[] | 补边（v1.23）：把孤立节点连回图（source/target 须为已有节点 + relation + reason；evidence 取 source 首条有效源证） |
+| node_adds | MaintenanceNodeAdd[] | 补缺失要点（v1.24，仅 update 模式）：锚定已有事件新建节点（title ≤60 + content + node_type + event_id + evidence_quote 原文连续子串 + 可选 parent_node_id 挂子节点边） |
 | compresses | MaintenanceCompress[] | 概括压缩 data 节点（node_id + content + 可选 title + 可选 new_edges + reason） |
 | confidence | number | 计划整体置信度 0.0~1.0 |
 
@@ -279,7 +286,8 @@ raw → indexed → linked
 
 | 指令 | 层级 | 语义 | AI 不可用时 |
 |------|------|------|------------|
-| `^compress [节点ID]` | 语义层 | 触发图维护轮（扫描 → Gr → Meta → 执行）；保守语义：全图足够简练则空计划、不做任何改动；可带节点 ID 限定只处理该节点相关候选（`maintain_graph` payload `scope`，节点须存在否则入队前拒绝） | 明示拒绝（不入队），提示纯存储指令不受影响 |
+| `^compress [节点ID]` | 语义层 | 触发图维护轮（扫描 → Gr → Meta → 执行）；保守语义：全图足够简练则空计划、不做任何改动；可带节点 ID 限定只处理该节点相关候选（`maintain_graph` payload `scope`，节点须存在否则入队前拒绝）。定位：删繁就简 | 明示拒绝（不入队），提示纯存储指令不受影响 |
+| `^update [节点ID]` | 语义层 | 触发**两阶段结构优化**（v1.24）：Phase1 减碎+补缺（聚合过碎/清僵尸低置信/删错误边/补缺失要点 node_adds——锚定已有事件 + quote 原文子串硬校验）→ 重扫 → Phase2 连线（edge_adds 孤岛回图）；一轮封顶；节点已良好则不动 | 明示拒绝（不入队） |
 | `^merge <目标ID> <源ID>` | 确定层 | 同步执行 `merge_nodes`：源证并集 + 内容整段去重合并 + 边迁移 + FTS 同步；仅同类型、system 拒绝、缺失报错 | 正常执行（无 LLM） |
 | `^delete <节点ID>` | 确定层 | 同步删除节点：删除保护（有有效源证拒绝）+ system 保护（手工节点无事件来源，删除后不可恢复，指向图页/REST 通道） | 正常执行（无 LLM） |
 | `^data <内容>` / `^interaction <内容>` / `^source <内容>` | 存储 | 显式类型写入线层（指令前缀不落库，仅存 `<内容>`），管线启用时照常入队构图 | 正常写入（停留 indexed 等补偿） |
@@ -636,6 +644,7 @@ content
 > 2026-08-29：规约升级至 v1.21。指令语法收紧 + 前端指令候选 + 同源聚合（治碎）：① 4.5 指令语法收敛为**仅 `^英文动词`（空格分隔）一种形式**——`/` 前缀、中文指令词（^压缩 等）、冒号分隔（`^data: 内容`）、未知 `^词`、裸 `^` 一律**不是指令**，按普通文本正常落库（用户定夺：最严格 ban）；指令集更名 `^compress [节点ID]` / `^merge` / `^delete` / `^data` / `^interaction` / `^source` / `^node system <标题> \| <内容>`，新增 `^help` 用法指令。② 收尾链 Q 自查修复：`^node` 标题超 60 字符守卫（防 500）、`^delete` 对 system 节点拒绝（无事件来源不可恢复）、`^compress` scope 节点存在性预检（防静默空转）、维护 scope 过滤保留 size_pressure、前端降级态允许提交（AI 不可用时纯存储/指令照常可用，普通事件提示等待补偿）。③ 前端「信息传入」框新增指令候选弹层（opencode 风格）：输入 `^` 自动弹出、前缀过滤、↑↓ 换选、Enter/Tab 填入 `^verb `、Esc 关闭、可点击；候选清单单一来源 `src/api/commands.ts`；全角 `＾` 触发候选；长指令结果（如 ^help）改对话框展示；空事件 ID 守卫（提示后端版本可能过旧）。④ Gr 提示词补「全图足够简练 → 宁可空计划」显式表述。⑤ **候选扫描新增同源过碎类（oversplit_events，v1.21）**：单条事件拆出 ≥ 6 个有效节点 → 过碎候选（event_id + 节点清单，system 不计），供 Gr 把同一事件的碎片节点按主题聚合粗化为少数节点（走 merges 通道）；合并底线新增**同源豁免**——同一过碎事件内的节点对不受「重合 ≥ 0.85」约束（源证相同聚合不丢溯源），组外节点仍受约束；Gr/Meta 提示词编码聚合规则与审查规则。⑥ `^compress` 候选扫描前移至响应前（纯本地毫秒级）：无候选立即明示「无需压缩」不入队，有候选入队并在消息中报出各类候选数量（重合对/僵尸/孤立低置信/冗长可压缩/同源过碎）——消除「静默正确」造成的没反应错觉。
 > 2026-08-29：规约升级至 v1.22。节点语义与源证管理：① **节点语义**（2.2 节）：一节点一要点（title 即该要点，不同要点用子节点表达）；多事件关联为常态（source_refs 并集，同要点新事件并入已有节点）；允许子节点（方面/细节节点经 subtopic_of / extends 边挂到主题节点下）。② **`PUT /nodes/{node_id}` 扩展源事件管理**：`ModifyNodeRequest` 新增 `add_source_event_id`（幂等追加，事件须存在，hash 取事件 content_hash）与 `remove_source_event_id`（移除单条源证并同步反向索引）；**最少源证守卫**——移除后须仍保留 ≥1 条有效源证（否则 409）；content 改为可选（至少一项变更），system 节点仅允许源事件操作（内容仍禁改 403）。③ GraphStore 新增 `add_source_ref` / `remove_source_ref`（反向索引同步 + 脏位）。④ Gr 构图提示词：一节点一要点 + 同要点跨事件一律并入已有节点 + 子节点鼓励；Meta 审查新增多要点节点驳回（建议拆子节点）；同源聚合提示词补「聚合时保留子节点结构」。
 > 2026-08-29：规约升级至 v1.23。图连通性治理：① **构图边解析修复**：`tool_apply_to_store` 新建边时 source/target 新增「已有节点 title」解析（全图 title 索引兜底）——弱模型用 title 引用已有节点此前被当 node_id 解析失败、**边被静默丢弃**（图连通性退化的主要根因之一）；无法解析的边仍丢弃但必须输出 WARNING 日志留痕。② **维护计划新增 `edge_adds` 通道**（GraphMaintenancePlan.edge_adds，MaintenanceEdgeAdd）：把孤立节点连回图——source/target 须为已有节点 + relation + reason（本地硬规则校验端点存在性与 relation 非空），执行时 evidence_event_id 取 source 节点首条有效源证。③ **候选扫描新增孤立节点类（isolated_nodes）**：无任何边、置信度 ≥ 0.4 且有 ≥1 条有效源证的非 system 节点（低置信孤立方仍走 low_conf_isolated 删除判断）；`^compress` 候选计数与无候选判据同步纳入该类。④ Gr 维护提示词新增补边决策规则（判断不了相关性就不硬连，严禁凭空想象关系）；Meta 审查新增补边规则（关系须被两端内容支撑、不得与已有边矛盾）。
+> 2026-08-29：规约升级至 v1.24。^update 两阶段结构优化：① **新指令 `^update [节点ID]`**（语义层，需 AI；与 ^compress 分工——compress 删繁就简，update 优化图结构）：入队 maintain_graph payload mode=update，两阶段一轮封顶不循环。② **Phase 1 减碎+补缺**：候选 = 重合对 + 过碎事件（附事件原文摘录供锚定）+ 僵尸 + 低置信孤立；通道 = merges/deletes/edge_removes/**node_adds**——新增 MaintenanceNodeAdd（title ≤60 + content + node_type 禁 system + event_id 锚定已有事件 + evidence_quote 事件原文连续子串**本地硬校验**（event_content_map 注入式，run_maintenance_local_checks 增可选参数）+ 可选 parent_node_id 挂 subtopic_of 子节点边）；执行建节点 + 源证/反向索引/FTS + 可选挂边。③ **Phase 2 连线**：Phase 1 执行后的新图重新扫描 → isolated_nodes → edge_adds（端点保证幸存）。④ 通道收敛防御：filter_plan_channels 按阶段丢弃越界通道（compress 全通道禁 node_adds；update_reduce/update_connect 白名单）。⑤ Gr 提示词新增 task_mode 约束与 node_adds 决策规则（节点已良好不补，只补确实缺失且原文可锚定的要点）；Meta 审查新增补节点规则（quote 锚定/确实缺失/克制）。⑥ `^update` API 候选预扫描可感知化：无结构候选立即「无需优化」，有候选入队并报各类数量与两阶段说明。
 
 ---
 

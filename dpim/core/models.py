@@ -190,6 +190,23 @@ class MaintenanceEdgeAdd(BaseModel):
     reason: str = ""
 
 
+class MaintenanceNodeAdd(BaseModel):
+    """update 模式补缺失要点（v1.24）：把事件中提到但图中缺失的关键点补成节点。
+
+    证据锚定：event_id 必须是已有事件，evidence_quote 必须是该事件原文的
+    连续子串（本地硬校验，杜绝幻觉）；可选 parent_node_id 挂为子节点
+    （subtopic_of 边）。system 类型不允许。
+    """
+
+    title: str = Field(max_length=60)
+    content: str
+    node_type: NodeType = NodeType.data
+    event_id: str
+    evidence_quote: str
+    parent_node_id: str = ""
+    reason: str = ""
+
+
 class MaintenanceCompress(BaseModel):
     """压缩 data 节点：概括 content + 精炼 title + 补充关系（边），保留源证与语义。
 
@@ -211,6 +228,7 @@ class GraphMaintenancePlan(BaseModel):
     updates: list[MaintenanceUpdate] = []
     edge_removes: list[MaintenanceEdgeRemove] = []
     edge_adds: list[MaintenanceEdgeAdd] = []
+    node_adds: list[MaintenanceNodeAdd] = []
     compresses: list[MaintenanceCompress] = []
     confidence: float = Field(ge=0.0, le=1.0, default=0.5)
 

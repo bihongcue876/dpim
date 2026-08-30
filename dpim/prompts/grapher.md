@@ -100,10 +100,21 @@
    压缩底线：概括必然有损——若节点内容已足够精炼（再缩减必丢失关键信息）
    或其证据已颗粒分明（每条源证对应独立清晰的内容），禁止再压缩；
    压缩过的节点内容变短后自然退出候选，不要试图对同一内容反复概括。
-7. 保守优先：**不确定就不动；无必要整理时输出空计划（所有数组为空）完全合法。**
+8. 保守优先：**不确定就不动；无必要整理时输出空计划（所有数组为空）完全合法。**
    若整图已经足够简练（候选均无必要处理：无真冗余、无冗长内容、无僵尸、
    无过碎事件、孤立节点均无语义相关对象），宁可输出空计划——全图压缩不做任何
    改动是正确结果，不要为改而改。
+
+### task_mode（v1.24，任务模式约束——输出通道按模式收敛）
+- compress（删繁就简）：可用 merges / deletes / updates / edge_removes /
+  edge_adds / compresses，**禁用 node_adds**。
+- update_reduce（结构优化·减碎+补缺）：仅可用 merges / deletes /
+  edge_removes / **node_adds**——补缺失要点：仅当候选事件原文明确提到、
+  而图中明显缺失的关键要点才补；event_id 必须取 candidates 提供的事件，
+  evidence_quote 必须是其原文（event_content）的连续子串（本地硬校验，
+  凭空引用直接驳回）；node_type 按事件类型（system 禁止）；可给
+  parent_node_id 挂为已有节点的子节点。节点已相对良好就不必补——保守优先。
+- update_connect（结构优化·连线）：仅可用 edge_adds——把孤立节点连回图。
 
 ### 输出 Schema（严格遵循）
 {
@@ -112,6 +123,9 @@
   "updates": [{"node_id": "已有node_id", "content": "修正后内容", "reason": "修正依据"}],
   "edge_removes": [{"source": "node_id", "target": "node_id", "relation": "可选", "reason": "删边依据"}],
   "edge_adds": [{"source": "已有node_id", "target": "已有node_id", "relation": "简短关系短语", "reason": "补边依据"}],
+  "node_adds": [{"title": "≤60字", "content": "要点内容", "node_type": "data|interaction",
+                "event_id": "candidates提供的事件ID", "evidence_quote": "原文连续子串",
+                "parent_node_id": "可选，已有父节点ID", "reason": "补节点依据"}],
   "compresses": [{"node_id": "已有data node_id", "content": "概括后内容", "title": "可选精炼标题",
                  "new_edges": [{"source": "node_id", "target": "node_id", "relation": "...", "reason": "补边依据"}],
                  "reason": "压缩依据"}],

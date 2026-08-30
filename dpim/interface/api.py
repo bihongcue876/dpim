@@ -269,6 +269,74 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
             "Gr 计划 → Meta 审核 → 执行稍后完成，结果见图页与日志"
         )
 
+    # ── 优化（语义层，v1.24）：图结构优化两阶段——减碎+补缺 → 连线 ──
+    if cmd.kind == "update":
+        if settings.agent_mode != "pipeline" or not ai_state.available:
+            return _command_response(
+                "优化指令未执行：AI 不可用或 Agent 管线未启用"
+                "（^data 等纯存储指令不受影响）"
+            )
+        if orchestrator is None:
+            raise HTTPException(status_code=503, detail="Orchestrator not initialized")
+        if cmd.scope and gs.get_node(cmd.scope) is None:
+            return _command_response(f"优化指令未执行：限定节点不存在 {cmd.scope}")
+        # 候选预扫描（update 口径：结构相关候选，与 compress 口径不同）
+        from controller.tools.sys_tools import scan_maintenance_candidates
+
+        candidates = scan_maintenance_candidates(gs)
+        if cmd.scope:
+            candidates = {
+                "merge_candidates": [
+                    c for c in candidates["merge_candidates"]
+                    if cmd.scope in (c["target_id"], c["source_id"])
+                ],
+                "zombie_nodes": [
+                    c for c in candidates["zombie_nodes"] if c["node_id"] == cmd.scope
+                ],
+                "low_conf_isolated": [
+                    c for c in candidates["low_conf_isolated"] if c["node_id"] == cmd.scope
+                ],
+                "oversplit_events": [
+                    c for c in candidates["oversplit_events"]
+                    if cmd.scope in {n["node_id"] for n in c["nodes"]}
+                ],
+                "isolated_nodes": [
+                    c for c in candidates["isolated_nodes"] if c["node_id"] == cmd.scope
+                ],
+            }
+        n_merge = len(candidates["merge_candidates"])
+        n_zombie = len(candidates["zombie_nodes"])
+        n_lowconf = len(candidates["low_conf_isolated"])
+        n_oversplit = len(candidates["oversplit_events"])
+        n_isolated = len(candidates["isolated_nodes"])
+        if not any([n_merge, n_zombie, n_lowconf, n_oversplit, n_isolated]):
+            scope_note = f"节点 {cmd.scope}" if cmd.scope else "全图"
+            return _command_response(
+                f"无需优化：{scope_note}扫描未发现结构优化候选"
+                "（无冗余对 / 过碎事件 / 僵尸 / 孤立节点）——图结构已良好"
+            )
+        await orchestrator.enqueue(
+            QueueMessage(
+                type="maintain_graph",
+                payload={"mode": "update", "scope": cmd.scope} if cmd.scope
+                else {"mode": "update"},
+                timestamp=datetime.now(timezone.utc).timestamp(),
+            )
+        )
+        refresh_key()
+        logger.info(
+            "Command update (scope=%s) -> maintain_graph update "
+            "(merge=%d zombie=%d lowconf=%d oversplit=%d isolated=%d)",
+            cmd.scope or "*", n_merge, n_zombie, n_lowconf, n_oversplit, n_isolated,
+        )
+        scope_note = f"（限定节点 {cmd.scope}）" if cmd.scope else ""
+        return _command_response(
+            f"优化指令已入队{scope_note}（两阶段）："
+            f"减碎（重合对 {n_merge} / 同源过碎 {n_oversplit} / 僵尸 {n_zombie} / "
+            f"低置信 {n_lowconf}，可补缺失要点）→ 连线（孤立待连 {n_isolated}）；"
+            "执行稍后完成，结果见图页与日志"
+        )
+
     # ── 确定层：合并 / 删除 / 建系统节点（无 LLM，同步执行）──
     if cmd.kind == "merge":
         target = gs.get_node(cmd.target_id)

@@ -64,6 +64,9 @@ plan（GraphMaintenancePlan）、candidates（扫描候选）。
 7. 合并是否丢内容：合并语义是「内容合并而非丢弃」——执行层会把 source 内容
    整段去重追加进 target；若合并双方语义并不重合且非同源碎片（target 内容与
    source 内容讲的是不同事情）→ fail，防止借合并之名丢内容。
+8. 补节点是否成立（node_adds，update_reduce）：evidence_quote 是否为锚定事件
+   原文的连续子串（→ hallucination）；要点是否确实缺失且必要（图中已有等价
+   节点 → 冗余，fail）；一次补太多 → 建议只保留最必要的。
 
 ### 输出要求
 - 与任务一相同的 verdict / issue 格式；suggestion 必须具体可执行。

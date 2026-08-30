@@ -6,6 +6,10 @@
 - 语义层（需 AI 可用 + 管线启用）：
   ^compress [node_id] —— 图维护（压缩）轮：扫描 → Gr 计划 → Meta 审核 → 执行；
     保守语义：全图足够简练则空计划、不动任何东西；可带节点 ID 限定范围。
+    定位：删繁就简（合并/清僵尸/压缩冗长内容），可补边。
+  ^update [node_id] —— 图结构优化轮（v1.24）：两阶段——减碎（聚合/清理/删错误边/
+    补缺失要点 node_adds）→ 重新扫描 → 连线（edge_adds 把孤立节点连回图）；
+    一轮封顶不循环；节点已良好则不动；可带节点 ID 限定范围。
 - 确定层（无 LLM，同步执行）：
   ^merge <target_id> <source_id> —— 合并节点（源证并集 + 内容去重合并不丢失）
   ^delete <node_id> —— 删除节点（删除保护 + system 保护）
@@ -47,6 +51,7 @@ class ParsedCommand:
 # 指令词（小写）→ 动作 kind
 _VERBS: dict[str, str] = {
     "compress": "compress",
+    "update": "update",
     "merge": "merge",
     "delete": "delete",
     "node": "node",
@@ -93,6 +98,8 @@ def parse_command(content: str) -> ParsedCommand | None:
         return ParsedCommand(kind="help")
     if kind == "compress":
         return ParsedCommand(kind="compress", scope=rest.split()[0] if rest else "")
+    if kind == "update":
+        return ParsedCommand(kind="update", scope=rest.split()[0] if rest else "")
     if kind == "delete":
         if not rest:
             return ParsedCommand(kind="delete", hints=["缺少节点 ID：^delete <node_id>"])
@@ -129,7 +136,8 @@ def usage_text() -> str:
     """全部指令的用法说明（^help / 帮助时返回给用户）。"""
     return (
         "支持的指令（仅 ^ 前缀 + 英文，空格分隔；输入 ^ 可自动弹出候选）：\n"
-        "  ^compress [节点ID] —— 触发图压缩维护（需 AI；全图足够简练则不做任何改动）\n"
+        "  ^compress [节点ID] —— 触发图压缩维护（需 AI；删繁就简定位，可补边）\n"
+        "  ^update [节点ID] —— 图结构优化（需 AI；两阶段：减碎+补缺失要点 → 连线孤岛）\n"
         "  ^merge <目标ID> <源ID> —— 合并节点（内容合并不丢失）\n"
         "  ^delete <节点ID> —— 删除节点（受删除保护与 system 保护）\n"
         "  ^data <内容> —— 按 data 类型存入\n"
