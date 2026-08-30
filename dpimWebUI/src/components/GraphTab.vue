@@ -71,15 +71,34 @@
                 </template>
               </div>
 
-              <template v-if="nodeDetail.source_refs && nodeDetail.source_refs.length > 0">
-                <n-divider style="margin:6px 0" />
-                <div class="detail-label">源事件（{{ nodeDetail.source_refs.length }}）</div>
-                <div v-for="sr in nodeDetail.source_refs" :key="sr.event_id" class="source-ref-row">
-                  <span class="mono-text">{{ sr.event_id.slice(0, 16) }}…</span>
-                  <n-tag size="tiny" :bordered="false" :type="sr.valid ? 'success' : 'error'">{{ sr.valid ? '有效' : '无效' }}</n-tag>
-                  <n-button size="tiny" quaternary type="info" :disabled="!sr.valid" @click="onJumpSourceEvent(sr.event_id)">查看源事件 ▸</n-button>
-                </div>
-              </template>
+              <n-divider style="margin:6px 0" />
+              <div class="detail-label">源事件（{{ (nodeDetail.source_refs || []).length }}）——可增删，至少保留 1 条有效</div>
+              <div v-for="sr in nodeDetail.source_refs" :key="sr.event_id" class="source-ref-row">
+                <span class="mono-text">{{ sr.event_id.slice(0, 16) }}…</span>
+                <n-tag size="tiny" :bordered="false" :type="sr.valid ? 'success' : 'error'">{{ sr.valid ? '有效' : '无效' }}</n-tag>
+                <n-button size="tiny" quaternary type="info" :disabled="!sr.valid" @click="onJumpSourceEvent(sr.event_id)">查看源事件 ▸</n-button>
+                <n-button
+                  size="tiny" quaternary type="error"
+                  :disabled="!canRemoveRef(sr.event_id)"
+                  :loading="removingRefIds.has(sr.event_id)"
+                  :title="canRemoveRef(sr.event_id) ? '移除该源事件' : '至少保留 1 条有效源事件'"
+                  @click="onRemoveSourceRef(sr.event_id)"
+                >移除</n-button>
+              </div>
+              <div class="source-ref-add">
+                <n-input
+                  v-model:value="newSourceEventId"
+                  size="tiny"
+                  placeholder="粘贴事件 ID（如 1722000000000-ab12）"
+                  @keydown.enter="onAddSourceRef"
+                />
+                <n-button
+                  size="tiny" type="primary" ghost
+                  :disabled="!newSourceEventId.trim()"
+                  :loading="addingSourceRef"
+                  @click="onAddSourceRef"
+                >关联源事件</n-button>
+              </div>
 
               <template v-if="nodeDetail.edges && nodeDetail.edges.length > 0">
                 <n-divider style="margin:6px 0" />
@@ -359,6 +378,58 @@ function cancelNodeEdit() {
   if (nodeDetail.value) editNodeContent.value = nodeDetail.value.content
 }
 
+// ── 源事件管理（v1.22）：可增删，最少保留 1 条有效源证 ──
+const newSourceEventId = ref('')
+const addingSourceRef = ref(false)
+const removingRefIds = ref<Set<string>>(new Set())
+
+const validRefCount = computed(() => {
+  const refs = nodeDetail.value?.source_refs as Array<{ valid: boolean }> | undefined
+  return refs ? refs.filter(sr => sr.valid).length : 0
+})
+
+function canRemoveRef(eventId: string): boolean {
+  const refs = nodeDetail.value?.source_refs as Array<{ event_id: string; valid: boolean }> | undefined
+  if (!refs) return false
+  const target = refs.find(sr => sr.event_id === eventId)
+  if (!target) return false
+  // 无效源证移除不影响有效源证数；有效源证移除后须仍剩 ≥1 条
+  if (!target.valid) return true
+  return validRefCount.value > 1
+}
+
+async function onAddSourceRef() {
+  const eventId = newSourceEventId.value.trim()
+  if (!highlightId.value || !eventId) return
+  addingSourceRef.value = true
+  try {
+    await api.addNodeSourceRef(highlightId.value, eventId)
+    newSourceEventId.value = ''
+    nodeDetail.value = await api.getNode(highlightId.value)
+    message.success('源事件已关联到节点')
+  } catch (e: any) {
+    message.error('添加失败: ' + (e.message || '未知错误'))
+  } finally { addingSourceRef.value = false }
+}
+
+async function onRemoveSourceRef(eventId: string) {
+  if (!highlightId.value || !canRemoveRef(eventId)) return
+  const next = new Set(removingRefIds.value)
+  next.add(eventId)
+  removingRefIds.value = next
+  try {
+    await api.removeNodeSourceRef(highlightId.value, eventId)
+    nodeDetail.value = await api.getNode(highlightId.value)
+    message.success('源事件已从节点移除')
+  } catch (e: any) {
+    message.error('移除失败: ' + (e.message || '未知错误'))
+  } finally {
+    const cleanup = new Set(removingRefIds.value)
+    cleanup.delete(eventId)
+    removingRefIds.value = cleanup
+  }
+}
+
 async function doDeleteNode() {
   if (!highlightId.value) return
   try {
@@ -488,5 +559,6 @@ h4 { margin: 0 0 10px; font-size: 14px; color: var(--dpim-text, #e6edf3); }
 }
 .detail-label { font-size: 13px; font-weight: 600; color: var(--dpim-text-3, #7c8694); margin-bottom: 4px; }
 .source-ref-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; }
+.source-ref-add { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
 .mono-text { font-family: 'Cascadia Code', Consolas, monospace; font-size: 12px; color: var(--dpim-text-3, #7c8694); }
 </style>

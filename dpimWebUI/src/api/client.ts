@@ -265,6 +265,22 @@ export async function putNode(nodeId: string, content: string): Promise<void> {
   })
 }
 
+/** v1.22：节点追加源事件（幂等；事件须存在） */
+export async function addNodeSourceRef(nodeId: string, eventId: string): Promise<void> {
+  await req(`/nodes/${nodeId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ add_source_event_id: eventId }),
+  })
+}
+
+/** v1.22：节点移除源事件（后端守卫：最少保留 1 条有效源证，否则 409） */
+export async function removeNodeSourceRef(nodeId: string, eventId: string): Promise<void> {
+  await req(`/nodes/${nodeId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ remove_source_event_id: eventId }),
+  })
+}
+
 export async function deleteNode(nodeId: string, force = false): Promise<void> {
   await req(`/nodes/${nodeId}`, {
     method: 'DELETE',
