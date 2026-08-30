@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.21 (对话指令系统：仅 ^英文动词 空格分隔（^compress ^merge ^delete ^data ^interaction ^source ^node ^help），被 ban 形式按普通文本落库；IngestResponse.command_triggered + 高水位 200/冷却 60 + 压缩底线与合并底线 + 前端指令候选弹层；23 端点)
+// 版本 1.22 (对话指令系统（仅 ^英文动词）+ 同源聚合治碎 + 节点语义（一节点一要点/多事件关联/子节点）+ PUT /nodes 源事件增删（最少 1 条有效源证）；23 端点)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -294,7 +294,12 @@ export interface DeleteNodeResponse {
 
 // ---- 修改节点 ----
 export interface ModifyNodeRequest {
-  content: string;
+  /** 修改内容（可选；system 节点禁止） */
+  content?: string;
+  /** v1.22：追加源事件（幂等，事件须存在） */
+  add_source_event_id?: string;
+  /** v1.22：移除源事件（移除后须仍保留 ≥1 条有效源证，否则 409） */
+  remove_source_event_id?: string;
 }
 
 export interface ModifyNodeResponse {

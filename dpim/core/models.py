@@ -252,7 +252,16 @@ class DeleteNodeRequest(BaseModel):
 
 
 class ModifyNodeRequest(BaseModel):
-    content: str
+    """节点修改：内容修改与源事件增删可任选（至少一项）。
+
+    - content：修改内容（system 节点禁止）
+    - add_source_event_id：追加源事件（幂等，事件须存在）
+    - remove_source_event_id：移除源事件（移除后须仍保留 ≥1 条有效源证）
+    """
+
+    content: str = ""
+    add_source_event_id: str = ""
+    remove_source_event_id: str = ""
 
 
 class ModifyEventStatusRequest(BaseModel):

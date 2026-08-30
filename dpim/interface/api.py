@@ -387,11 +387,39 @@ async def modify_node(node_id: str, body: ModifyNodeRequest):
     node = gs.get_node(node_id)
     if node is None:
         raise HTTPException(status_code=404, detail="Node not found")
-    if node.node_type.value == "system":
+    has_content = bool(body.content.strip())
+    has_source_op = bool(body.add_source_event_id or body.remove_source_event_id)
+    if not has_content and not has_source_op:
+        raise HTTPException(status_code=400, detail="No changes requested")
+    # system 节点仅允许源事件管理（内容仍禁改——人工维护语义）
+    if has_content and node.node_type.value == "system":
         raise HTTPException(status_code=403, detail="System nodes cannot be modified")
-    # update_node 统一标记脏位：修改必须落盘，杜绝静默丢失
-    updated = gs.update_node(node_id, content=body.content, confidence=0.7)
-    await gs.upsert_node_fts(node_id, updated.title, updated.content)
+    if has_content:
+        # update_node 统一标记脏位：修改必须落盘，杜绝静默丢失
+        updated = gs.update_node(node_id, content=body.content, confidence=0.7)
+        await gs.upsert_node_fts(node_id, updated.title, updated.content)
+    if body.add_source_event_id:
+        ev = await es.get(body.add_source_event_id)
+        if ev is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        # 幂等追加：hash 与事件 content_hash 一致（「hash 供核对」不变式）
+        gs.add_source_ref(node_id, body.add_source_event_id, ev["content_hash"])
+    if body.remove_source_event_id:
+        # 最少源证守卫：移除后必须仍保留 ≥1 条有效源证（溯源锚定不断线）
+        remaining = [
+            sr for sr in node.source_refs
+            if sr.valid and sr.event_id != body.remove_source_event_id
+        ]
+        if not remaining:
+            raise HTTPException(
+                status_code=409,
+                detail="Node must keep at least one valid source reference",
+            )
+        if not gs.remove_source_ref(node_id, body.remove_source_event_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Source reference {body.remove_source_event_id} not found on node",
+            )
     await gs.flush()
     refresh_key()
     return _ok(node_id=node_id, message="Node updated")

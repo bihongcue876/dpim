@@ -383,6 +383,39 @@ class TestGraphStoreMerge:
         assert {sr.event_id for sr in node.source_refs} == {"e1", "e2"}
 
 
+class TestGraphStoreSourceRefEdit:
+    """源证编辑（v1.22）：节点可增删关联事件，反向索引同步。"""
+
+    @pytest.mark.asyncio
+    async def test_add_source_ref(self, graph_store_with_data: GraphStore):
+        """追加源事件：source_refs 增长 + 反向索引登记 + 幂等。"""
+        assert graph_store_with_data.add_source_ref("n1", "e9", "h9") is True
+        node = graph_store_with_data.get_node("n1")
+        assert {sr.event_id for sr in node.source_refs} >= {"e1", "e9"}
+        assert "n1" in graph_store_with_data.event_to_nodes["e9"]
+        # 幂等：重复添加不产生重复源证
+        assert graph_store_with_data.add_source_ref("n1", "e9") is True
+        node = graph_store_with_data.get_node("n1")
+        assert sum(1 for sr in node.source_refs if sr.event_id == "e9") == 1
+
+    @pytest.mark.asyncio
+    async def test_add_source_ref_missing_node(self, graph_store_with_data: GraphStore):
+        assert graph_store_with_data.add_source_ref("ghost", "e9") is False
+
+    @pytest.mark.asyncio
+    async def test_remove_source_ref(self, graph_store_with_data: GraphStore):
+        """移除源证：source_refs 缩短 + 反向索引清理。"""
+        assert graph_store_with_data.remove_source_ref("n3", "e1") is True
+        node = graph_store_with_data.get_node("n3")
+        assert all(sr.event_id != "e1" for sr in node.source_refs)
+        assert "n3" not in graph_store_with_data.event_to_nodes.get("e1", [])
+
+    @pytest.mark.asyncio
+    async def test_remove_source_ref_missing(self, graph_store_with_data: GraphStore):
+        assert graph_store_with_data.remove_source_ref("n1", "ghost-event") is False
+        assert graph_store_with_data.remove_source_ref("ghost", "e2") is False
+
+
 class TestGraphStoreEgoGraph:
     @pytest.mark.asyncio
     async def test_ego_graph_returns_neighbors(self, graph_store_with_data: GraphStore):

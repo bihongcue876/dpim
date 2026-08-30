@@ -321,6 +321,47 @@ class GraphStore:
         self._mark_dirty()
         return removed
 
+    def add_source_ref(self, node_id: str, event_id: str, content_hash: str = "") -> bool:
+        """给节点追加源证（幂等：已存在同事件源证时直接成功）。
+
+        同步反向索引 event_to_nodes；标记脏位（调用方负责 flush 落盘）。
+        节点不存在返回 False。
+        """
+        node = self.get_node(node_id)
+        if node is None:
+            return False
+        if any(sr.event_id == event_id for sr in node.source_refs):
+            return True
+        node.source_refs.append(
+            SourceRef(event_id=event_id, valid=True, hash=content_hash)
+        )
+        self.event_to_nodes.setdefault(event_id, []).append(node_id)
+        self.graph.nodes[node_id]["data"] = node
+        self._mark_dirty()
+        return True
+
+    def remove_source_ref(self, node_id: str, event_id: str) -> bool:
+        """移除节点的一条源证并同步反向索引。
+
+        「最少一条有效源证」守卫由调用方执行（需结合全部节点状态判断）；
+        节点或该源证不存在返回 False。标记脏位（调用方负责 flush）。
+        """
+        node = self.get_node(node_id)
+        if node is None:
+            return False
+        before = len(node.source_refs)
+        node.source_refs = [sr for sr in node.source_refs if sr.event_id != event_id]
+        if len(node.source_refs) == before:
+            return False
+        refs = self.event_to_nodes.get(event_id, [])
+        if node_id in refs:
+            refs.remove(node_id)
+            if not refs:
+                self.event_to_nodes.pop(event_id, None)
+        self.graph.nodes[node_id]["data"] = node
+        self._mark_dirty()
+        return True
+
     def get_edge(self, source: str, target: str) -> GraphEdge | None:
         edata = self.graph.edges.get((source, target), {}).get("data")
         return edata

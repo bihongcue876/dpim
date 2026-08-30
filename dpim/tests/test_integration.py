@@ -176,6 +176,103 @@ class TestModifyNodeEndpoint:
         assert node.confidence == 0.7
 
 
+class TestNodeSourceRefEndpoint:
+    """源事件管理（v1.22）：节点可增删关联事件，最少保留 1 条有效源证。"""
+
+    def test_add_source_ref(self, test_app):
+        """追加源事件：source_refs 并集 + hash 与事件一致。"""
+        create = test_app.post(
+            "/ingest", json={"content": "八段锦的呼吸要领", "event_type": "data"}
+        )
+        eid = create.json()["event_id"]
+        api.graph_store.add_node(GraphNode(
+            node_id="multi_ref", title="八段锦", content="健身气功",
+            node_type=NodeType.data,
+            source_refs=[SourceRef(event_id="e1", valid=True, hash="h")],
+            confidence=0.8,
+            metadata=NodeMetadata(evidence_quote="八段锦"),
+        ))
+        resp = test_app.put("/nodes/multi_ref", json={"add_source_event_id": eid})
+        assert resp.status_code == 200
+        node = api.graph_store.get_node("multi_ref")
+        assert {sr.event_id for sr in node.source_refs} == {"e1", eid}
+        added = next(sr for sr in node.source_refs if sr.event_id == eid)
+        ev = test_app.get(f"/events/{eid}").json()
+        assert added.hash == ev["content_hash"]  # hash 供核对不变式
+        # 幂等：重复添加不产生重复源证
+        test_app.put("/nodes/multi_ref", json={"add_source_event_id": eid})
+        node = api.graph_store.get_node("multi_ref")
+        assert sum(1 for sr in node.source_refs if sr.event_id == eid) == 1
+
+    def test_add_source_ref_missing_event(self, test_app):
+        api.graph_store.add_node(GraphNode(
+            node_id="n_add404", title="X", content="x", node_type=NodeType.data,
+            source_refs=[SourceRef(event_id="e1", valid=True, hash="h")],
+            confidence=0.8, metadata=NodeMetadata(evidence_quote="x"),
+        ))
+        resp = test_app.put("/nodes/n_add404", json={"add_source_event_id": "ghost"})
+        assert resp.status_code == 404
+
+    def test_remove_source_ref(self, test_app):
+        """移除源事件：两条有效源证 → 移除一条后仍剩一条。"""
+        create = test_app.post(
+            "/ingest", json={"content": "第二事件内容", "event_type": "data"}
+        )
+        eid = create.json()["event_id"]
+        api.graph_store.add_node(GraphNode(
+            node_id="n_rm", title="多源节点", content="内容",
+            node_type=NodeType.data,
+            source_refs=[
+                SourceRef(event_id="e1", valid=True, hash="h"),
+                SourceRef(event_id=eid, valid=True, hash="h2"),
+            ],
+            confidence=0.8, metadata=NodeMetadata(evidence_quote="内容"),
+        ))
+        resp = test_app.put("/nodes/n_rm", json={"remove_source_event_id": eid})
+        assert resp.status_code == 200
+        node = api.graph_store.get_node("n_rm")
+        assert [sr.event_id for sr in node.source_refs] == ["e1"]
+
+    def test_remove_last_valid_source_ref_refused(self, test_app):
+        """最少源证守卫：仅剩一条有效源证时移除 → 409。"""
+        api.graph_store.add_node(GraphNode(
+            node_id="n_last", title="单源节点", content="内容",
+            node_type=NodeType.data,
+            source_refs=[SourceRef(event_id="e1", valid=True, hash="h")],
+            confidence=0.8, metadata=NodeMetadata(evidence_quote="内容"),
+        ))
+        resp = test_app.put("/nodes/n_last", json={"remove_source_event_id": "e1"})
+        assert resp.status_code == 409
+        node = api.graph_store.get_node("n_last")
+        assert [sr.event_id for sr in node.source_refs] == ["e1"]
+
+    def test_no_change_refused(self, test_app):
+        api.graph_store.add_node(GraphNode(
+            node_id="n_noop", title="X", content="x", node_type=NodeType.data,
+            source_refs=[], confidence=0.8, metadata=NodeMetadata(evidence_quote="x"),
+        ))
+        resp = test_app.put("/nodes/n_noop", json={})
+        assert resp.status_code == 400
+
+    def test_system_node_source_op_allowed(self, test_app):
+        """system 节点仅允许源事件操作（内容仍禁改）。"""
+        create = test_app.post(
+            "/ingest", json={"content": "给系统节点挂源证", "event_type": "data"}
+        )
+        eid = create.json()["event_id"]
+        api.graph_store.add_node(GraphNode(
+            node_id="sys_src", title="系统", content="系统内容", node_type=NodeType.system,
+            source_refs=[], confidence=1.0, metadata=NodeMetadata(evidence_quote="系统内容"),
+        ))
+        resp = test_app.put("/nodes/sys_src", json={"add_source_event_id": eid})
+        assert resp.status_code == 200
+        node = api.graph_store.get_node("sys_src")
+        assert [sr.event_id for sr in node.source_refs] == [eid]
+        # 内容仍禁改
+        resp = test_app.put("/nodes/sys_src", json={"content": "hack"})
+        assert resp.status_code == 403
+
+
 class TestCreateNodeEndpoint:
     """POST /nodes 创建图节点"""
 

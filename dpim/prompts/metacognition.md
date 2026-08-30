@@ -17,6 +17,9 @@ proposal（GraphBuildOutput）、source_content（原始事件）、relevant_edg
    （如 supports 与 contradicts 并存、part_of 与 instance_of 重复）→ conflict。
 2. 质量复核：evidence_quote 能否支撑节点 content；不能支撑 → hallucination；
    content 无实质内容 → empty_node。
+3. 一节点一要点：new_node 的 content/title 是否只表达一个要点——明显拼接了
+   多个互不相关要点的节点 → fail，建议「把次要方面拆为子节点并用 subtopic_of
+   挂边」；同一要点跨事件应并入已有节点（merged_into），而非重复新建。
 
 ### 输出要求
 - 全部通过 → verdict:"pass"，issues:[]。
