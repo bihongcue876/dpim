@@ -284,6 +284,117 @@ class TestMaintenanceLocalChecks:
         )
         assert run_maintenance_local_checks(graph_store, plan) == []
 
+    @pytest.mark.asyncio
+    async def test_merge_restraint_low_overlap_no_pressure(self, graph_store):
+        """合并底线：无规模压力时，重合 < jaccard_threshold 的合并驳回。"""
+        from core.models import GraphMaintenancePlan, MaintenanceMerge
+        from tests.factories import make_node
+        await make_node(graph_store, "t", "Python 编程", "内容A")
+        await make_node(graph_store, "s", "Python 编程进阶", "内容B")
+        plan = GraphMaintenancePlan(
+            merges=[MaintenanceMerge(target_id="t", source_ids=["s"], reason="重合")],
+            confidence=0.9,
+        )
+        candidates = {
+            "size_pressure": False,
+            "merge_candidates": [
+                {"target_id": "t", "source_id": "s", "overlap": 0.6},
+            ],
+        }
+        issues = run_maintenance_local_checks(graph_store, plan, candidates)
+        assert any("无规模压力下合并重合不足" in i.description for i in issues)
+
+    @pytest.mark.asyncio
+    async def test_merge_restraint_allows_high_overlap(self, graph_store):
+        """无规模压力下重合 ≥ jaccard_threshold（近似等价）→ 放行。"""
+        from core.models import GraphMaintenancePlan, MaintenanceMerge
+        from tests.factories import make_node
+        await make_node(graph_store, "t", "Python 编程", "内容A")
+        await make_node(graph_store, "s", "Python 编程", "内容B")
+        plan = GraphMaintenancePlan(
+            merges=[MaintenanceMerge(target_id="t", source_ids=["s"], reason="等价")],
+            confidence=0.9,
+        )
+        candidates = {
+            "size_pressure": False,
+            "merge_candidates": [
+                {"target_id": "t", "source_id": "s", "overlap": 0.9},
+            ],
+        }
+        assert run_maintenance_local_checks(graph_store, plan, candidates) == []
+
+    @pytest.mark.asyncio
+    async def test_merge_restraint_lifted_under_pressure(self, graph_store):
+        """规模压力（资料库太过庞大）→ 放宽合并，低重合也放行。"""
+        from core.models import GraphMaintenancePlan, MaintenanceMerge
+        from tests.factories import make_node
+        await make_node(graph_store, "t", "Python 编程", "内容A")
+        await make_node(graph_store, "s", "Python 编程进阶", "内容B")
+        plan = GraphMaintenancePlan(
+            merges=[MaintenanceMerge(target_id="t", source_ids=["s"], reason="瘦身")],
+            confidence=0.9,
+        )
+        candidates = {
+            "size_pressure": True,
+            "merge_candidates": [
+                {"target_id": "t", "source_id": "s", "overlap": 0.6},
+            ],
+        }
+        assert run_maintenance_local_checks(graph_store, plan, candidates) == []
+
+    @pytest.mark.asyncio
+    async def test_oversplit_same_source_merge_exempt(self, graph_store):
+        """同源豁免：同一过碎事件的碎片节点对不受合并底线约束（治碎聚合）。"""
+        from core.models import GraphMaintenancePlan, MaintenanceMerge
+        from tests.factories import make_node
+        for i in range(6):
+            await make_node(graph_store, f"s{i}", f"主题{i}", f"完全不同方面的内容{i}号")
+        plan = GraphMaintenancePlan(
+            merges=[MaintenanceMerge(target_id="s0", source_ids=["s1"], reason="同源聚合")],
+            confidence=0.9,
+        )
+        candidates = {
+            "size_pressure": False,
+            "oversplit_events": [{
+                "event_id": "e1",
+                "count": 6,
+                "nodes": [
+                    {"node_id": f"s{i}", "title": "", "node_type": "data", "snippet": ""}
+                    for i in range(6)
+                ],
+            }],
+        }
+        assert run_maintenance_local_checks(graph_store, plan, candidates) == []
+
+    @pytest.mark.asyncio
+    async def test_oversplit_exemption_requires_both_in_group(self, graph_store):
+        """豁免要求双方同属一个过碎组：拉入组外节点仍驳回。"""
+        from core.models import GraphMaintenancePlan, MaintenanceMerge
+        from tests.factories import make_node
+        for i in range(6):
+            await make_node(graph_store, f"s{i}", f"主题{i}", f"同事件碎片{i}")
+        await make_node(graph_store, "out1", "外部", "别的事件的节点")
+        plan = GraphMaintenancePlan(
+            merges=[MaintenanceMerge(target_id="s0", source_ids=["out1"], reason="x")],
+            confidence=0.9,
+        )
+        candidates = {
+            "size_pressure": False,
+            "merge_candidates": [
+                {"target_id": "s0", "source_id": "out1", "overlap": 0.5},
+            ],
+            "oversplit_events": [{
+                "event_id": "e1",
+                "count": 6,
+                "nodes": [
+                    {"node_id": f"s{i}", "title": "", "node_type": "data", "snippet": ""}
+                    for i in range(6)
+                ],
+            }],
+        }
+        issues = run_maintenance_local_checks(graph_store, plan, candidates)
+        assert any("无规模压力下合并重合不足" in i.description for i in issues)
+
 
 class TestApplyMaintenance:
     @pytest.mark.asyncio
@@ -402,13 +513,70 @@ class TestCompressMaintenance:
 
     @pytest.mark.asyncio
     async def test_compress_candidate_deep_refs(self, graph_store):
-        """data 节点溯源关联深重（有效源证 ≥ 3）→ 可压缩候选。"""
+        """data 节点溯源关联深重（有效源证 ≥ 3）且内容未达底线 → 可压缩候选。"""
+        from tests.factories import make_node
+        await make_node(graph_store, "d1", "主题", "内容碎片化累积" * 30, event_id="e1")
+        graph_store.merge_into("d1", event_id="e2", content_hash="h2")
+        graph_store.merge_into("d1", event_id="e3", content_hash="h3")
+        c = scan_maintenance_candidates(graph_store)
+        assert any(x["node_id"] == "d1" for x in c["compress_candidates"])
+
+    @pytest.mark.asyncio
+    async def test_compress_floor_short_content_excluded(self, graph_store):
+        """压缩底线：内容已足够短（< 200 字符）的资料不进压缩候选——
+        「一份资料已经对应了足够少的内容，如何缩减都不要再缩减了」。"""
         from tests.factories import make_node
         await make_node(graph_store, "d1", "主题", "内容", event_id="e1")
         graph_store.merge_into("d1", event_id="e2", content_hash="h2")
         graph_store.merge_into("d1", event_id="e3", content_hash="h3")
         c = scan_maintenance_candidates(graph_store)
-        assert any(x["node_id"] == "d1" for x in c["compress_candidates"])
+        assert not any(x["node_id"] == "d1" for x in c["compress_candidates"])
+
+    @pytest.mark.asyncio
+    async def test_size_pressure_flag(self, graph_store, monkeypatch):
+        """规模压力标记：总节点数 ≥ 高水位 → true（允许放宽合并）。"""
+        from core.config import settings
+        from tests.factories import make_node
+        await make_node(graph_store, "d1", "主题", "内容")
+        monkeypatch.setattr(settings, "agent_maintain_max_nodes", 1)
+        assert scan_maintenance_candidates(graph_store)["size_pressure"] is True
+        monkeypatch.setattr(settings, "agent_maintain_max_nodes", 999)
+        assert scan_maintenance_candidates(graph_store)["size_pressure"] is False
+
+    @pytest.mark.asyncio
+    async def test_oversplit_event_flagged(self, db, event_store, graph_store):
+        """同源过碎：单条事件拆出 ≥6 个有效节点 → 过碎候选（治碎聚合用）。"""
+        from tests.factories import make_node
+        eid, _ = await event_store.insert("一个被拆得很碎的事件", "data")
+        for i in range(6):
+            await make_node(graph_store, f"s{i}", f"碎片{i}", f"内容{i}", event_id=eid)
+        c = scan_maintenance_candidates(graph_store)
+        hits = [o for o in c["oversplit_events"] if o["event_id"] == eid]
+        assert len(hits) == 1 and hits[0]["count"] == 6
+        assert {n["node_id"] for n in hits[0]["nodes"]} == {f"s{i}" for i in range(6)}
+
+    @pytest.mark.asyncio
+    async def test_oversplit_not_flagged_below_threshold(self, db, event_store, graph_store):
+        """事件节点数 < 6 → 不过碎，不进候选。"""
+        from tests.factories import make_node
+        eid, _ = await event_store.insert("拆得不算碎的事件", "data")
+        for i in range(5):
+            await make_node(graph_store, f"s{i}", f"碎片{i}", f"内容{i}", event_id=eid)
+        c = scan_maintenance_candidates(graph_store)
+        assert not any(o["event_id"] == eid for o in c["oversplit_events"])
+
+    @pytest.mark.asyncio
+    async def test_oversplit_excludes_system_nodes(self, db, event_store, graph_store):
+        """system 节点不计入过碎统计（也永不参与聚合）。"""
+        from tests.factories import make_node
+        eid, _ = await event_store.insert("事件", "data")
+        for i in range(5):
+            await make_node(graph_store, f"s{i}", f"碎片{i}", f"内容{i}", event_id=eid)
+        await make_node(graph_store, "sys1", "系统", "内容",
+                        node_type=NodeType.system, event_id=eid)
+        c = scan_maintenance_candidates(graph_store)
+        hits = [o for o in c["oversplit_events"] if o["event_id"] == eid]
+        assert not hits  # 5 个 data + 1 个 system → 计 5 < 6，不候选
 
     @pytest.mark.asyncio
     async def test_compress_candidate_excludes_system_interaction(self, graph_store):

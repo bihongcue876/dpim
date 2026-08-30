@@ -36,6 +36,15 @@ def serve(host: str = "127.0.0.1", port: int = 8000, reload: bool = False):
 @cli.command()
 def ingest(content: str, event_type: str = typer.Option("interaction", help="事件类型：interaction / data / source")):
     """写入一条原始事件"""
+    from core.commands import parse_command, usage_text
+
+    if parse_command(content) is not None:
+        # 对话指令需经运行中的服务执行（WebUI / dpimCLI / POST /ingest），
+        # 本命令直写存储层无法触发管线，直接落库会污染事件日志
+        typer.echo("检测到对话指令：请通过运行中的服务使用（WebUI 信息传入 / dpimCLI ingest）。")
+        typer.echo(usage_text())
+        raise typer.Exit(1)
+
     async def _run():
         db, es, gs = await _stores()
         eid, status = await es.insert_event(content, event_type)

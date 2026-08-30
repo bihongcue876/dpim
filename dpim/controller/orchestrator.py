@@ -325,11 +325,38 @@ class Orchestrator:
             )
             return
         candidates = scan_maintenance_candidates(self.graph_store)
+        # 指令范围限定（^compress <node_id>）：候选只保留与 scope 相关节点，
+        # 执行层因此只会动到该节点附近——范围外候选一律不进计划
+        scope = payload.get("scope")
+        if scope:
+            candidates = {
+                "merge_candidates": [
+                    c for c in candidates["merge_candidates"]
+                    if scope in (c["target_id"], c["source_id"])
+                ],
+                "zombie_nodes": [
+                    c for c in candidates["zombie_nodes"] if c["node_id"] == scope
+                ],
+                "low_conf_isolated": [
+                    c for c in candidates["low_conf_isolated"] if c["node_id"] == scope
+                ],
+                "compress_candidates": [
+                    c for c in candidates["compress_candidates"] if c["node_id"] == scope
+                ],
+                "oversplit_events": [
+                    c for c in candidates["oversplit_events"]
+                    if scope in {n["node_id"] for n in c["nodes"]}
+                ],
+                "total_nodes": candidates["total_nodes"],
+                # 保留规模压力标记：合并底线硬规则依赖它判断是否放宽
+                "size_pressure": candidates.get("size_pressure", False),
+            }
         if not any([
             candidates.get("merge_candidates"),
             candidates.get("zombie_nodes"),
             candidates.get("low_conf_isolated"),
             candidates.get("compress_candidates"),
+            candidates.get("oversplit_events"),
         ]):
             logger.info("Graph maintenance: no candidates")
             return

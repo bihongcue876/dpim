@@ -89,7 +89,7 @@ async def tool_meta_review_maintenance(
     """
     from .sys_tools import run_maintenance_local_checks
 
-    local_issues = run_maintenance_local_checks(graph_store, plan)
+    local_issues = run_maintenance_local_checks(graph_store, plan, candidates)
     if local_issues:
         return empty_verdict(local_issues)
 

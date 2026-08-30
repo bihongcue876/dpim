@@ -242,6 +242,9 @@ class IngestResponse(BaseModel):
     event_id: str
     status: EventStatus
     message: str
+    # 对话指令触发（/压缩、/合并、/delete、/data: 等）：未创建事件时
+    # event_id 为空、status=skipped；message 携带面向用户的执行结果
+    command_triggered: bool = False
 
 
 class DeleteNodeRequest(BaseModel):

@@ -332,6 +332,14 @@ _MAINTENANCE_CANDIDATE_CAP = 30
 # 溯源关联深重（多源证并入 → 内容累积成碎片）或内容冗长（单事件大段）的 data 节点。
 _COMPRESS_MIN_REFS = 3       # 有效源证数：≥3 条事件并入 → 溯源关联深重
 _COMPRESS_MIN_CONTENT = 500  # content 字符数：≥500 → 冗长，值得概括
+# 压缩底线（v1.20）：内容低于该长度时不进压缩候选——「一份资料已经对应了
+# 足够少的内容，如何缩减都不要再缩减了」，防止反复概括的损失螺旋
+_COMPRESS_FLOOR_CONTENT = 200
+# 同源过碎（v1.21）：单条事件拆出的节点数达到该阈值 → 过碎候选，
+# 供 Gr 把同一事件的碎片节点聚合粗化为少数主题节点（源证相同，合并不丢溯源）
+_OVERSPLIT_MIN_NODES = 6
+# 过碎候选列出的节点清单上限（防超大事件撑爆 Gr 上下文）
+_OVERSPLIT_NODE_CAP = 15
 
 
 def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
@@ -341,8 +349,11 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
       （词桶优化：只比较共享词的节点对，避免全图 O(n²)）
     - zombie_nodes：无有效源证的节点（可删除候选；system 除外）
     - low_conf_isolated：confidence < 0.4 且无边的孤立节点（需判断）
-    - compress_candidates：data 节点（非 system/interaction），溯源关联深重
-      （有效源证 ≥ _COMPRESS_MIN_REFS）或内容冗长（≥ _COMPRESS_MIN_CONTENT）
+    - compress_candidates：data 节点（非 system/interaction），内容冗长
+      （≥ _COMPRESS_MIN_CONTENT）或溯源关联深重且内容未达压缩底线
+    - oversplit_events：单条事件拆出节点数 ≥ _OVERSPLIT_MIN_NODES 的过碎候选
+     （同源聚合粗化用；源证相同的节点对可豁免合并底线，见硬规则）
+    - size_pressure：总节点数 ≥ 高水位（规模压力下才允许放宽合并）
     """
     from core.text_utils import tokenize_query
 
@@ -416,14 +427,19 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
             })
 
     # 节点压缩候选：仅 data 节点（非 system/interaction），
-    # 溯源关联深重（多有效源证）或内容冗长 → 可概括压缩（system 永不参与）
+    # 内容冗长（≥ _COMPRESS_MIN_CONTENT）或溯源关联深重且内容未达底线
+    #（有效源证 ≥ _COMPRESS_MIN_REFS 且 content ≥ _COMPRESS_FLOOR_CONTENT）→
+    # 可概括压缩（system 永不参与；内容已足够短的不压缩，防损失螺旋）
     compress_candidates: list[dict] = []
     for nid, ndata in graph_store.graph.nodes(data="data"):
         if ndata is None or ndata.node_type.value != "data":
             continue
         valid_refs = sum(1 for sr in ndata.source_refs if sr.valid)
         content_len = len(ndata.content or "")
-        if valid_refs >= _COMPRESS_MIN_REFS or content_len >= _COMPRESS_MIN_CONTENT:
+        if content_len >= _COMPRESS_MIN_CONTENT or (
+            valid_refs >= _COMPRESS_MIN_REFS
+            and content_len >= _COMPRESS_FLOOR_CONTENT
+        ):
             compress_candidates.append({
                 "node_id": nid,
                 "title": ndata.title,
@@ -432,23 +448,74 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
                 "content": (ndata.content or "")[:200],
             })
 
+    # 同源过碎候选（v1.21）：单条事件拆出的有效节点数过多 → 碎片化，
+    # 供 Gr 把该事件的碎片节点聚合粗化为少数主题节点（走 merges 通道，
+    # 源证本就相同，合并不丢溯源；system 节点不参与）
+    oversplit_events: list[dict] = []
+    for event_id, node_ids in graph_store.event_to_nodes.items():
+        members: list[dict] = []
+        for nid in node_ids:
+            node = graph_store.get_node(nid)
+            if node is None or node.node_type.value == "system":
+                continue
+            if not any(
+                sr.event_id == event_id and sr.valid for sr in node.source_refs
+            ):
+                continue
+            members.append({
+                "node_id": nid,
+                "title": node.title,
+                "node_type": node.node_type.value,
+                "snippet": (node.content or "")[:60],
+            })
+        if len(members) >= _OVERSPLIT_MIN_NODES:
+            oversplit_events.append({
+                "event_id": event_id,
+                "count": len(members),
+                "nodes": members[:_OVERSPLIT_NODE_CAP],
+            })
+
     return {
         "merge_candidates": merge_candidates[:_MAINTENANCE_CANDIDATE_CAP],
         "zombie_nodes": zombie_nodes[:_MAINTENANCE_CANDIDATE_CAP],
         "low_conf_isolated": low_conf_isolated[:_MAINTENANCE_CANDIDATE_CAP],
         "compress_candidates": compress_candidates[:_MAINTENANCE_CANDIDATE_CAP],
+        "oversplit_events": oversplit_events[:_MAINTENANCE_CANDIDATE_CAP],
         "total_nodes": graph_store.total_nodes(),
+        # 规模压力：总节点数达到高水位（资料库太过庞大）→ 允许放宽合并调节；
+        # 未达高水位时仅近似等价（重合 ≥ jaccard_threshold）可合并（硬规则见下）
+        "size_pressure": (
+            graph_store.total_nodes() >= settings.agent_maintain_max_nodes
+        ),
     }
 
 
-def run_maintenance_local_checks(graph_store: Any, plan: Any) -> list[MetaCogIssue]:
-    """维护计划本地硬规则（无 LLM）：存在性 / 类型边界 / 删除保护。
+def run_maintenance_local_checks(
+    graph_store: Any, plan: Any, candidates: dict | None = None
+) -> list[MetaCogIssue]:
+    """维护计划本地硬规则（无 LLM）：存在性 / 类型边界 / 删除保护 / 合并底线。
 
     与协议保护对齐：system 永不参与；data 仅无有效源证可删；
-    合并仅同类型；修改内容非空；压缩仅 data（概括非空、补边合法）。
+    合并仅同类型；修改内容非空；压缩仅 data（概括非空、不得变长、补边合法）。
+    合并底线（v1.20）：共性已被充分描述时不再调节——无规模压力
+    （candidates.size_pressure=False）时，重合度 < jaccard_threshold 的合并
+    一律驳回（仅近似等价可合并）；传入 candidates 为 None 时跳过该项。
+    同源豁免（v1.21）：同一过碎事件（oversplit_events）拆出的节点对不受
+    合并底线约束——它们本就是同一件事的碎片，聚合粗化正是压缩的目的。
     任何问题即 fail 级 issues。
     """
     issues: list[MetaCogIssue] = []
+    # 合并底线：候选对重合度 → (target, source) 两种顺序都登记
+    pair_overlap: dict[tuple[str, str], float] = {}
+    size_pressure = False
+    oversplit_groups: list[set[str]] = []
+    if candidates:
+        size_pressure = bool(candidates.get("size_pressure"))
+        for c in candidates.get("merge_candidates", []):
+            pair_overlap[(c["target_id"], c["source_id"])] = c.get("overlap", 0.0)
+            pair_overlap[(c["source_id"], c["target_id"])] = c.get("overlap", 0.0)
+        for o in candidates.get("oversplit_events", []):
+            oversplit_groups.append({n["node_id"] for n in o.get("nodes", [])})
     for m in plan.merges:
         target = graph_store.get_node(m.target_id)
         if target is None:
@@ -466,19 +533,41 @@ def run_maintenance_local_checks(graph_store: Any, plan: Any) -> list[MetaCogIss
                     description=f"合并源节点不存在：{sid}",
                     suggestion="删除该合并项",
                 ))
-            elif src.node_type != target.node_type:
+                continue
+            if src.node_type != target.node_type:
                 issues.append(MetaCogIssue(
                     type="illegal_edge",
                     description=f"合并类型不同：{target.title}({target.node_type.value})"
                                 f" ← {src.title}({src.node_type.value})",
                     suggestion="仅同类型节点可合并",
                 ))
-            elif src.node_type.value == "system":
+                continue
+            if src.node_type.value == "system":
                 issues.append(MetaCogIssue(
                     type="illegal_edge",
                     description="system 节点禁止参与合并",
                     suggestion="删除该合并项",
                 ))
+                continue
+            if candidates and not size_pressure:
+                # 同源豁免：双方同属一个过碎事件的节点组 → 允许聚合粗化
+                same_oversplit = any(
+                    m.target_id in g and sid in g for g in oversplit_groups
+                )
+                overlap = pair_overlap.get((m.target_id, sid))
+                if (
+                    not same_oversplit
+                    and overlap is not None
+                    and overlap < settings.jaccard_threshold
+                ):
+                    issues.append(MetaCogIssue(
+                        type="conflict",
+                        description=(
+                            f"无规模压力下合并重合不足：{target.title} ← {src.title}"
+                            f"（overlap={overlap} < {settings.jaccard_threshold}）"
+                        ),
+                        suggestion="仅近似等价或同源过碎节点可合并；有规模压力（节点数达高水位）时才放宽",
+                    ))
     for d in plan.deletes:
         node = graph_store.get_node(d.node_id)
         if node is None:
@@ -552,6 +641,19 @@ def run_maintenance_local_checks(graph_store: Any, plan: Any) -> list[MetaCogIss
                 type="empty_node",
                 description=f"压缩内容为空：{c.node_id}",
                 suggestion="补充概括后内容或删除该项",
+            ))
+        elif (
+            len(node.content or "") >= _COMPRESS_MIN_CONTENT
+            and len((c.content or "").strip()) > len(node.content)
+        ):
+            # 压缩硬规则：冗长节点概括后反而更长 → 未真正压缩（防 LLM 膨胀损坏）
+            issues.append(MetaCogIssue(
+                type="empty_node",
+                description=(
+                    f"压缩后内容比原文更长（{len((c.content or '').strip())}"
+                    f" > {len(node.content)}）：{c.node_id}"
+                ),
+                suggestion="输出更精炼的概括或删除该项",
             ))
         for e in c.new_edges:
             if graph_store.get_node(e.source) is None or graph_store.get_node(e.target) is None:

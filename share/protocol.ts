@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.14 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 图维护任务 + 防冗余节点硬规则 + 节点规模高水位自动维护；23 端点；MAX_RAW_CONTENT 默认 200000；COMPENSATE_CHECK_INTERVAL)
+// 版本 1.21 (对话指令系统：仅 ^英文动词 空格分隔（^compress ^merge ^delete ^data ^interaction ^source ^node ^help），被 ban 形式按普通文本落库；IngestResponse.command_triggered + 高水位 200/冷却 60 + 压缩底线与合并底线 + 前端指令候选弹层；23 端点)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -271,6 +271,9 @@ export interface IngestResponse {
   event_id: string;
   status: EventStatus;
   message: string;
+  /** v1.20：对话指令（/压缩 /merge /delete /data: /node 等）触发时为 true；
+   *  未创建事件时 event_id=""、status="skipped"，message 携带面向用户的执行结果 */
+  command_triggered: boolean;
 }
 
 // ---- 删除事件 ----
@@ -587,7 +590,7 @@ export interface DPIMConfig {
   COMPENSATE_CHECK_INTERVAL: number;  // 补偿批次结果检查间隔（秒，默认 5）
   AGENT_MAINTAIN_AUTO: boolean;      // 图维护自动触发：AI 恢复时顺带整理图谱（默认 true）
   AGENT_MAINTAIN_MIN_NODES: number;  // 自动维护最小图规模（节点数，默认 10；手动触发不受限）
-  AGENT_MAINTAIN_MAX_NODES: number;  // 节点规模高水位：达到即自动触发维护清理僵尸节点（默认 900）
-  AGENT_MAINTAIN_COOLDOWN: number;   // 高水位自动维护冷却（秒，默认 300）
+  AGENT_MAINTAIN_MAX_NODES: number;  // 节点规模高水位（v1.20：默认 200，达到后每冷却周期都准备压缩，并放宽合并）
+  AGENT_MAINTAIN_COOLDOWN: number;   // 高水位自动维护冷却（秒，v1.20：默认 60）
   LOG_LEVEL: string;
 }
