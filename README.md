@@ -18,7 +18,8 @@
 ```bash
 cd dpim
 uv sync                       # 首次：同步环境
-uv run python main.py serve   # 启动服务，默认 :8000
+uv run python main.py serve   # 启动服务，默认端口 :8000
+uv run python main.py serve --reload  # 热加载启动服务，默认端口 :8000
 ```
 
 - 启动后访问 http://localhost:8000/docs 查看接口文档。
