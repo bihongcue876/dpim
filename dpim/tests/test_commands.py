@@ -195,9 +195,12 @@ class TestCompressCommand:
         assert msg.payload == {"scope": "d1"}
 
     async def test_scoped_node_without_candidates(self, test_app, graph_store, ai_on, monkeypatch):
-        """scope 节点存在但无相关候选 → 即时明示，不入队。"""
+        """scope 节点存在但无相关候选（已连线、内容短）→ 即时明示，不入队。"""
         monkeypatch.setattr(settings, "agent_mode", "pipeline")
         await make_node(graph_store, "d1", "短资料", "内容", event_id="e1")
+        await make_node(graph_store, "d2", "邻居", "内容", event_id="e2")
+        from tests.factories import make_edge
+        await make_edge(graph_store, "d1", "d2", event_id="e2")
         resp = test_app.post("/ingest", json={"content": "^compress d1", "event_type": "data"})
         msg = resp.json()["message"]
         assert "无需压缩" in msg and "d1" in msg

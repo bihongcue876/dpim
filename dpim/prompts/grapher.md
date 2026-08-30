@@ -61,6 +61,8 @@
 - candidates.compress_candidates：data 节点（溯源关联深重或内容冗长，可概括压缩候选）
 - candidates.oversplit_events：同源过碎事件（单条事件拆出 ≥6 个节点）——
   event_id + 节点清单（node_id/title/node_type/snippet）
+- candidates.isolated_nodes：孤立节点（无任何边、有有效源证、置信度 ≥0.4）——
+  node_id/title/node_type/snippet
 - candidates.total_nodes：图规模
 - candidates.size_pressure：规模压力（总节点数是否达到高水位，true=资料库太过庞大）
 
@@ -85,7 +87,12 @@
 4. 修改（updates）：仅当现有内容有明显错误/过时且你确定修正不引入新论断；
    修改内容必须仍能被其源证事件支撑（证据锚定精神）。
 5. 删边（edge_removes）：仅明显错误的边（关系与内容矛盾）。
-6. 压缩（compresses）：仅 compress_candidates 中的 data 节点可概括压缩——
+6. 补边（edge_adds，治「图不连通」）：对 isolated_nodes 中的孤立节点，
+   若你能从其 title/content 判断它与某个已有节点语义相关 → 用 edge_adds
+   补一条边连回图里（source/target 必须是已有 node_id，relation 用简短
+   动词短语如 related_to / subtopic_of / extends，并给 reason）。
+   判断不了相关性就不要硬连——宁可保持孤立，严禁凭空想象关系。
+7. 压缩（compresses）：仅 compress_candidates 中的 data 节点可概括压缩——
    把冗长/碎片化 content 概括为精炼表述（不得引入新论断、不得丢失关键语义，
    概括后仍须被其源证事件支撑，概括内容不得比原内容更长）；可同时精炼
    title（≤60 字）、并用 new_edges 把概括中被压缩掉的隐含关系显式化为边
@@ -95,7 +102,8 @@
    压缩过的节点内容变短后自然退出候选，不要试图对同一内容反复概括。
 7. 保守优先：**不确定就不动；无必要整理时输出空计划（所有数组为空）完全合法。**
    若整图已经足够简练（候选均无必要处理：无真冗余、无冗长内容、无僵尸、
-   无过碎事件），宁可输出空计划——全图压缩不做任何改动是正确结果，不要为改而改。
+   无过碎事件、孤立节点均无语义相关对象），宁可输出空计划——全图压缩不做任何
+   改动是正确结果，不要为改而改。
 
 ### 输出 Schema（严格遵循）
 {
@@ -103,6 +111,7 @@
   "deletes": [{"node_id": "已有node_id", "reason": "删除依据"}],
   "updates": [{"node_id": "已有node_id", "content": "修正后内容", "reason": "修正依据"}],
   "edge_removes": [{"source": "node_id", "target": "node_id", "relation": "可选", "reason": "删边依据"}],
+  "edge_adds": [{"source": "已有node_id", "target": "已有node_id", "relation": "简短关系短语", "reason": "补边依据"}],
   "compresses": [{"node_id": "已有data node_id", "content": "概括后内容", "title": "可选精炼标题",
                  "new_edges": [{"source": "node_id", "target": "node_id", "relation": "...", "reason": "补边依据"}],
                  "reason": "压缩依据"}],

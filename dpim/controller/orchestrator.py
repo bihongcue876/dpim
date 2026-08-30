@@ -347,6 +347,9 @@ class Orchestrator:
                     c for c in candidates["oversplit_events"]
                     if scope in {n["node_id"] for n in c["nodes"]}
                 ],
+                "isolated_nodes": [
+                    c for c in candidates["isolated_nodes"] if c["node_id"] == scope
+                ],
                 "total_nodes": candidates["total_nodes"],
                 # 保留规模压力标记：合并底线硬规则依赖它判断是否放宽
                 "size_pressure": candidates.get("size_pressure", False),
@@ -357,6 +360,7 @@ class Orchestrator:
             candidates.get("low_conf_isolated"),
             candidates.get("compress_candidates"),
             candidates.get("oversplit_events"),
+            candidates.get("isolated_nodes"),
         ]):
             logger.info("Graph maintenance: no candidates")
             return

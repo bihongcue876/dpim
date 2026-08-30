@@ -139,6 +139,51 @@ class TestApplyToStoreMerge:
         assert graph_store.total_nodes() == 1
 
     @pytest.mark.asyncio
+    async def test_edge_resolves_existing_node_title(self, db, event_store, graph_store):
+        """边引用已有节点 title → 正确解析落图（修复弱模型用 title 引用被静默丢边）。"""
+        from tests.factories import make_event
+        eid = await make_event(event_store, "八段锦的新知识")
+        graph_store.add_node(_node("n_existing", "八段锦", "八段锦基础内容"))
+        proposal = GraphBuildOutput(
+            new_nodes=[NodeCreate(
+                title="呼吸要领", content="八段锦呼吸要领内容",
+                node_type=NodeType.data, confidence=0.9,
+                evidence_quote="八段锦呼吸要领内容",
+            )],
+            new_edges=[_make_edge("八段锦", "呼吸要领", "subtopic_of")],
+            merged_into=None,
+        )
+        created = await tool_apply_to_store(event_store, graph_store, proposal, eid)
+        assert len(created) == 1
+        new_id = created[0]
+        # 边落图：existing -> 新节点（title 解析成功）
+        assert graph_store.get_edge("n_existing", new_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_edge_unresolvable_dropped_with_warning(
+        self, db, event_store, graph_store, caplog
+    ):
+        """边端点完全无法解析 → 丢弃但必须留警告日志（不再静默）。"""
+        import logging as _logging
+
+        from tests.factories import make_event
+        eid = await make_event(event_store, "孤立新知识")
+        proposal = GraphBuildOutput(
+            new_nodes=[NodeCreate(
+                title="孤立节点", content="无关联内容",
+                node_type=NodeType.data, confidence=0.9,
+                evidence_quote="无关联内容",
+            )],
+            new_edges=[_make_edge("不存在的节点", "孤立节点", "related_to")],
+            merged_into=None,
+        )
+        with caplog.at_level(_logging.WARNING):
+            created = await tool_apply_to_store(event_store, graph_store, proposal, eid)
+        assert len(created) == 1
+        assert graph_store.get_node(created[0]) is not None
+        assert any("Edge dropped" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_edges_resolve_after_merge(self, db, event_store, graph_store):
         """改道合并后 new_edges 引用新节点 title 能正确落到合并目标节点。"""
         from tests.factories import make_event
@@ -395,6 +440,23 @@ class TestMaintenanceLocalChecks:
         issues = run_maintenance_local_checks(graph_store, plan, candidates)
         assert any("无规模压力下合并重合不足" in i.description for i in issues)
 
+    @pytest.mark.asyncio
+    async def test_edge_add_endpoints_validated(self, graph_store):
+        """补边硬规则：端点必须存在且 relation 非空。"""
+        from core.models import GraphMaintenancePlan, MaintenanceEdgeAdd
+        from tests.factories import make_node
+        await make_node(graph_store, "a1", "节点A", "内容A")
+        plan = GraphMaintenancePlan(
+            edge_adds=[
+                MaintenanceEdgeAdd(source="a1", target="ghost", relation="related_to", reason="x"),
+                MaintenanceEdgeAdd(source="a1", target="a1", relation="", reason="y"),
+            ],
+            confidence=0.9,
+        )
+        issues = run_maintenance_local_checks(graph_store, plan)
+        assert any("补边端点节点不存在" in i.description for i in issues)
+        assert any("补边缺少关系短语" in i.description for i in issues)
+
 
 class TestApplyMaintenance:
     @pytest.mark.asyncio
@@ -481,6 +543,26 @@ class TestApplyMaintenance:
         stats = await tool_apply_maintenance(event_store, graph_store, plan)
         assert stats["edges_removed"] == ["a→b"]
         assert graph_store.get_edge("a", "b") is None
+
+    @pytest.mark.asyncio
+    async def test_edge_add_execution(self, db, event_store, graph_store):
+        """补边执行：孤立节点连回图，evidence 取 source 首条有效源证。"""
+        from core.models import GraphMaintenancePlan, MaintenanceEdgeAdd
+        from tests.factories import make_node
+        await make_node(graph_store, "iso", "孤岛", "孤立内容", event_id="e1")
+        await make_node(graph_store, "hub", "枢纽", "枢纽内容", event_id="e2")
+        plan = GraphMaintenancePlan(
+            edge_adds=[MaintenanceEdgeAdd(
+                source="iso", target="hub", relation="related_to", reason="同属游戏主题",
+            )],
+            confidence=0.9,
+        )
+        stats = await tool_apply_maintenance(event_store, graph_store, plan)
+        assert stats["edges_added"] == ["iso→hub"]
+        edge = graph_store.get_edge("iso", "hub")
+        assert edge is not None
+        assert edge.relation == "related_to"
+        assert edge.evidence_event_id == "e1"  # source 节点首条有效源证
 
     @pytest.mark.asyncio
     async def test_data_append_noop_not_counted(self, db, event_store, graph_store):
@@ -577,6 +659,23 @@ class TestCompressMaintenance:
         c = scan_maintenance_candidates(graph_store)
         hits = [o for o in c["oversplit_events"] if o["event_id"] == eid]
         assert not hits  # 5 个 data + 1 个 system → 计 5 < 6，不候选
+
+    @pytest.mark.asyncio
+    async def test_isolated_nodes_flagged(self, db, event_store, graph_store):
+        """孤立节点（无边、有有效源证、置信度 ≥0.4）→ 连线候选。"""
+        from tests.factories import make_edge, make_node
+        await make_node(graph_store, "iso1", "孤岛节点", "有源证无边的节点", event_id="e1")
+        await make_node(graph_store, "conn1", "有边节点", "内容", event_id="e2")
+        await make_node(graph_store, "conn2", "有边节点2", "内容", event_id="e2")
+        await make_edge(graph_store, "conn1", "conn2", event_id="e2")
+        # 低置信孤立 → 应进 low_conf_isolated 而非 isolated_nodes
+        node = await make_node(graph_store, "low1", "低置信孤立", "内容", event_id="e3")
+        node.confidence = 0.2
+        c = scan_maintenance_candidates(graph_store)
+        assert any(x["node_id"] == "iso1" for x in c["isolated_nodes"])
+        assert not any(x["node_id"] == "conn1" for x in c["isolated_nodes"])
+        assert not any(x["node_id"] == "low1" for x in c["isolated_nodes"])
+        assert any(x["node_id"] == "low1" for x in c["low_conf_isolated"])
 
     @pytest.mark.asyncio
     async def test_compress_candidate_excludes_system_interaction(self, graph_store):

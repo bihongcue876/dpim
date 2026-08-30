@@ -210,6 +210,7 @@ class GraphMaintenancePlan(BaseModel):
     deletes: list[MaintenanceDelete] = []
     updates: list[MaintenanceUpdate] = []
     edge_removes: list[MaintenanceEdgeRemove] = []
+    edge_adds: list[MaintenanceEdgeAdd] = []
     compresses: list[MaintenanceCompress] = []
     confidence: float = Field(ge=0.0, le=1.0, default=0.5)
 

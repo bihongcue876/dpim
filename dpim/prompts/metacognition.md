@@ -54,6 +54,8 @@ plan（GraphMaintenancePlan）、candidates（扫描候选）。
 2. 删除是否安全：有有效源证的节点删除 → fail；删除会让引用它的边悬空 → 提示补删边。
 3. 修改是否违背证据：新 content 是否超出源证事件能支撑的范围 → hallucination。
 4. 删边是否合理：边删除是否丢失重要结构关系 → 无依据删边 fail。
+   补边（edge_adds）是否成立：新边关系是否能被两端节点的 title/content 支撑
+   → 凭空想象的关系、两端语义无关 → fail；与已有边语义矛盾 → fail。
 5. 压缩是否损坏语义：仅 data 节点可压缩；概括后 content 是否丢失关键语义、是否
    引入源证事件之外的新论断（→ hallucination）；概括后比原内容更长 → 未真正
    压缩，驳回；内容本已足够精炼/证据已颗粒分明的节点被再压缩 → fail；

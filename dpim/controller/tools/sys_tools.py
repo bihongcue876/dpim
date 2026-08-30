@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, cast
 
@@ -20,6 +21,8 @@ from core.models import (
     SearchResponse,
     SourceRef,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def tool_graph_query(graph_store: Any, query_text: str, limit: int = 15) -> list[GraphNode]:
@@ -193,11 +196,26 @@ async def tool_apply_to_store(
         id_by_title[nc.title] = nid
         created.append(nid)
 
-    # ── 3) 新建边（source/target 支持新节点 title 或已有 node_id）──
+    # ── 3) 新建边（source/target 支持新节点 title、已有节点 title 或 node_id）──
+    # 全图 title 索引（弱模型常用 title 引用已有节点，直接当 node_id 用会静默丢边）
+    title_to_id: dict[str, str] = {}
+    for nid in list(graph_store.graph.nodes()):
+        n = graph_store.get_node(nid)
+        if n is not None and (n.title or "").strip():
+            title_to_id.setdefault(n.title.strip().lower(), nid)
+    dropped_edges = 0
     for ec in proposal.new_edges:
         src = id_by_title.get(ec.source, ec.source)
         tgt = id_by_title.get(ec.target, ec.target)
-        if graph_store.get_node(src) is not None and graph_store.get_node(tgt) is not None:
+        if graph_store.get_node(src) is None:
+            src = title_to_id.get(ec.source.strip().lower())
+        if graph_store.get_node(tgt) is None:
+            tgt = title_to_id.get(ec.target.strip().lower())
+        if (
+            src is not None and tgt is not None
+            and graph_store.get_node(src) is not None
+            and graph_store.get_node(tgt) is not None
+        ):
             graph_store.add_edge(
                 GraphEdge(
                     source=src,
@@ -206,6 +224,18 @@ async def tool_apply_to_store(
                     evidence_event_id=ec.evidence_event_id or event_id,
                 )
             )
+        else:
+            # 丢边必须留痕：静默丢弃会造成图连通性退化且无从排查
+            dropped_edges += 1
+            logger.warning(
+                "Edge dropped (unresolvable endpoint): %r -> %r (event %s)",
+                ec.source, ec.target, event_id,
+            )
+    if dropped_edges:
+        logger.warning(
+            "apply_to_store: %d/%d edges dropped for event %s",
+            dropped_edges, len(proposal.new_edges), event_id,
+        )
 
     await graph_store.flush()
     await event_store.update_status(event_id, "linked", graph_refs=created)
@@ -353,6 +383,8 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
       （≥ _COMPRESS_MIN_CONTENT）或溯源关联深重且内容未达压缩底线
     - oversplit_events：单条事件拆出节点数 ≥ _OVERSPLIT_MIN_NODES 的过碎候选
      （同源聚合粗化用；源证相同的节点对可豁免合并底线，见硬规则）
+    - isolated_nodes：无任何边的孤立节点（置信度 ≥ 0.4 且有有效源证）——
+      供 Gr 用 edge_adds 连回相关节点（治「图不连通」）
     - size_pressure：总节点数 ≥ 高水位（规模压力下才允许放宽合并）
     """
     from core.text_utils import tokenize_query
@@ -475,12 +507,34 @@ def scan_maintenance_candidates(graph_store: Any) -> dict[str, list[dict]]:
                 "nodes": members[:_OVERSPLIT_NODE_CAP],
             })
 
+    # 孤立节点候选（v1.23，治「图不连通」）：无任何边的非 system 节点，
+    # 且置信度 ≥ 0.4、有 ≥1 条有效源证（低置信孤立方进 low_conf_isolated 走删除判断，
+    # 这里是「值得连线回图」的补集）——供 Gr 用 edge_adds 连回相关节点
+    isolated_nodes: list[dict] = []
+    for nid, ndata in graph_store.graph.nodes(data="data"):
+        if ndata is None or ndata.node_type.value == "system":
+            continue
+        if graph_store.graph.degree(nid) != 0:
+            continue
+        if ndata.confidence < 0.4:
+            continue  # 低置信孤立已由 low_conf_isolated 承接
+        if not any(sr.valid for sr in ndata.source_refs):
+            continue
+        isolated_nodes.append({
+            "node_id": nid,
+            "title": ndata.title,
+            "node_type": ndata.node_type.value,
+            "confidence": ndata.confidence,
+            "snippet": (ndata.content or "")[:100],
+        })
+
     return {
         "merge_candidates": merge_candidates[:_MAINTENANCE_CANDIDATE_CAP],
         "zombie_nodes": zombie_nodes[:_MAINTENANCE_CANDIDATE_CAP],
         "low_conf_isolated": low_conf_isolated[:_MAINTENANCE_CANDIDATE_CAP],
         "compress_candidates": compress_candidates[:_MAINTENANCE_CANDIDATE_CAP],
         "oversplit_events": oversplit_events[:_MAINTENANCE_CANDIDATE_CAP],
+        "isolated_nodes": isolated_nodes[:_MAINTENANCE_CANDIDATE_CAP],
         "total_nodes": graph_store.total_nodes(),
         # 规模压力：总节点数达到高水位（资料库太过庞大）→ 允许放宽合并调节；
         # 未达高水位时仅近似等价（重合 ≥ jaccard_threshold）可合并（硬规则见下）
@@ -615,6 +669,19 @@ def run_maintenance_local_checks(
                 description=f"待删边不存在：{e.source}→{e.target}",
                 suggestion="删除该项",
             ))
+    for e in plan.edge_adds:
+        if graph_store.get_node(e.source) is None or graph_store.get_node(e.target) is None:
+            issues.append(MetaCogIssue(
+                type="illegal_edge",
+                description=f"补边端点节点不存在：{e.source}→{e.target}",
+                suggestion="删除该边或改用已有节点",
+            ))
+        elif not (e.relation or "").strip():
+            issues.append(MetaCogIssue(
+                type="empty_node",
+                description=f"补边缺少关系短语：{e.source}→{e.target}",
+                suggestion="补充 relation 或删除该项",
+            ))
     for c in plan.compresses:
         node = graph_store.get_node(c.node_id)
         if node is None:
@@ -680,7 +747,7 @@ async def tool_apply_maintenance(
     """
     stats: dict[str, Any] = {
         "merged": [], "deleted": [], "updated": [],
-        "edges_removed": [], "compressed": [],
+        "edges_removed": [], "edges_added": [], "compressed": [],
     }
 
     for m in plan.merges:
@@ -726,6 +793,22 @@ async def tool_apply_maintenance(
     for e in plan.edge_removes:
         if graph_store.remove_edge(e.source, e.target):
             stats["edges_removed"].append(f"{e.source}→{e.target}")
+
+    for e in plan.edge_adds:
+        src = graph_store.get_node(e.source)
+        tgt = graph_store.get_node(e.target)
+        if src is None or tgt is None:
+            continue  # 兜底：端点已不存在（本地检查已拦，此处防御）
+        # 证据锚定：取 source 节点首条有效源证事件作为边的 evidence
+        evidence = next(
+            (sr.event_id for sr in src.source_refs if sr.valid), ""
+        )
+        if graph_store.get_edge(e.source, e.target) is None:
+            graph_store.add_edge(GraphEdge(
+                source=e.source, target=e.target,
+                relation=e.relation, evidence_event_id=evidence,
+            ))
+            stats["edges_added"].append(f"{e.source}→{e.target}")
 
     for c in plan.compresses:
         node = graph_store.get_node(c.node_id)

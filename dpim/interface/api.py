@@ -231,17 +231,21 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
                     c for c in candidates["oversplit_events"]
                     if scope in {n["node_id"] for n in c["nodes"]}
                 ],
+                "isolated_nodes": [
+                    c for c in candidates["isolated_nodes"] if c["node_id"] == scope
+                ],
             }
         n_merge = len(candidates["merge_candidates"])
         n_zombie = len(candidates["zombie_nodes"])
         n_lowconf = len(candidates["low_conf_isolated"])
         n_compress = len(candidates["compress_candidates"])
         n_oversplit = len(candidates["oversplit_events"])
-        if not any([n_merge, n_zombie, n_lowconf, n_compress, n_oversplit]):
+        n_isolated = len(candidates["isolated_nodes"])
+        if not any([n_merge, n_zombie, n_lowconf, n_compress, n_oversplit, n_isolated]):
             scope_note = f"节点 {scope}" if scope else "全图"
             return _command_response(
                 f"无需压缩：{scope_note}扫描未发现候选"
-                "（无重合节点对 / 僵尸节点 / 冗长内容 / 过碎事件）——已足够简练"
+                "（无重合节点对 / 僵尸节点 / 冗长内容 / 过碎事件 / 孤立节点）——已足够简练"
             )
         await orchestrator.enqueue(
             QueueMessage(
@@ -253,15 +257,16 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
         refresh_key()
         logger.info(
             "Command compress (scope=%s) -> maintain_graph "
-            "(merge=%d zombie=%d lowconf=%d compress=%d oversplit=%d)",
+            "(merge=%d zombie=%d lowconf=%d compress=%d oversplit=%d isolated=%d)",
             scope or "*", n_merge, n_zombie, n_lowconf, n_compress, n_oversplit,
+            n_isolated,
         )
         scope_note = f"（限定节点 {scope}）" if scope else ""
         return _command_response(
             f"压缩指令已入队{scope_note}：发现候选（重合对 {n_merge} / "
             f"僵尸 {n_zombie} / 孤立低置信 {n_lowconf} / 冗长可压缩 {n_compress} / "
-            f"同源过碎 {n_oversplit}），Gr 计划 → Meta 审核 → 执行稍后完成，"
-            "结果见图页与日志"
+            f"同源过碎 {n_oversplit} / 孤立待连线 {n_isolated}），"
+            "Gr 计划 → Meta 审核 → 执行稍后完成，结果见图页与日志"
         )
 
     # ── 确定层：合并 / 删除 / 建系统节点（无 LLM，同步执行）──
