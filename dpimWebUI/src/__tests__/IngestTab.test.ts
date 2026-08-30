@@ -9,7 +9,7 @@ vi.mock('@/api/client', () => ({
       event_line: { total_events: 10 },
       knowledge_graph: { total_nodes: 3 },
     },
-    last_event_at: '', version: '0.2.1',
+    last_event_at: '', version: '0.2.2',
   }),
   getSettings: vi.fn().mockResolvedValue({
     llm_base_url: 'http://localhost:11434/v1', llm_model_name: 'llama3:8b',
@@ -28,13 +28,13 @@ const HEALTH_OK = {
     event_line: { total_events: 10 },
     knowledge_graph: { total_nodes: 3 },
   },
-  last_event_at: '', version: '0.2.1',
+  last_event_at: '', version: '0.2.2',
 }
 
 const HEALTH_DOWN = {
   status: 'degraded', ai_available: false,
   layers: { event_line: {}, knowledge_graph: {} },
-  last_event_at: '', version: '0.2.1',
+  last_event_at: '', version: '0.2.2',
 }
 
 describe('IngestTab', () => {
