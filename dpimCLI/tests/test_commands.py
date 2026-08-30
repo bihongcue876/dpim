@@ -74,6 +74,26 @@ def test_cmd_ingest_explicit_type(mock_client):
     assert mock_client[0][2] == {"event_type": "data"}
 
 
+def test_formatter_ingest_command_triggered(capsys):
+    """对话指令响应（/压缩、/merge、/data: 等）：table 格式显示指令结果消息。"""
+    from dpim_cli import formatter
+
+    text = formatter.ingest_result({
+        "event_id": "", "status": "skipped",
+        "command_triggered": True, "message": "压缩指令已入队",
+    })
+    assert "指令结果" in text
+    assert "压缩指令已入队" in text
+
+
+def test_formatter_ingest_normal_event(capsys):
+    from dpim_cli import formatter
+
+    text = formatter.ingest_result({"event_id": "e1", "status": "indexed"})
+    assert "事件已写入" in text
+    assert "e1" in text
+
+
 def test_cmd_events_filters_forwarded(mock_client):
     commands.cmd_events(make_args(
         "events", type="interaction", status="raw", limit=5, offset=10,
