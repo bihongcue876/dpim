@@ -432,6 +432,51 @@ class TestModifyEventStatusEndpoint:
         assert resp.status_code == expected, f"{start}->{target}"
 
 
+class TestEventLiveRefs:
+    """事件关联节点实时派生（v1.26）：合并/多重关联后 GET /events/{id} 反映当前图状态。"""
+
+    async def test_graph_refs_live_after_merge(self, test_app):
+        """graph_refs 快照含 n1/n2，合并 n2→n1 后实时只返回幸存的 n1。"""
+        create = test_app.post(
+            "/ingest", json={"content": "内容A的事件", "event_type": "data"}
+        )
+        eid = create.json()["event_id"]
+        await api.event_store.update_status(eid, "linked", graph_refs=["n1", "n2"])
+        api.graph_store.add_node(GraphNode(
+            node_id="n1", title="主题A", content="内容A", node_type=NodeType.data,
+            source_refs=[SourceRef(event_id=eid, valid=True, hash="h")],
+            confidence=0.8, metadata=NodeMetadata(evidence_quote="内容A"),
+        ))
+        api.graph_store.add_node(GraphNode(
+            node_id="n2", title="主题A旧", content="内容A旧", node_type=NodeType.data,
+            source_refs=[SourceRef(event_id=eid, valid=True, hash="h")],
+            confidence=0.8, metadata=NodeMetadata(evidence_quote="内容A旧"),
+        ))
+        api.graph_store.merge_nodes("n1", ["n2"])  # 维护合并：n2 被删
+        refs = test_app.get(f"/events/{eid}").json()["graph_refs"]
+        assert refs == ["n1"]  # 快照里的 n2 已消失，实时反映合并结果
+
+    async def test_graph_refs_multi_event_node(self, test_app):
+        """多重关联：同一节点关联两个事件 → 两边实时可见（设计如此）。"""
+        e1 = test_app.post(
+            "/ingest", json={"content": "八段锦事件一", "event_type": "data"}
+        ).json()["event_id"]
+        e2 = test_app.post(
+            "/ingest", json={"content": "八段锦事件二", "event_type": "data"}
+        ).json()["event_id"]
+        api.graph_store.add_node(GraphNode(
+            node_id="bdj", title="八段锦", content="健身气功", node_type=NodeType.data,
+            source_refs=[
+                SourceRef(event_id=e1, valid=True, hash="h1"),
+                SourceRef(event_id=e2, valid=True, hash="h2"),
+            ],
+            confidence=0.9, metadata=NodeMetadata(evidence_quote="八段锦"),
+        ))
+        r1 = test_app.get(f"/events/{e1}").json()["graph_refs"]
+        r2 = test_app.get(f"/events/{e2}").json()["graph_refs"]
+        assert r1 == ["bdj"] and r2 == ["bdj"]
+
+
 class TestModifyEventEndpoint:
     """PUT /events/{event_id} 事件内容修改"""
 

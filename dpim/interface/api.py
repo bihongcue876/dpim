@@ -717,6 +717,17 @@ async def get_event(event_id: str):
     event = await es.get(event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Event not found")
+    # 实时关联节点（v1.26）：行上的 graph_refs 是构图写入时的一次性快照，
+    # 此后的合并/删除/聚合均不回写——图层反向索引才是当前权威。
+    # 读路径实时派生（仅保留有效源证），前端「处理历史/图关联」随之变准。
+    live_refs: list[str] = []
+    for nid in gs.get_nodes_for_event(event_id):
+        node = gs.get_node(nid)
+        if node is None:
+            continue
+        if any(sr.event_id == event_id and sr.valid for sr in node.source_refs):
+            live_refs.append(nid)
+    event["graph_refs"] = live_refs
     return event
 
 
