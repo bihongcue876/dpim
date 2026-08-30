@@ -102,6 +102,10 @@ dpim --help
 - **json**：后端原始响应，适合管道处理（`dpim search 关键词 --format json | jq ...`）与外部程序解析
 - **yaml**：结构化输出，配置项浏览友好
 
+**对话指令结果**：`dpim ingest "^compress"` 等输入 `^` 指令时，后端不创建事件、
+直接返回执行结果（显示为「指令结果 + 消息」）；支持的指令见 WebUI 帮助页或
+协议 4.5 节（^compress / ^update / ^merge / ^delete / ^data 等）。
+
 ### 错误处理
 
 - 连接失败：`错误: 无法连接到 DPIM 服务 - ...` → 退出码 1

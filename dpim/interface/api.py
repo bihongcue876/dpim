@@ -106,7 +106,7 @@ async def lifespan(app: FastAPI):
         await db.close()
 
 
-app = FastAPI(title="DPIM", version="0.2.1", lifespan=lifespan)
+app = FastAPI(title="DPIM", version="0.2.2", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -148,7 +148,7 @@ def _command_response(message: str) -> IngestResponse:
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(body: IngestRequest):
     es, gs = _stores()
-    # 对话指令（/压缩、/合并、/data: 等）：确定层同步执行；语义层入队；
+    # 对话指令（^compress、^merge、^data 等）：确定层同步执行；语义层入队；
     # 均不落库为事件（存储类指令除外——它本身就是写事件）。
     cmd = parse_command(body.content)
     if cmd is not None:

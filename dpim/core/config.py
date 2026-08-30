@@ -151,7 +151,7 @@ class Settings:
         )
         # ── 节点规模高水位：总节点数达到该阈值后每个冷却周期自动触发图维护
         #（合并冗余/压缩/清理僵尸节点等，独立于 AI 恢复触发）。默认 200：此后每次
-        # 健康周期都准备压缩；也可在信息传入框输入 /compress、^压缩 随时手动触发 ──
+        # 健康周期都准备压缩；也可在信息传入框输入 ^compress、^update 随时手动触发 ──
         self.agent_maintain_max_nodes = int(
             getenv("DPIM_AGENT_MAINTAIN_MAX_NODES", "200")
         )
