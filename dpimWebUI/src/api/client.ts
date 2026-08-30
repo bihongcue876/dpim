@@ -272,7 +272,7 @@ export async function deleteNode(nodeId: string, force = false): Promise<void> {
   })
 }
 
-export async function ingest(content: string, eventType: string): Promise<{ event_id: string; status: string }> {
+export async function ingest(content: string, eventType: string): Promise<{ event_id: string; status: string; command_triggered?: boolean; message?: string }> {
   return req('/ingest', {
     method: 'POST',
     body: JSON.stringify({ content, event_type: eventType }),

@@ -4,13 +4,22 @@
 
     <div class="it-card">
       <div class="it-card-title">内容输入</div>
-      <n-input
-        v-model:value="content"
-        type="textarea"
-        :rows="6"
-        autosize
-        placeholder="粘贴对话记录、搜索结果、文档片段或任意文本内容..."
-      />
+      <div class="textarea-wrap">
+        <CommandHints
+          v-if="showHints"
+          :items="filteredCommands"
+          :active-index="hintActive"
+          @select="applyCommand"
+        />
+        <n-input
+          v-model:value="content"
+          type="textarea"
+          :rows="6"
+          autosize
+          placeholder="粘贴对话记录、搜索结果、文档片段或任意文本内容...（输入 ^ 可呼出指令候选）"
+          @keydown="onCmdKeydown"
+        />
+      </div>
       <div class="it-controls">
         <n-select
           v-model:value="eventType"
@@ -20,6 +29,9 @@
           :render-label="renderTypeLabel"
         />
         <span class="it-count">字符数: {{ content.length }}</span>
+      </div>
+      <div class="it-cmd-hint">
+        支持指令：<span class="ftag">^compress [节点ID]</span>（需 AI）、<span class="ftag">^merge 目标ID 源ID</span>、<span class="ftag">^delete 节点ID</span>、<span class="ftag">^data 内容</span>、<span class="ftag">^node system 标题 | 内容</span>、<span class="ftag">^help</span> —— 输入 <span class="ftag">^</span> 自动弹出候选，详见帮助页
       </div>
     </div>
 
@@ -79,14 +91,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { createDiscreteApi } from 'naive-ui'
 import type { HealthResponse, LLMCallLog } from '@/api/client'
 import * as api from '@/api/client'
+import { commandToken, filterCommands, type CommandCandidate } from '@/api/commands'
 import AIStatusBar from '@/components/AIStatusBar.vue'
+import CommandHints from '@/components/CommandHints.vue'
 import IngestHistory from '@/components/IngestHistory.vue'
 
-const { message } = createDiscreteApi(['message'])
+const { message, dialog } = createDiscreteApi(['message', 'dialog'])
 
 interface HistoryItem {
   event_id: string
@@ -141,9 +155,48 @@ function shortLog(s: string): string {
 }
 
 const aiOk = computed(() => Boolean(health.value?.ai_available))
-const submitDisabled = computed(() => submitting.value || !content.value.trim() || !aiOk.value)
+
+// ── 指令候选（opencode 风格）：^ 开头且仍在打指令词（首个空格前）时弹出 ──
+const hintsDismissed = ref(false)
+const hintActive = ref(0)
+const cmdToken = computed(() => commandToken(content.value))
+const filteredCommands = computed(() =>
+  cmdToken.value === null ? [] : filterCommands(cmdToken.value),
+)
+const showHints = computed(
+  () => !hintsDismissed.value && filteredCommands.value.length > 0,
+)
+watch(content, () => {
+  hintsDismissed.value = false
+  hintActive.value = 0
+})
+
+function applyCommand(c: CommandCandidate) {
+  content.value = c.args ? c.name + ' ' : c.name
+  hintsDismissed.value = true
+}
+
+function onCmdKeydown(e: KeyboardEvent) {
+  if (!showHints.value) return
+  const n = filteredCommands.value.length
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    hintActive.value = (hintActive.value + 1) % n
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    hintActive.value = (hintActive.value - 1 + n) % n
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault()
+    applyCommand(filteredCommands.value[hintActive.value])
+  } else if (e.key === 'Escape') {
+    hintsDismissed.value = true
+  }
+}
+
+// AI 不可用不禁用提交：纯存储与对话指令（^data 等）降级态照常可用，
+// 普通事件写入线层后停留 indexed 等补偿（降级即常态）
+const submitDisabled = computed(() => submitting.value || !content.value.trim())
 const submitDisabledHint = computed(() => {
-  if (!aiOk.value) return 'AI 服务未连接，无法提交'
   if (!content.value.trim()) return '请输入内容'
   return ''
 })
@@ -252,6 +305,28 @@ async function onSubmit() {
   submitting.value = true
   try {
     const res = await api.ingest(content.value, eventType.value)
+    // 对话指令（^compress、^merge、^data 等）：未创建事件，message 携带执行结果；
+    // 含「未执行」（拒绝/用法错误/保护拦截）用警示样式区分成功
+    if (res.command_triggered) {
+      content.value = ''
+      const msg = res.message || '指令已执行'
+      if (msg.includes('未执行')) {
+        message.warning(msg, { duration: 6000, closable: true })
+      } else if (msg.length > 80 || msg.includes('\n')) {
+        // 长结果（如 ^help 用法说明）toast 放不下，改用对话框可仔细阅读
+        dialog.info({ title: '指令结果', content: msg, positiveText: '知道了' })
+      } else {
+        message.success(msg)
+      }
+      return
+    }
+    if (!res.event_id) {
+      // 新前端 + 旧后端（不认识指令）时会出现空 event_id：明确提示而非静默轮询 404
+      message.warning('后端未返回事件 ID：后端版本可能过旧，请重启后端服务后刷新页面', {
+        duration: 8000, closable: true,
+      })
+      return
+    }
     const item: HistoryItem = {
       event_id: res.event_id,
       submitted_at: new Date().toISOString(),
@@ -262,7 +337,12 @@ async function onSubmit() {
     pollAttempts.value[res.event_id] = 0
     persist()
     content.value = ''
-    message.success('已提交，开始处理')
+    if (aiOk.value) {
+      message.success('已提交，开始处理')
+    } else {
+      // 降级常态：事件已入线层，AI 恢复后自动补偿
+      message.info('AI 未连接：事件已存入，等待恢复后自动补偿')
+    }
     startPolling()
   } catch (e: any) {
     message.error('提交失败: ' + (e?.message || '未知错误'))
@@ -324,7 +404,10 @@ onUnmounted(() => {
 }
 .it-card-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: var(--dpim-text, #e6edf3); letter-spacing: 0.3px; }
 .it-controls { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; flex-wrap: wrap; gap: 10px; }
+.textarea-wrap { position: relative; }
 .it-count { font-size: 12px; color: var(--dpim-text-3, #7c8694); font-family: 'Cascadia Code', Consolas, monospace; }
+.it-cmd-hint { margin-top: 8px; font-size: 12px; color: var(--dpim-text-3, #7c8694); line-height: 1.7; }
+.it-cmd-hint .ftag { color: var(--dpim-primary, #58a6ff); font-family: 'Cascadia Code', Consolas, monospace; }
 .it-actions { display: flex; gap: 12px; align-items: center; }
 .it-actions-spacer { flex: 1; }
 .it-log-title { display: flex; align-items: center; }
