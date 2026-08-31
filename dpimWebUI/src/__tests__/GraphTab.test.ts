@@ -31,6 +31,8 @@ vi.mock('@/api/client', () => ({
   deleteEdge: vi.fn().mockResolvedValue(undefined),
   putNode: vi.fn().mockResolvedValue(undefined),
   clearGraph: vi.fn().mockResolvedValue(undefined),
+  addNodeSourceRef: vi.fn().mockResolvedValue(undefined),
+  removeNodeSourceRef: vi.fn().mockResolvedValue(undefined),
 }))
 
 import * as api from '@/api/client'
@@ -73,5 +75,94 @@ describe('GraphTab', () => {
     })
     expect(wrapper.text()).toContain('新建节点')
     expect(wrapper.text()).toContain('添加关联')
+  })
+
+  it('node detail shows source ref management with min-1 guard', async () => {
+    const wrapper = mount(GraphTab, {
+      props: { keyStatus: '' },
+    })
+    await new Promise(r => setTimeout(r, 100))
+    await wrapper.findAll('.node-mini-row')[0].trigger('click')
+    await new Promise(r => setTimeout(r, 100))
+    // n1 仅 1 条有效源证 → 移除按钮禁用（最少保留 1 条有效源事件）
+    expect(wrapper.text()).toContain('至少保留 1 条有效')
+    const removeBtn = wrapper.findAll('button').find(b => b.text().includes('移除'))
+    expect(removeBtn).toBeTruthy()
+    expect(removeBtn!.attributes('disabled')).toBeDefined()
+    // 添加入口存在
+    expect(wrapper.text()).toContain('关联源事件')
+    // 空输入时添加按钮禁用
+    const addBtn = wrapper.findAll('button').find(b => b.text().includes('关联源事件'))!
+    expect(addBtn.attributes('disabled')).toBeDefined()
+  })
+
+  it('adds source ref via api', async () => {
+    // 让 n1 有两条有效源证 → 移除可用，添加可用
+    ;(api.getNode as any).mockImplementation((id: string) => {
+      if (id === 'n1') return Promise.resolve({
+        node_id: 'n1', title: '概念A', content: 'A的详细内容', node_type: 'data',
+        confidence: 0.9, metadata: { evidence_quote: '引用', tags: [], protected: false, conflict: false },
+        source_refs: [
+          { event_id: 'e1', valid: true, hash: 'abc' },
+          { event_id: 'e2', valid: true, hash: 'def' },
+        ],
+        edges: [],
+      })
+      return Promise.resolve({
+        node_id: 'n2', title: '概念B', content: 'B的详细内容', node_type: 'interaction',
+        confidence: 0.8, metadata: { evidence_quote: '引用', tags: [], protected: false, conflict: false },
+        source_refs: [{ event_id: 'e1', valid: true, hash: 'abc' }],
+        edges: [],
+      })
+    })
+    const wrapper = mount(GraphTab, {
+      props: { keyStatus: '' },
+    })
+    await new Promise(r => setTimeout(r, 100))
+    await wrapper.findAll('.node-mini-row')[0].trigger('click')
+    await new Promise(r => setTimeout(r, 100))
+    const inputs = wrapper.findAll('input')
+    const addInput = inputs.find(i => (i.element as HTMLInputElement).placeholder?.includes('事件 ID'))
+    expect(addInput).toBeTruthy()
+    ;(addInput!.element as HTMLInputElement).value = 'e9'
+    await addInput!.setValue('e9')
+    const addBtn = wrapper.findAll('button').find(b => b.text().includes('关联源事件'))!
+    await addBtn.trigger('click')
+    await new Promise(r => setTimeout(r, 100))
+    expect(api.addNodeSourceRef).toHaveBeenCalledWith('n1', 'e9')
+  })
+
+  it('remove button enabled when more than one valid ref', async () => {
+    ;(api.getNode as any).mockImplementation((id: string) => {
+      if (id === 'n1') return Promise.resolve({
+        node_id: 'n1', title: '概念A', content: 'A', node_type: 'data',
+        confidence: 0.9, metadata: { evidence_quote: 'x', tags: [], protected: false, conflict: false },
+        source_refs: [
+          { event_id: 'e1', valid: true, hash: 'abc' },
+          { event_id: 'e2', valid: true, hash: 'def' },
+        ],
+        edges: [],
+      })
+      return Promise.resolve({
+        node_id: 'n2', title: '概念B', content: 'B', node_type: 'interaction',
+        confidence: 0.8, metadata: { evidence_quote: 'x', tags: [], protected: false, conflict: false },
+        source_refs: [{ event_id: 'e1', valid: true, hash: 'abc' }],
+        edges: [],
+      })
+    })
+    const wrapper = mount(GraphTab, {
+      props: { keyStatus: '' },
+    })
+    await new Promise(r => setTimeout(r, 100))
+    await wrapper.findAll('.node-mini-row')[0].trigger('click')
+    await new Promise(r => setTimeout(r, 100))
+    const removeBtns = wrapper.findAll('button').filter(b => b.text() === '移除')
+    expect(removeBtns.length).toBe(2)
+    // 两条有效源证 → 均可移除（移除后仍剩一条）
+    expect(removeBtns[0].attributes('disabled')).toBeUndefined()
+    expect(removeBtns[1].attributes('disabled')).toBeUndefined()
+    await removeBtns[0].trigger('click')
+    await new Promise(r => setTimeout(r, 100))
+    expect(api.removeNodeSourceRef).toHaveBeenCalledWith('n1', 'e1')
   })
 })

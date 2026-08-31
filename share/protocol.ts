@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.14 (BYOK 多模型网关 + Agent 管线配置 + 存图管线模型 + 图维护任务 + 防冗余节点硬规则 + 节点规模高水位自动维护；23 端点；MAX_RAW_CONTENT 默认 200000；COMPENSATE_CHECK_INTERVAL)
+// 版本 1.26 (对话指令（^compress ^update ^merge ^delete ^data ^interaction ^source ^node ^help）+ 同源聚合 + 节点语义与源证管理 + 连通性治理 + ^update 两阶段优化 + 待连线对候选 + 事件关联节点实时派生；23 端点)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -183,6 +183,17 @@ export interface MaintenanceEdgeAdd {
   reason?: string;
 }
 
+/** v1.24：update 模式补缺失要点（锚定已有事件，quote 为原文连续子串） */
+export interface MaintenanceNodeAdd {
+  title: string;          // ≤60 字符
+  content: string;
+  node_type: 'interaction' | 'data';  // system 禁止
+  event_id: string;       // 锚定的已有事件
+  evidence_quote: string; // 事件原文连续子串（本地硬校验）
+  parent_node_id?: string; // 可选：挂为该节点子节点（subtopic_of 边）
+  reason?: string;
+}
+
 /** 维护压缩：仅 data 节点概括覆盖 content + 可选精炼 title + 可选补边 */
 export interface MaintenanceCompress {
   node_id: string;
@@ -198,6 +209,8 @@ export interface GraphMaintenancePlan {
   deletes: MaintenanceDelete[];
   updates: MaintenanceUpdate[];
   edge_removes: MaintenanceEdgeRemove[];
+  edge_adds?: MaintenanceEdgeAdd[];   // v1.23：把孤立节点连回图
+  node_adds?: MaintenanceNodeAdd[];   // v1.24：update 模式补缺失要点
   compresses: MaintenanceCompress[];
   confidence: number;
 }
@@ -271,6 +284,9 @@ export interface IngestResponse {
   event_id: string;
   status: EventStatus;
   message: string;
+  /** v1.20：对话指令（/压缩 /merge /delete /data: /node 等）触发时为 true；
+   *  未创建事件时 event_id=""、status="skipped"，message 携带面向用户的执行结果 */
+  command_triggered: boolean;
 }
 
 // ---- 删除事件 ----
@@ -291,7 +307,12 @@ export interface DeleteNodeResponse {
 
 // ---- 修改节点 ----
 export interface ModifyNodeRequest {
-  content: string;
+  /** 修改内容（可选；system 节点禁止） */
+  content?: string;
+  /** v1.22：追加源事件（幂等，事件须存在） */
+  add_source_event_id?: string;
+  /** v1.22：移除源事件（移除后须仍保留 ≥1 条有效源证，否则 409） */
+  remove_source_event_id?: string;
 }
 
 export interface ModifyNodeResponse {
@@ -587,7 +608,7 @@ export interface DPIMConfig {
   COMPENSATE_CHECK_INTERVAL: number;  // 补偿批次结果检查间隔（秒，默认 5）
   AGENT_MAINTAIN_AUTO: boolean;      // 图维护自动触发：AI 恢复时顺带整理图谱（默认 true）
   AGENT_MAINTAIN_MIN_NODES: number;  // 自动维护最小图规模（节点数，默认 10；手动触发不受限）
-  AGENT_MAINTAIN_MAX_NODES: number;  // 节点规模高水位：达到即自动触发维护清理僵尸节点（默认 900）
-  AGENT_MAINTAIN_COOLDOWN: number;   // 高水位自动维护冷却（秒，默认 300）
+  AGENT_MAINTAIN_MAX_NODES: number;  // 节点规模高水位（v1.20：默认 200，达到后每冷却周期都准备压缩，并放宽合并）
+  AGENT_MAINTAIN_COOLDOWN: number;   // 高水位自动维护冷却（秒，v1.20：默认 60）
   LOG_LEVEL: string;
 }

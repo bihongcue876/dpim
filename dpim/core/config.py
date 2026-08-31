@@ -149,14 +149,15 @@ class Settings:
         self.agent_maintain_min_nodes = int(
             getenv("DPIM_AGENT_MAINTAIN_MIN_NODES", "10")
         )
-        # ── 节点规模高水位：总节点数达到该阈值时自动触发一次图维护
-        #（清理僵尸节点等，独立于 AI 恢复触发）。默认 900 ≈ 用户设定 1000 软上限的 90% ──
+        # ── 节点规模高水位：总节点数达到该阈值后每个冷却周期自动触发图维护
+        #（合并冗余/压缩/清理僵尸节点等，独立于 AI 恢复触发）。默认 200：此后每次
+        # 健康周期都准备压缩；也可在信息传入框输入 ^compress、^update 随时手动触发 ──
         self.agent_maintain_max_nodes = int(
-            getenv("DPIM_AGENT_MAINTAIN_MAX_NODES", "900")
+            getenv("DPIM_AGENT_MAINTAIN_MAX_NODES", "200")
         )
         # 自动维护触发冷却（秒）：超过高水位后避免每个健康周期重复触发空转 LLM
         self.agent_maintain_cooldown = int(
-            getenv("DPIM_AGENT_MAINTAIN_COOLDOWN", "300")
+            getenv("DPIM_AGENT_MAINTAIN_COOLDOWN", "60")
         )
         # 日志级别读取链同存储路径：env → dpim.json → 默认（前端可改并持久化）
         self.log_level = getenv("DPIM_LOG_LEVEL", str(cfg.get("log_level") or "INFO"))

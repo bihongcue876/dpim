@@ -26,12 +26,18 @@
 |-------|------|------|
 | 中央控制 Cr | `prompts/core.md` | 存入概括 + 检索意图分析 |
 | 信息管理 In | `prompts/infomater.md` | 内容分拣标注（原文子串） |
-| 图对接 Gr | `prompts/grapher.md` | 存图计划生成 |
-| 元认知 Meta | `prompts/metacognition.md` | 存图审核 + 检索复核（硬关卡） |
+| 图对接 Gr | `prompts/grapher.md` | 存图计划生成 + 图维护计划（合并/删改/补边/压缩） |
+| 元认知 Meta | `prompts/metacognition.md` | 存图审核 + 维护审查 + 检索复核（硬关卡） |
 
 **提示词正文已定稿**（Phase A，2026-08-01）：Cr 概括/意图、In 分拣、Gr 构图（含 event_id）、Meta 审核（4 类型），
 含上下文护栏（DPIM_MAX_RAW_CONTENT 截断、similar_nodes 瘦身、instructor 重试、邻域边）。
 未配置（agent_mode=disabled）时系统不受影响，事件停留在 `indexed` 状态等待补偿；AI 恢复后自动批量处理积压事件。
+
+**图维护与对话指令**（2026-08-29）：信息传入框支持 `^` 指令——`^compress`（删繁就简维护轮）、
+`^update`（两阶段结构优化：减碎+补缺失要点 → 连线孤岛）、`^merge` / `^delete`（确定层同步执行）、
+`^data` / `^interaction` / `^source`（显式类型存入，离线可用）、`^node system`（手工系统节点）、`^help`。
+维护候选六类：重合对 / 僵尸 / 低置信孤立 / 冗长可压缩 / 同源过碎事件 / 待连线对（含孤立节点），
+带压缩与合并底线（防过度整理的损失螺旋）；详见 `share/protocol.md` 4.4/4.5 节。
 
 ### 3. 核心存储独立于 AI
 
@@ -46,16 +52,12 @@
 
 ### 5. 配置方式
 
-所有配置通过 `.env` 文件或 `DPIM_` 前缀环境变量设置：
+日常配置（提供商/密钥/模型路由/存储路径/日志级别等）通过 **WebUI 配置页**修改，
+持久化在 `dpim/dpim.json`（重启保留）；`.env` 只承载部署级安全开关（`DPIM_API_KEY` /
+`DPIM_AGENT_LOGS_FULL`）与少量临时覆盖（env 显式设置优先于 dpim.json 同名项）：
 
 ```bash
 # 最小配置（使用默认 Ollama 地址时无需任何配置）
-python main.py serve
-
-# 切换到 OpenAI
-DPIM_LLM_BASE_URL=https://api.openai.com/v1 \
-DPIM_LLM_API_KEY=sk-xxx \
-DPIM_LLM_MODEL_NAME=gpt-4o-mini \
 python main.py serve
 ```
 

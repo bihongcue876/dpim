@@ -22,8 +22,8 @@ def test_default_values(monkeypatch):
     assert s.compensate_check_interval == 5
     assert s.agent_maintain_auto is True  # 图维护自动触发默认开启
     assert s.agent_maintain_min_nodes == 10
-    assert s.agent_maintain_max_nodes == 900  # 节点规模高水位触发（1000 软上限的 90%）
-    assert s.agent_maintain_cooldown == 300  # 触发冷却（秒）
+    assert s.agent_maintain_max_nodes == 200  # 节点规模高水位（此后每冷却周期都准备压缩）
+    assert s.agent_maintain_cooldown == 60  # 触发冷却（秒）
 
 
 def test_env_override(monkeypatch):

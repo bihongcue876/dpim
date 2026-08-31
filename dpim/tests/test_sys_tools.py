@@ -4,6 +4,7 @@ import pytest
 
 from controller.tools import tool_apply_to_store, tool_graph_query
 from controller.tools.sys_tools import (
+    filter_plan_channels,
     find_redundant_node,
     run_local_checks,
     run_maintenance_local_checks,
@@ -137,6 +138,51 @@ class TestApplyToStoreMerge:
         assert len(created) == 1
         assert graph_store.get_node(created[0]) is not None
         assert graph_store.total_nodes() == 1
+
+    @pytest.mark.asyncio
+    async def test_edge_resolves_existing_node_title(self, db, event_store, graph_store):
+        """边引用已有节点 title → 正确解析落图（修复弱模型用 title 引用被静默丢边）。"""
+        from tests.factories import make_event
+        eid = await make_event(event_store, "八段锦的新知识")
+        graph_store.add_node(_node("n_existing", "八段锦", "八段锦基础内容"))
+        proposal = GraphBuildOutput(
+            new_nodes=[NodeCreate(
+                title="呼吸要领", content="八段锦呼吸要领内容",
+                node_type=NodeType.data, confidence=0.9,
+                evidence_quote="八段锦呼吸要领内容",
+            )],
+            new_edges=[_make_edge("八段锦", "呼吸要领", "subtopic_of")],
+            merged_into=None,
+        )
+        created = await tool_apply_to_store(event_store, graph_store, proposal, eid)
+        assert len(created) == 1
+        new_id = created[0]
+        # 边落图：existing -> 新节点（title 解析成功）
+        assert graph_store.get_edge("n_existing", new_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_edge_unresolvable_dropped_with_warning(
+        self, db, event_store, graph_store, caplog
+    ):
+        """边端点完全无法解析 → 丢弃但必须留警告日志（不再静默）。"""
+        import logging as _logging
+
+        from tests.factories import make_event
+        eid = await make_event(event_store, "孤立新知识")
+        proposal = GraphBuildOutput(
+            new_nodes=[NodeCreate(
+                title="孤立节点", content="无关联内容",
+                node_type=NodeType.data, confidence=0.9,
+                evidence_quote="无关联内容",
+            )],
+            new_edges=[_make_edge("不存在的节点", "孤立节点", "related_to")],
+            merged_into=None,
+        )
+        with caplog.at_level(_logging.WARNING):
+            created = await tool_apply_to_store(event_store, graph_store, proposal, eid)
+        assert len(created) == 1
+        assert graph_store.get_node(created[0]) is not None
+        assert any("Edge dropped" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
     async def test_edges_resolve_after_merge(self, db, event_store, graph_store):
@@ -284,6 +330,134 @@ class TestMaintenanceLocalChecks:
         )
         assert run_maintenance_local_checks(graph_store, plan) == []
 
+    @pytest.mark.asyncio
+    async def test_merge_restraint_low_overlap_no_pressure(self, graph_store):
+        """合并底线：无规模压力时，重合 < jaccard_threshold 的合并驳回。"""
+        from core.models import GraphMaintenancePlan, MaintenanceMerge
+        from tests.factories import make_node
+        await make_node(graph_store, "t", "Python 编程", "内容A")
+        await make_node(graph_store, "s", "Python 编程进阶", "内容B")
+        plan = GraphMaintenancePlan(
+            merges=[MaintenanceMerge(target_id="t", source_ids=["s"], reason="重合")],
+            confidence=0.9,
+        )
+        candidates = {
+            "size_pressure": False,
+            "merge_candidates": [
+                {"target_id": "t", "source_id": "s", "overlap": 0.6},
+            ],
+        }
+        issues = run_maintenance_local_checks(graph_store, plan, candidates)
+        assert any("无规模压力下合并重合不足" in i.description for i in issues)
+
+    @pytest.mark.asyncio
+    async def test_merge_restraint_allows_high_overlap(self, graph_store):
+        """无规模压力下重合 ≥ jaccard_threshold（近似等价）→ 放行。"""
+        from core.models import GraphMaintenancePlan, MaintenanceMerge
+        from tests.factories import make_node
+        await make_node(graph_store, "t", "Python 编程", "内容A")
+        await make_node(graph_store, "s", "Python 编程", "内容B")
+        plan = GraphMaintenancePlan(
+            merges=[MaintenanceMerge(target_id="t", source_ids=["s"], reason="等价")],
+            confidence=0.9,
+        )
+        candidates = {
+            "size_pressure": False,
+            "merge_candidates": [
+                {"target_id": "t", "source_id": "s", "overlap": 0.9},
+            ],
+        }
+        assert run_maintenance_local_checks(graph_store, plan, candidates) == []
+
+    @pytest.mark.asyncio
+    async def test_merge_restraint_lifted_under_pressure(self, graph_store):
+        """规模压力（资料库太过庞大）→ 放宽合并，低重合也放行。"""
+        from core.models import GraphMaintenancePlan, MaintenanceMerge
+        from tests.factories import make_node
+        await make_node(graph_store, "t", "Python 编程", "内容A")
+        await make_node(graph_store, "s", "Python 编程进阶", "内容B")
+        plan = GraphMaintenancePlan(
+            merges=[MaintenanceMerge(target_id="t", source_ids=["s"], reason="瘦身")],
+            confidence=0.9,
+        )
+        candidates = {
+            "size_pressure": True,
+            "merge_candidates": [
+                {"target_id": "t", "source_id": "s", "overlap": 0.6},
+            ],
+        }
+        assert run_maintenance_local_checks(graph_store, plan, candidates) == []
+
+    @pytest.mark.asyncio
+    async def test_oversplit_same_source_merge_exempt(self, graph_store):
+        """同源豁免：同一过碎事件的碎片节点对不受合并底线约束（治碎聚合）。"""
+        from core.models import GraphMaintenancePlan, MaintenanceMerge
+        from tests.factories import make_node
+        for i in range(6):
+            await make_node(graph_store, f"s{i}", f"主题{i}", f"完全不同方面的内容{i}号")
+        plan = GraphMaintenancePlan(
+            merges=[MaintenanceMerge(target_id="s0", source_ids=["s1"], reason="同源聚合")],
+            confidence=0.9,
+        )
+        candidates = {
+            "size_pressure": False,
+            "oversplit_events": [{
+                "event_id": "e1",
+                "count": 6,
+                "nodes": [
+                    {"node_id": f"s{i}", "title": "", "node_type": "data", "snippet": ""}
+                    for i in range(6)
+                ],
+            }],
+        }
+        assert run_maintenance_local_checks(graph_store, plan, candidates) == []
+
+    @pytest.mark.asyncio
+    async def test_oversplit_exemption_requires_both_in_group(self, graph_store):
+        """豁免要求双方同属一个过碎组：拉入组外节点仍驳回。"""
+        from core.models import GraphMaintenancePlan, MaintenanceMerge
+        from tests.factories import make_node
+        for i in range(6):
+            await make_node(graph_store, f"s{i}", f"主题{i}", f"同事件碎片{i}")
+        await make_node(graph_store, "out1", "外部", "别的事件的节点")
+        plan = GraphMaintenancePlan(
+            merges=[MaintenanceMerge(target_id="s0", source_ids=["out1"], reason="x")],
+            confidence=0.9,
+        )
+        candidates = {
+            "size_pressure": False,
+            "merge_candidates": [
+                {"target_id": "s0", "source_id": "out1", "overlap": 0.5},
+            ],
+            "oversplit_events": [{
+                "event_id": "e1",
+                "count": 6,
+                "nodes": [
+                    {"node_id": f"s{i}", "title": "", "node_type": "data", "snippet": ""}
+                    for i in range(6)
+                ],
+            }],
+        }
+        issues = run_maintenance_local_checks(graph_store, plan, candidates)
+        assert any("无规模压力下合并重合不足" in i.description for i in issues)
+
+    @pytest.mark.asyncio
+    async def test_edge_add_endpoints_validated(self, graph_store):
+        """补边硬规则：端点必须存在且 relation 非空。"""
+        from core.models import GraphMaintenancePlan, MaintenanceEdgeAdd
+        from tests.factories import make_node
+        await make_node(graph_store, "a1", "节点A", "内容A")
+        plan = GraphMaintenancePlan(
+            edge_adds=[
+                MaintenanceEdgeAdd(source="a1", target="ghost", relation="related_to", reason="x"),
+                MaintenanceEdgeAdd(source="a1", target="a1", relation="", reason="y"),
+            ],
+            confidence=0.9,
+        )
+        issues = run_maintenance_local_checks(graph_store, plan)
+        assert any("补边端点节点不存在" in i.description for i in issues)
+        assert any("补边缺少关系短语" in i.description for i in issues)
+
 
 class TestApplyMaintenance:
     @pytest.mark.asyncio
@@ -372,6 +546,141 @@ class TestApplyMaintenance:
         assert graph_store.get_edge("a", "b") is None
 
     @pytest.mark.asyncio
+    async def test_edge_add_execution(self, db, event_store, graph_store):
+        """补边执行：孤立节点连回图，evidence 取 source 首条有效源证。"""
+        from core.models import GraphMaintenancePlan, MaintenanceEdgeAdd
+        from tests.factories import make_node
+        await make_node(graph_store, "iso", "孤岛", "孤立内容", event_id="e1")
+        await make_node(graph_store, "hub", "枢纽", "枢纽内容", event_id="e2")
+        plan = GraphMaintenancePlan(
+            edge_adds=[MaintenanceEdgeAdd(
+                source="iso", target="hub", relation="related_to", reason="同属游戏主题",
+            )],
+            confidence=0.9,
+        )
+        stats = await tool_apply_maintenance(event_store, graph_store, plan)
+        assert stats["edges_added"] == ["iso→hub"]
+        edge = graph_store.get_edge("iso", "hub")
+        assert edge is not None
+        assert edge.relation == "related_to"
+        assert edge.evidence_event_id == "e1"  # source 节点首条有效源证
+
+
+class TestPlanChannelFilter:
+    """阶段通道过滤（v1.24）：防 Gr 越界输出不属于当前维护阶段的通道。"""
+
+    def test_filter_drops_disallowed_channels(self):
+        from core.models import (
+            GraphMaintenancePlan,
+            MaintenanceCompress,
+            MaintenanceDelete,
+            MaintenanceMerge,
+            MaintenanceNodeAdd,
+        )
+        plan = GraphMaintenancePlan(
+            merges=[MaintenanceMerge(target_id="t", source_ids=["s"], reason="x")],
+            deletes=[MaintenanceDelete(node_id="d", reason="x")],
+            edge_adds=[],
+            node_adds=[MaintenanceNodeAdd(
+                title="补点", content="内容", node_type=NodeType.data,
+                event_id="e1", evidence_quote="q", reason="x",
+            )],
+            compresses=[MaintenanceCompress(node_id="c", content="概括", reason="x")],
+            confidence=0.9,
+        )
+        filtered = filter_plan_channels(
+            plan, {"merges", "deletes", "edge_removes", "node_adds"}
+        )
+        assert filtered.merges and filtered.node_adds
+        assert not filtered.compresses and not filtered.edge_adds
+        assert not filtered.updates
+        # allowed=None 不过滤（compress 全通道）
+        assert filter_plan_channels(plan, None) is plan
+
+
+class TestNodeAddMaintenance:
+    """补缺失要点（v1.24，update 模式）：锚定已有事件，quote 子串硬校验。"""
+
+    @pytest.mark.asyncio
+    async def test_node_add_local_checks(self, event_store, graph_store):
+        eid, _ = await event_store.insert("八段锦讲呼吸与动作要领", "data")
+        from core.models import GraphMaintenancePlan, MaintenanceNodeAdd
+        from tests.factories import make_node
+        await make_node(graph_store, "hub", "八段锦主题", "内容", event_id="e9")
+        plan = GraphMaintenancePlan(
+            node_adds=[
+                # 合法：quote 是原文子串 + 父节点存在
+                MaintenanceNodeAdd(
+                    title="呼吸要领", content="八段锦呼吸要领内容",
+                    node_type=NodeType.data, event_id=eid,
+                    evidence_quote="八段锦讲呼吸", parent_node_id="hub", reason="缺失要点",
+                ),
+                # quote 不是原文子串 → hallucination
+                MaintenanceNodeAdd(
+                    title="坏引用", content="内容", node_type=NodeType.data,
+                    event_id=eid, evidence_quote="原文里没有这句话", reason="x",
+                ),
+                # 锚定事件不存在 → hallucination
+                MaintenanceNodeAdd(
+                    title="坏事件", content="内容", node_type=NodeType.data,
+                    event_id="ghost", evidence_quote="q", reason="x",
+                ),
+                # system 类型 → 禁止
+                MaintenanceNodeAdd(
+                    title="坏类型", content="内容", node_type=NodeType.system,
+                    event_id=eid, evidence_quote="八段锦讲呼吸", reason="x",
+                ),
+                # 父节点不存在 → illegal
+                MaintenanceNodeAdd(
+                    title="坏父节点", content="内容", node_type=NodeType.data,
+                    event_id=eid, evidence_quote="八段锦讲呼吸",
+                    parent_node_id="ghost_parent", reason="x",
+                ),
+            ],
+            confidence=0.9,
+        )
+        issues = run_maintenance_local_checks(
+            graph_store, plan, None, event_content_map={eid: "八段锦讲呼吸与动作要领"}
+        )
+        assert not any("呼吸要领" in i.description for i in issues)  # 合法项通过
+        assert any("坏引用" in i.description and i.type == "hallucination" for i in issues)
+        assert any("锚定事件不存在" in i.description for i in issues)
+        assert any("坏类型" in i.description for i in issues)
+        assert any("父节点不存在" in i.description for i in issues)
+
+    @pytest.mark.asyncio
+    async def test_node_add_execution(self, db, event_store, graph_store):
+        """补节点执行：源证锚定事件（hash 一致）+ FTS 可检索 + subtopic_of 挂边。"""
+        eid, _ = await event_store.insert("八段锦讲呼吸与动作要领", "data")
+        ev = await event_store.get(eid)
+        c_hash = ev["content_hash"]
+        from core.models import GraphMaintenancePlan, MaintenanceNodeAdd
+        from tests.factories import make_node
+        await make_node(graph_store, "hub", "八段锦主题", "内容", event_id="e9")
+        plan = GraphMaintenancePlan(
+            node_adds=[MaintenanceNodeAdd(
+                title="呼吸要领", content="八段锦呼吸要领内容",
+                node_type=NodeType.data, event_id=eid,
+                evidence_quote="八段锦讲呼吸", parent_node_id="hub", reason="缺失要点",
+            )],
+            confidence=0.9,
+        )
+        stats = await tool_apply_maintenance(event_store, graph_store, plan)
+        assert len(stats["nodes_added"]) == 1
+        nid = stats["nodes_added"][0]
+        node = graph_store.get_node(nid)
+        assert node.title == "呼吸要领"
+        assert {sr.event_id for sr in node.source_refs} == {eid}
+        assert node.source_refs[0].hash == c_hash  # hash 供核对不变式
+        edge = graph_store.get_edge(nid, "hub")
+        assert edge is not None and edge.relation == "subtopic_of"
+        assert edge.evidence_event_id == eid
+        r = await graph_store.search_node_fts("呼吸要领")
+        assert any(x["node_id"] == nid for x in r)
+        # 反向索引：事件 → 新节点
+        assert nid in graph_store.get_nodes_for_event(eid)
+
+    @pytest.mark.asyncio
     async def test_data_append_noop_not_counted(self, db, event_store, graph_store):
         """统计口径：data 追加为空/内容已存在时无实际更新，不计 updated、不重建 FTS。"""
         from core.models import GraphMaintenancePlan, MaintenanceUpdate
@@ -402,13 +711,118 @@ class TestCompressMaintenance:
 
     @pytest.mark.asyncio
     async def test_compress_candidate_deep_refs(self, graph_store):
-        """data 节点溯源关联深重（有效源证 ≥ 3）→ 可压缩候选。"""
+        """data 节点溯源关联深重（有效源证 ≥ 3）且内容未达底线 → 可压缩候选。"""
+        from tests.factories import make_node
+        await make_node(graph_store, "d1", "主题", "内容碎片化累积" * 30, event_id="e1")
+        graph_store.merge_into("d1", event_id="e2", content_hash="h2")
+        graph_store.merge_into("d1", event_id="e3", content_hash="h3")
+        c = scan_maintenance_candidates(graph_store)
+        assert any(x["node_id"] == "d1" for x in c["compress_candidates"])
+
+    @pytest.mark.asyncio
+    async def test_compress_floor_short_content_excluded(self, graph_store):
+        """压缩底线：内容已足够短（< 200 字符）的资料不进压缩候选——
+        「一份资料已经对应了足够少的内容，如何缩减都不要再缩减了」。"""
         from tests.factories import make_node
         await make_node(graph_store, "d1", "主题", "内容", event_id="e1")
         graph_store.merge_into("d1", event_id="e2", content_hash="h2")
         graph_store.merge_into("d1", event_id="e3", content_hash="h3")
         c = scan_maintenance_candidates(graph_store)
-        assert any(x["node_id"] == "d1" for x in c["compress_candidates"])
+        assert not any(x["node_id"] == "d1" for x in c["compress_candidates"])
+
+    @pytest.mark.asyncio
+    async def test_size_pressure_flag(self, graph_store, monkeypatch):
+        """规模压力标记：总节点数 ≥ 高水位 → true（允许放宽合并）。"""
+        from core.config import settings
+        from tests.factories import make_node
+        await make_node(graph_store, "d1", "主题", "内容")
+        monkeypatch.setattr(settings, "agent_maintain_max_nodes", 1)
+        assert scan_maintenance_candidates(graph_store)["size_pressure"] is True
+        monkeypatch.setattr(settings, "agent_maintain_max_nodes", 999)
+        assert scan_maintenance_candidates(graph_store)["size_pressure"] is False
+
+    @pytest.mark.asyncio
+    async def test_oversplit_event_flagged(self, db, event_store, graph_store):
+        """同源过碎：单条事件拆出 ≥6 个有效节点 → 过碎候选（治碎聚合用）。"""
+        from tests.factories import make_node
+        eid, _ = await event_store.insert("一个被拆得很碎的事件", "data")
+        for i in range(6):
+            await make_node(graph_store, f"s{i}", f"碎片{i}", f"内容{i}", event_id=eid)
+        c = scan_maintenance_candidates(graph_store)
+        hits = [o for o in c["oversplit_events"] if o["event_id"] == eid]
+        assert len(hits) == 1 and hits[0]["count"] == 6
+        assert {n["node_id"] for n in hits[0]["nodes"]} == {f"s{i}" for i in range(6)}
+
+    @pytest.mark.asyncio
+    async def test_oversplit_not_flagged_below_threshold(self, db, event_store, graph_store):
+        """事件节点数 < 6 → 不过碎，不进候选。"""
+        from tests.factories import make_node
+        eid, _ = await event_store.insert("拆得不算碎的事件", "data")
+        for i in range(5):
+            await make_node(graph_store, f"s{i}", f"碎片{i}", f"内容{i}", event_id=eid)
+        c = scan_maintenance_candidates(graph_store)
+        assert not any(o["event_id"] == eid for o in c["oversplit_events"])
+
+    @pytest.mark.asyncio
+    async def test_oversplit_excludes_system_nodes(self, db, event_store, graph_store):
+        """system 节点不计入过碎统计（也永不参与聚合）。"""
+        from tests.factories import make_node
+        eid, _ = await event_store.insert("事件", "data")
+        for i in range(5):
+            await make_node(graph_store, f"s{i}", f"碎片{i}", f"内容{i}", event_id=eid)
+        await make_node(graph_store, "sys1", "系统", "内容",
+                        node_type=NodeType.system, event_id=eid)
+        c = scan_maintenance_candidates(graph_store)
+        hits = [o for o in c["oversplit_events"] if o["event_id"] == eid]
+        assert not hits  # 5 个 data + 1 个 system → 计 5 < 6，不候选
+
+    @pytest.mark.asyncio
+    async def test_isolated_nodes_flagged(self, db, event_store, graph_store):
+        """孤立节点（无边、有有效源证、置信度 ≥0.4）→ 连线候选。"""
+        from tests.factories import make_edge, make_node
+        await make_node(graph_store, "iso1", "孤岛节点", "有源证无边的节点", event_id="e1")
+        await make_node(graph_store, "conn1", "有边节点", "内容", event_id="e2")
+        await make_node(graph_store, "conn2", "有边节点2", "内容", event_id="e2")
+        await make_edge(graph_store, "conn1", "conn2", event_id="e2")
+        # 低置信孤立 → 应进 low_conf_isolated 而非 isolated_nodes
+        node = await make_node(graph_store, "low1", "低置信孤立", "内容", event_id="e3")
+        node.confidence = 0.2
+        c = scan_maintenance_candidates(graph_store)
+        assert any(x["node_id"] == "iso1" for x in c["isolated_nodes"])
+        assert not any(x["node_id"] == "conn1" for x in c["isolated_nodes"])
+        assert not any(x["node_id"] == "low1" for x in c["isolated_nodes"])
+        assert any(x["node_id"] == "low1" for x in c["low_conf_isolated"])
+
+    @pytest.mark.asyncio
+    async def test_link_candidates_flagged(self, graph_store):
+        """待连线对（v1.25）：词面相关但未连边 → link_candidates；
+        已连边的不进；高重合同类型对归 merge_candidates 不重复进 link。"""
+        from tests.factories import make_edge, make_node
+        # a-b：共享「游戏」词，overlap 0.5（同类型 <0.6）→ link
+        await make_node(graph_store, "a", "玩法", "游戏 玩法", event_id="e1")
+        await make_node(graph_store, "b", "平台", "游戏 平台", event_id="e2")
+        # c-d：几乎相同内容 → merge 候选，不进 link
+        await make_node(graph_store, "c", "游戏评测", "游戏 评测", event_id="e3")
+        await make_node(graph_store, "d", "游戏评测二", "游戏 评测", event_id="e4")
+        # e-f：相关但已连边 → 不进 link
+        await make_node(graph_store, "e", "剧情", "游戏 剧情", event_id="e5")
+        await make_node(graph_store, "f", "结局", "游戏 结局", event_id="e6")
+        await make_edge(graph_store, "e", "f", event_id="e5")
+        c = scan_maintenance_candidates(graph_store)
+        link_pairs = {(x["node_a"], x["node_b"]) for x in c["link_candidates"]}
+        assert ("a", "b") in link_pairs or ("b", "a") in link_pairs
+        # c-d 重合 ≥0.85 → merge 候选，不在 link 中
+        assert not any(
+            {"c", "d"} <= {x["node_a"], x["node_b"]} for x in c["link_candidates"]
+        )
+        assert any(
+            {"c", "d"} <= {m["target_id"], m["source_id"]}
+            for m in c["merge_candidates"]
+        )
+        # e-f 已连边 → 不进 link
+        assert not any(
+            {"e", "f"} <= {x["node_a"], x["node_b"]} for x in c["link_candidates"]
+        )
 
     @pytest.mark.asyncio
     async def test_compress_candidate_excludes_system_interaction(self, graph_store):

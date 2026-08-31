@@ -107,9 +107,11 @@ def state_key(data: dict, fmt: str = "table") -> str:
 
 
 def ingest_result(data: dict, fmt: str = "table") -> str:
-    """格式化写入结果。"""
+    """格式化写入结果（含对话指令：/压缩、/merge、/data: 等的执行结果）。"""
     if fmt != "table":
         return out(data, fmt)
+    if data.get("command_triggered"):
+        return f"指令结果\n  {data.get('message', '(无消息)')}"
     return (
         f"事件已写入\n"
         f"  event_id: {data.get('event_id', '-')}\n"

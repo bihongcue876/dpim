@@ -374,7 +374,28 @@ async function doCreate() {
   if (!newContent.value.trim()) return
   creating.value = true
   try {
-    await api.ingest(newContent.value, newType.value)
+    const res = await api.ingest(newContent.value, newType.value)
+    // 对话指令（^compress、^merge、^data 等）：未创建事件，message 携带执行结果
+    if (res.command_triggered) {
+      showNewModal.value = false
+      newContent.value = ''
+      newType.value = 'interaction'
+      const msg = res.message || '指令已执行'
+      if (msg.includes('未执行')) {
+        message.warning(msg, { duration: 6000, closable: true })
+      } else if (msg.length > 80 || msg.includes('\n')) {
+        dialog.info({ title: '指令结果', content: msg, positiveText: '知道了' })
+      } else {
+        message.success(msg)
+      }
+      return
+    }
+    if (!res.event_id) {
+      message.warning('后端未返回事件 ID：后端版本可能过旧，请重启后端服务后刷新页面', {
+        duration: 8000, closable: true,
+      })
+      return
+    }
     await props.onCommitted()
     showNewModal.value = false
     newContent.value = ''

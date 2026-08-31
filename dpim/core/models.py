@@ -190,6 +190,23 @@ class MaintenanceEdgeAdd(BaseModel):
     reason: str = ""
 
 
+class MaintenanceNodeAdd(BaseModel):
+    """update 模式补缺失要点（v1.24）：把事件中提到但图中缺失的关键点补成节点。
+
+    证据锚定：event_id 必须是已有事件，evidence_quote 必须是该事件原文的
+    连续子串（本地硬校验，杜绝幻觉）；可选 parent_node_id 挂为子节点
+    （subtopic_of 边）。system 类型不允许。
+    """
+
+    title: str = Field(max_length=60)
+    content: str
+    node_type: NodeType = NodeType.data
+    event_id: str
+    evidence_quote: str
+    parent_node_id: str = ""
+    reason: str = ""
+
+
 class MaintenanceCompress(BaseModel):
     """压缩 data 节点：概括 content + 精炼 title + 补充关系（边），保留源证与语义。
 
@@ -210,6 +227,8 @@ class GraphMaintenancePlan(BaseModel):
     deletes: list[MaintenanceDelete] = []
     updates: list[MaintenanceUpdate] = []
     edge_removes: list[MaintenanceEdgeRemove] = []
+    edge_adds: list[MaintenanceEdgeAdd] = []
+    node_adds: list[MaintenanceNodeAdd] = []
     compresses: list[MaintenanceCompress] = []
     confidence: float = Field(ge=0.0, le=1.0, default=0.5)
 
@@ -242,6 +261,9 @@ class IngestResponse(BaseModel):
     event_id: str
     status: EventStatus
     message: str
+    # 对话指令触发（/压缩、/合并、/delete、/data: 等）：未创建事件时
+    # event_id 为空、status=skipped；message 携带面向用户的执行结果
+    command_triggered: bool = False
 
 
 class DeleteNodeRequest(BaseModel):
@@ -249,7 +271,16 @@ class DeleteNodeRequest(BaseModel):
 
 
 class ModifyNodeRequest(BaseModel):
-    content: str
+    """节点修改：内容修改与源事件增删可任选（至少一项）。
+
+    - content：修改内容（system 节点禁止）
+    - add_source_event_id：追加源事件（幂等，事件须存在）
+    - remove_source_event_id：移除源事件（移除后须仍保留 ≥1 条有效源证）
+    """
+
+    content: str = ""
+    add_source_event_id: str = ""
+    remove_source_event_id: str = ""
 
 
 class ModifyEventStatusRequest(BaseModel):
@@ -316,7 +347,7 @@ class HealthResponse(BaseModel):
     ai_available: bool
     layers: dict[str, Any]
     last_event_at: str = ""
-    version: str = "0.2.1"
+    version: str = "0.2.2"
 
 
 # ── dpim-webui 新增模型 ────────────────────

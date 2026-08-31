@@ -1,7 +1,7 @@
 # 双区智能存储系统 DPIM
 > Double-Place Intelligence Memory 
 >
-> 版本：v0.2.1
+> 版本：v0.2.2
 
 ## 系统简介
 
@@ -18,7 +18,8 @@
 ```bash
 cd dpim
 uv sync                       # 首次：同步环境
-uv run python main.py serve   # 启动服务，默认 :8000
+uv run python main.py serve   # 启动服务，默认端口 :8000
+uv run python main.py serve --reload  # 热加载启动服务，默认端口 :8000
 ```
 
 - 启动后访问 http://localhost:8000/docs 查看接口文档。
@@ -30,6 +31,21 @@ cd dpimWebUI
 pnpm install
 pnpm dev      # 默认地址：http://localhost:5173
 ```
+
+### 对话指令（WebUI 信息传入 / dpimCLI ingest）
+
+在输入框直接输入指令即可执行运维动作（指令本身不落库为事件；仅 `^英文` 一种形式，其余按普通文本落库）：
+
+- `^compress [节点ID]` —— 触发图压缩维护（需 AI 可用；删繁就简定位，可补边）
+- `^update [节点ID]` —— 图结构优化两阶段：减碎+补缺失要点 → 连线孤岛（需 AI）
+- `^merge <目标ID> <源ID>` —— 合并节点（内容合并不丢失，无 AI 也可用）
+- `^delete <节点ID>` —— 删除节点（受删除保护与 system 保护）
+- `^data <内容>`、`^interaction <内容>`、`^source <内容>` —— 按显式类型存入（AI 不可用也可用）
+- `^node system <标题> | <内容>` —— 手工创建系统节点
+- `^help` —— 查看全部指令用法
+
+WebUI 信息传入框输入 `^` 会自动弹出指令候选（↑↓ 选择、Enter 填入）。
+节点详情面板支持源事件管理：可关联/移除源事件，最少保留 1 条有效源事件。
 
 ### 命令行管理
 
@@ -54,6 +70,7 @@ dpim shell    # 交互式 Shell
 - **智能可选**：Cr/In/Gr/Meta 四角色 Agent 管线自动衍生结构化知识，无 AI 时降级为基础全文检索
 - **降低错觉**：每条图节点锚定来源事件，元认知裁判做子串校验
 - **自动维护**：AI自动扫描冗余节点并合并、删改（降级保连接、恢复自动补偿）
+- **对话指令**：信息传入框输入 ^compress、^merge、^data 等指令即时执行，压缩/合并带底线规则防过度整理
 
 ## 项目结构
 
