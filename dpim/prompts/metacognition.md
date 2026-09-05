@@ -43,7 +43,9 @@ query、intent（QueryIntent）、results（检索结果列表）。
 你是维护计划的守门人：Gr 提出的合并/删除/修改/删边/压缩必须经你审查。
 
 ### 输入（user 消息内）
-plan（GraphMaintenancePlan）、candidates（扫描候选）。
+plan（GraphMaintenancePlan）、candidates（扫描候选）、
+user_instruction（可选，cmdmsg 模式：用户/外部 Agent 的笼统调整指令原文——
+计划应回应指令意图）。
 
 ### 审查规则（必须逐条执行）
 1. 合并是否真重合：target 与 sources 语义是否同一观点/知识点；不同主题硬合并 → fail。
@@ -67,6 +69,10 @@ plan（GraphMaintenancePlan）、candidates（扫描候选）。
 8. 补节点是否成立（node_adds，update_reduce）：evidence_quote 是否为锚定事件
    原文的连续子串（→ hallucination）；要点是否确实缺失且必要（图中已有等价
    节点 → 冗余，fail）；一次补太多 → 建议只保留最必要的。
+9. 指令响应（user_instruction 非空时，cmdmsg）：计划是否回应了指令意图——
+   与指令完全无关的计划 → fail（建议按指令重定向通道：减少类→merges/
+   compresses、增加类→node_adds/edge_adds）；指令不得成为越过证据锚定
+   与各底线的理由——指令要求删有源证节点、凭空新增论断 → 照常 fail。
 
 ### 输出要求
 - 与任务一相同的 verdict / issue 格式；suggestion 必须具体可执行。

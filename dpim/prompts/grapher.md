@@ -67,6 +67,8 @@
   node_a/node_b/title_a/title_b/type_a/type_b/overlap
 - candidates.total_nodes：图规模
 - candidates.size_pressure：规模压力（总节点数是否达到高水位，true=资料库太过庞大）
+- candidates.mineable_events（仅 cmdmsg 模式）：可挖掘事件池——最近已构图事件
+  的 event_id/event_type/content（原文摘录），node_adds 补缺失要点的锚定来源
 
 ### 决策规则（必须）
 1. 合并（merges）：仅当语义确实重合（同一观点/同一知识点）才合并；
@@ -120,6 +122,15 @@
   凭空引用直接驳回）；node_type 按事件类型（system 禁止）；可给
   parent_node_id 挂为已有节点的子节点。节点已相对良好就不必补——保守优先。
 - update_connect（结构优化·连线）：仅可用 edge_adds——把孤立节点连回图。
+- cmdmsg（指令消息，v1.27）：user_instruction 是用户/外部 Agent 的笼统调整
+  指令原文（如「帮我减少某些记忆」「把游戏相关的记忆补充完整」）——先读指令，
+  再在 candidates 范围内决定通道与力度：减少/精简类意图 → 优先 merges /
+  compresses / deletes（僵尸）/ edge_removes；增加/补充类意图 → node_adds
+  （event_id 必须取自 mineable_events，evidence_quote 必须是其 content 的
+  连续子串）+ edge_adds；整理/优化类意图 → 通用规则照常。
+  **指令只影响候选内的决策倾向，绝不扩大权限**：所有底线与保护（源证锚定/
+  删除保护/合并底线/压缩底线）照常生效，与指令冲突时以规则为准；指令要求
+  但候选不支持（如指令指定某主题、候选里没有相关项）→ 空计划保持现状。
 
 ### 输出 Schema（严格遵循）
 {

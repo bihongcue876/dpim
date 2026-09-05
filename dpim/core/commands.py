@@ -10,6 +10,9 @@
   ^update [node_id] —— 图结构优化轮（v1.24）：两阶段——减碎（聚合/清理/删错误边/
     补缺失要点 node_adds）→ 重新扫描 → 连线（edge_adds 把孤立节点连回图）；
     一轮封顶不循环；节点已良好则不动；可带节点 ID 限定范围。
+  ^cmdmsg <自然语言指令> —— 指令消息（v1.27，Command message）：给在线 Agent 发
+    笼统调整意图（如「帮我减少某些记忆」「补充游戏相关的记忆」），不带节点数据；
+    入队 maintain_graph 由 Gr 读取指令、Meta 审核回应性后执行，多轮封顶。
 - 确定层（无 LLM，同步执行）：
   ^merge <target_id> <source_id> —— 合并节点（源证并集 + 内容去重合并不丢失）
   ^delete <node_id> —— 删除节点（删除保护 + system 保护）
@@ -52,6 +55,7 @@ class ParsedCommand:
 _VERBS: dict[str, str] = {
     "compress": "compress",
     "update": "update",
+    "cmdmsg": "cmdmsg",
     "merge": "merge",
     "delete": "delete",
     "node": "node",
@@ -100,6 +104,12 @@ def parse_command(content: str) -> ParsedCommand | None:
         return ParsedCommand(kind="compress", scope=rest.split()[0] if rest else "")
     if kind == "update":
         return ParsedCommand(kind="update", scope=rest.split()[0] if rest else "")
+    if kind == "cmdmsg":
+        if not rest:
+            return ParsedCommand(
+                kind="cmdmsg", hints=["缺少指令内容：^cmdmsg <自然语言指令>"]
+            )
+        return ParsedCommand(kind="cmdmsg", content=rest)
     if kind == "delete":
         if not rest:
             return ParsedCommand(kind="delete", hints=["缺少节点 ID：^delete <node_id>"])
@@ -138,6 +148,8 @@ def usage_text() -> str:
         "支持的指令（仅 ^ 前缀 + 英文，空格分隔；输入 ^ 可自动弹出候选）：\n"
         "  ^compress [节点ID] —— 触发图压缩维护（需 AI；删繁就简定位，可补边）\n"
         "  ^update [节点ID] —— 图结构优化（需 AI；两阶段：减碎+补缺失要点 → 连线孤岛）\n"
+        "  ^cmdmsg <自然语言指令> —— 指令消息（需 AI；给 Agent 发笼统调整意图，\n"
+        "    如「帮我减少某些记忆」，Gr 读取 Meta 审核后执行，多轮封顶）\n"
         "  ^merge <目标ID> <源ID> —— 合并节点（内容合并不丢失）\n"
         "  ^delete <节点ID> —— 删除节点（受删除保护与 system 保护）\n"
         "  ^data <内容> —— 按 data 类型存入\n"

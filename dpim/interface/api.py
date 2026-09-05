@@ -348,6 +348,62 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
             f"待连线对 {n_link}）；执行稍后完成，结果见图页与日志"
         )
 
+    # ── 指令消息（语义层，v1.27）：笼统自然语言意图 → Agent 管线 ──
+    if cmd.kind == "cmdmsg":
+        if settings.agent_mode != "pipeline" or not ai_state.available:
+            return _command_response(
+                "指令消息未执行：AI 不可用或 Agent 管线未启用"
+                "（^data 等纯存储指令不受影响）"
+            )
+        if orchestrator is None:
+            raise HTTPException(status_code=503, detail="Orchestrator not initialized")
+        if len(cmd.content) > 2000:
+            return _command_response(
+                f"指令消息未执行：指令 {len(cmd.content)} 字符超过上限 2000"
+                "（请精炼意图描述，具体数据交给管线自己查）"
+            )
+        # 预扫描（纯本地毫秒级）：无可动对象（无候选且无可挖掘事件）即时明示
+        from controller.tools.sys_tools import scan_maintenance_candidates
+
+        candidates = scan_maintenance_candidates(gs)
+        n_merge = len(candidates["merge_candidates"])
+        n_zombie = len(candidates["zombie_nodes"])
+        n_lowconf = len(candidates["low_conf_isolated"])
+        n_compress = len(candidates["compress_candidates"])
+        n_oversplit = len(candidates["oversplit_events"])
+        n_isolated = len(candidates["isolated_nodes"])
+        n_link = len(candidates.get("link_candidates", []))
+        n_mineable = len(await es.list_by_status("linked"))
+        if not any([
+            n_merge, n_zombie, n_lowconf, n_compress, n_oversplit,
+            n_isolated, n_link, n_mineable,
+        ]):
+            return _command_response(
+                "指令消息未执行：当前图无候选且无已构图事件，无可动对象"
+            )
+        await orchestrator.enqueue(
+            QueueMessage(
+                type="maintain_graph",
+                payload={"instruction": cmd.content},
+                timestamp=datetime.now(timezone.utc).timestamp(),
+            )
+        )
+        refresh_key()
+        logger.info(
+            "Command cmdmsg -> maintain_graph (instruction=%r, merge=%d "
+            "zombie=%d lowconf=%d compress=%d oversplit=%d isolated=%d "
+            "link=%d mineable=%d)",
+            cmd.content, n_merge, n_zombie, n_lowconf, n_compress,
+            n_oversplit, n_isolated, n_link, n_mineable,
+        )
+        return _command_response(
+            f"指令消息已入队：「{cmd.content}」——Gr 将读取指令在候选内决策"
+            f"（重合对 {n_merge} / 僵尸 {n_zombie} / 孤立低置信 {n_lowconf} / "
+            f"冗长可压缩 {n_compress} / 同源过碎 {n_oversplit} / 孤立待连线 "
+            f"{n_isolated} / 待连线对 {n_link} / 可挖掘事件 {n_mineable}），"
+            "Meta 审核后执行，多轮封顶，结果见图页与日志"
+        )
+
     # ── 确定层：合并 / 删除 / 建系统节点（无 LLM，同步执行）──
     if cmd.kind == "merge":
         target = gs.get_node(cmd.target_id)

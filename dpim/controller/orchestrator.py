@@ -314,9 +314,16 @@ class Orchestrator:
         mode=update（v1.24，^update 指令）：两阶段结构优化——
         Phase1 减碎+补缺（merges/deletes/edge_removes/node_adds）→ 重新扫描 →
         Phase2 连线（edge_adds 把孤立节点连回图）；一轮封顶不循环。
+        instruction（v1.27，^cmdmsg 指令消息）：用户/外部 Agent 的笼统调整意图——
+        Gr 读取指令在候选内决策、Meta 审计划是否回应指令；多轮封顶
+        （每轮在执行后的新图上重扫，空计划/被驳回/无候选即停）。
         """
         if not ai_state.available or settings.agent_mode != "pipeline":
             logger.info("Graph maintenance skipped (AI unavailable or pipeline inactive)")
+            return
+        instruction = payload.get("instruction")
+        if instruction:
+            await self._run_cmdmsg_rounds(str(instruction))
             return
         if (
             payload.get("auto")
@@ -433,15 +440,54 @@ class Orchestrator:
         else:
             logger.info("Update round phase2: no isolated nodes or link pairs")
 
+    async def _run_cmdmsg_rounds(self, instruction: str) -> None:
+        """^cmdmsg 指令消息维护（v1.27）：笼统意图 → 候选 + 可挖掘事件池 →
+        Gr 读指令决策 → Meta 审回应性 → 执行；多轮封顶——每轮在执行后的
+        新图上重扫续轮，空计划/被驳回/无可动对象即提前停。"""
+        for round_no in range(1, settings.agent_cmdmsg_max_rounds + 1):
+            candidates = scan_maintenance_candidates(self.graph_store)
+            candidates["mineable_events"] = await self._mineable_events()
+            if (
+                not self._has_any_candidate(candidates)
+                and not candidates["mineable_events"]
+            ):
+                logger.info("Cmdmsg round %d: no candidates and no events", round_no)
+                return
+            applied = await self._maintenance_phase(
+                candidates, mode_task="cmdmsg", allowed=None, instruction=instruction
+            )
+            if not applied:
+                logger.info("Cmdmsg round %d: nothing applied, stop", round_no)
+                return
+            logger.info("Cmdmsg round %d applied, rescanning", round_no)
+
+    async def _mineable_events(self, limit: int = 20) -> list[dict]:
+        """可挖掘事件池（cmdmsg 增加/补充类意图的 node_adds 锚定源）：
+        最近已构图（linked）事件 + 原文摘录，供 Gr 补缺失要点时锚定。"""
+        events = await self.event_store.list_by_status("linked")
+        pool: list[dict] = []
+        for ev in events[-limit:]:
+            pool.append({
+                "event_id": ev["event_id"],
+                "event_type": ev.get("event_type", ""),
+                "content": (ev.get("raw_content") or "")[:1500],
+            })
+        return pool
+
     async def _maintenance_phase(
         self,
         candidates: dict,
         mode_task: str,
         allowed: set[str] | None,
-    ) -> None:
-        """单阶段维护：Gr 计划（按模式约束通道）→ Meta 审核 → 执行。"""
+        instruction: str = "",
+    ) -> bool:
+        """单阶段维护：Gr 计划（按模式约束通道）→ Meta 审核 → 执行。
+
+        instruction（v1.27，cmdmsg 模式）：指令原文，透传给 Gr（决策倾向）与
+        Meta（回应性审查）；其余模式为空串不注入。
+        返回是否实际执行了计划（多轮续轮依据；空计划/被驳回返回 False）。"""
         plan = await tool_maintain_propose(
-            self.graph_store, candidates, mode_task=mode_task
+            self.graph_store, candidates, mode_task=mode_task, instruction=instruction
         )
         # 防御：丢弃不属于当前阶段的通道（Gr 越界输出）
         plan = filter_plan_channels(plan, allowed)
@@ -450,7 +496,7 @@ class Orchestrator:
             plan.edge_adds, plan.node_adds, plan.compresses,
         ]):
             logger.info("Maintenance phase %s: empty plan (nothing to do)", mode_task)
-            return
+            return False
         # 补节点需要锚定事件原文做 evidence_quote 子串硬校验
         event_content_map: dict[str, str] | None = None
         if plan.node_adds:
@@ -462,16 +508,18 @@ class Orchestrator:
                         ev["raw_content"] if ev else ""
                     )
         verdict = await tool_meta_review_maintenance(
-            self.graph_store, plan, candidates, event_content_map=event_content_map
+            self.graph_store, plan, candidates,
+            event_content_map=event_content_map, instruction=instruction,
         )
         if verdict.verdict != "pass":
             logger.warning(
                 "Maintenance plan rejected (%s): %s",
                 mode_task, issues_text(verdict.issues),
             )
-            return
+            return False
         stats = await tool_apply_maintenance(self.event_store, self.graph_store, plan)
         logger.info("Maintenance phase %s applied: %s", mode_task, stats)
+        return True
 
     async def _handle_compensate(self, payload: dict):
         raw_events = await self.event_store.list_by_status("raw")

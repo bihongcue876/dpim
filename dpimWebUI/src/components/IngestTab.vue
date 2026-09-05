@@ -31,7 +31,7 @@
         <span class="it-count">字符数: {{ content.length }}</span>
       </div>
       <div class="it-cmd-hint">
-        支持指令：<span class="ftag">^compress [节点ID]</span>（删繁就简）、<span class="ftag">^update [节点ID]</span>（结构优化两阶段）、<span class="ftag">^merge 目标ID 源ID</span>、<span class="ftag">^delete 节点ID</span>、<span class="ftag">^data 内容</span>、<span class="ftag">^node system 标题 | 内容</span>、<span class="ftag">^help</span> —— 输入 <span class="ftag">^</span> 自动弹出候选，详见帮助页
+        支持指令：<span class="ftag">^compress [节点ID]</span>（删繁就简）、<span class="ftag">^update [节点ID]</span>（结构优化两阶段）、<span class="ftag">^cmdmsg 自然语言指令</span>（给 Agent 发笼统调整意图）、<span class="ftag">^merge 目标ID 源ID</span>、<span class="ftag">^delete 节点ID</span>、<span class="ftag">^data 内容</span>、<span class="ftag">^node system 标题 | 内容</span>、<span class="ftag">^help</span> —— 输入 <span class="ftag">^</span> 自动弹出候选，详见帮助页
       </div>
     </div>
 

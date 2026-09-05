@@ -84,6 +84,7 @@ async def tool_meta_review_maintenance(
     candidates: dict,
     feedback: str = "",
     event_content_map: dict[str, str] | None = None,
+    instruction: str = "",
 ) -> MetaCogVerdict:
     """审核图维护计划（任务三 review_maintenance）。
 
@@ -92,6 +93,8 @@ async def tool_meta_review_maintenance(
     （本地已把关），按通过处理。
     event_content_map（v1.24）：补节点（node_adds）锚定事件的原文映射，
     供 evidence_quote 子串硬校验；None 时跳过该规则（无 node_adds 场景）。
+    instruction（v1.27，cmdmsg）：指令原文——Meta 审计划是否回应指令意图，
+    指令不豁免任何硬规则。
     """
     from .sys_tools import run_maintenance_local_checks
 
@@ -104,6 +107,7 @@ async def tool_meta_review_maintenance(
     system = prompt_loader.load("meta")
     user = compact_json({
         "task": "review_maintenance",
+        "user_instruction": instruction or None,
         "plan": plan.model_dump(),
         "candidates": candidates,
         "previous_feedback": feedback or None,

@@ -22,6 +22,12 @@ export const COMMAND_CANDIDATES: CommandCandidate[] = [
     needsAI: true,
   },
   {
+    name: '^cmdmsg',
+    args: ' <自然语言指令>',
+    desc: '指令消息：给 Agent 发笼统调整意图（如「减少某些记忆」），多轮封顶',
+    needsAI: true,
+  },
+  {
     name: '^merge',
     args: ' <目标ID> <源ID>',
     desc: '合并节点：源证并集 + 内容合并不丢失',

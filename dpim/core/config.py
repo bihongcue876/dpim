@@ -159,6 +159,11 @@ class Settings:
         self.agent_maintain_cooldown = int(
             getenv("DPIM_AGENT_MAINTAIN_COOLDOWN", "60")
         )
+        # ^cmdmsg 指令消息多轮封顶：每轮 = 重扫 → Gr 按指令决策 → Meta 审 → 执行；
+        # 空计划/被驳回/无候选即提前停（防指令驱动的无限循环）
+        self.agent_cmdmsg_max_rounds = int(
+            getenv("DPIM_AGENT_CMDMSG_MAX_ROUNDS", "3")
+        )
         # 日志级别读取链同存储路径：env → dpim.json → 默认（前端可改并持久化）
         self.log_level = getenv("DPIM_LOG_LEVEL", str(cfg.get("log_level") or "INFO"))
         self._validate()
