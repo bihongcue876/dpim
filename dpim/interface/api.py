@@ -106,7 +106,7 @@ async def lifespan(app: FastAPI):
         await db.close()
 
 
-app = FastAPI(title="DPIM", version="0.2.2", lifespan=lifespan)
+app = FastAPI(title="DPIM", version="0.2.3", lifespan=lifespan)
 
 
 @app.middleware("http")
