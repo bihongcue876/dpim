@@ -1,4 +1,4 @@
-"""控制变量测试：补偿机制、降级状态切换、健康检查隔离"""
+﻿"""控制变量测试：补偿机制、降级状态切换、健康检查隔离"""
 
 import asyncio
 
@@ -78,7 +78,7 @@ class TestCompensationControlledVariables:
         for i in range(5):
             eid, _ = await event_store.insert(f"probe {i}")
             await event_store.update_status(eid, "raw")
-        await orchestrator._handle_compensate({"probe": True})
+        await orchestrator._handle_compensate({"probe": True}, event_store, graph_store)
         assert len(enqueued) == 1
         if orchestrator._comp_batch_check:
             orchestrator._comp_batch_check.cancel()
@@ -95,9 +95,9 @@ class TestCompensationControlledVariables:
         eid, _ = await event_store.insert("pending")
         await event_store.update_status(eid, "raw")
         orchestrator._comp_paused = True
-        await orchestrator._handle_compensate({})
+        await orchestrator._handle_compensate({}, event_store, graph_store)
         assert len(enqueued) == 0  # 暂停中跳过
-        await orchestrator._handle_compensate({"force": True})
+        await orchestrator._handle_compensate({"force": True}, event_store, graph_store)
         assert len(enqueued) == 1  # force 打破暂停
         assert orchestrator._comp_paused is False
 
@@ -121,10 +121,10 @@ class TestCompensationControlledVariables:
         orchestrator._comp_fail_streak = 1
         eid, _ = await event_store.insert("backoff")
         await event_store.update_status(eid, "raw")
-        await orchestrator._handle_compensate({})
+        await orchestrator._handle_compensate({}, event_store, graph_store)
         assert sleeps == [1.0]  # 2^(1-1)
         orchestrator._comp_fail_streak = 3
-        await orchestrator._handle_compensate({})
+        await orchestrator._handle_compensate({}, event_store, graph_store)
         assert sleeps[-1] == 4.0  # 2^(3-1)
         if orchestrator._comp_batch_check:
             orchestrator._comp_batch_check.cancel()
@@ -141,7 +141,7 @@ class TestCompensationControlledVariables:
         orchestrator.enqueue = _null_enqueue
         # 两轮批次，事件一直停留在 raw（未进入 linked）→ 每轮失败计数 +1
         for round_no in range(2):
-            await orchestrator._handle_compensate({})
+            await orchestrator._handle_compensate({}, event_store, graph_store)
             await asyncio.sleep(0.05)  # 等批次检查任务完成
             assert orchestrator._comp_fail_streak == round_no + 1
         assert orchestrator._comp_paused is True
@@ -157,7 +157,7 @@ class TestCompensationControlledVariables:
         orchestrator._comp_fail_streak = 1
         eid = await make_event(event_store, "linked soon", status="raw")
         orchestrator.enqueue = _null_enqueue
-        await orchestrator._handle_compensate({})
+        await orchestrator._handle_compensate({}, event_store, graph_store)
         await event_store.update_status(eid, "linked")
         await asyncio.sleep(0.05)
         assert orchestrator._comp_fail_streak == 0
@@ -174,7 +174,7 @@ class TestCompensationControlledVariables:
         eid, _ = await event_store.insert("probe fail")
         await event_store.update_status(eid, "raw")
         orchestrator.enqueue = _null_enqueue
-        await orchestrator._handle_compensate({"probe": True})
+        await orchestrator._handle_compensate({"probe": True}, event_store, graph_store)
         await asyncio.sleep(0.05)
         assert orchestrator._comp_fail_streak == 1
 
@@ -194,7 +194,7 @@ class TestCompensationControlledVariables:
         orchestrator.enqueue = record_enqueue
         eid, _ = await event_store.insert("probe ok")
         await event_store.update_status(eid, "raw")
-        await orchestrator._handle_compensate({"probe": True})
+        await orchestrator._handle_compensate({"probe": True}, event_store, graph_store)
         await event_store.update_status(eid, "linked")
         await asyncio.sleep(0.05)
         assert orchestrator._comp_fail_streak == 0
@@ -222,7 +222,7 @@ class TestCompensationControlledVariables:
         orchestrator._comp_fail_streak = 10
         eid, _ = await event_store.insert("cap")
         await event_store.update_status(eid, "raw")
-        await orchestrator._handle_compensate({})
+        await orchestrator._handle_compensate({}, event_store, graph_store)
         assert sleeps[-1] == 60.0
         if orchestrator._comp_batch_check:
             orchestrator._comp_batch_check.cancel()
@@ -276,7 +276,7 @@ class TestCompensationControlledVariables:
         orchestrator.enqueue = _null_enqueue
         orchestrator._comp_fail_streak = 3
         orchestrator._comp_paused = True
-        await orchestrator._handle_compensate({})
+        await orchestrator._handle_compensate({}, event_store, graph_store)
         assert orchestrator._comp_fail_streak == 0
         assert orchestrator._comp_paused is False
 

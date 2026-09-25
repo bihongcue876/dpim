@@ -1,5 +1,5 @@
 // DPIM Spec 规约 - TypeScript 类型定义
-// 版本 1.27 (对话指令（^compress ^update ^cmdmsg ^merge ^delete ^data ^interaction ^source ^node ^help）+ 同源聚合 + 节点语义与源证管理 + 连通性治理 + ^update 两阶段优化 + 待连线对候选 + 事件关联节点实时派生 + ^cmdmsg 指令消息多轮；23 端点)
+// 版本 1.29 (对话指令系统 + 同源聚合 + 节点语义与源证管理 + 连通性治理 + ^update 两阶段优化 + 待连线对候选 + 事件关联节点实时派生 + ^cmdmsg 指令消息多轮 + 存储修复（图层损坏留档/合并上限/FTS 自愈/失败原因落库/skipped 检索排除）+ 库与分组（一库 = 一 db + 一 json，repos/index.json 登记表，受管开关，联合检索等权 RRF 去重锚定，+7 库端点，30 端点）+ Cr 短路)
 // 本文件定义所有广义接口：数据模型、Agent IO、内部消息、API 契约
 
 // ==================== 基础枚举 ====================
@@ -278,6 +278,7 @@ export interface FeedbackPayload {
 export interface IngestRequest {
   content: string;
   event_type: EventType;  // v1.17：必填枚举，auto 模式已移除
+  repo_id?: string;       // v1.29：目标册，缺省活动库
 }
 
 export interface IngestResponse {
@@ -365,6 +366,7 @@ export interface SearchRequest {
   max_hops?: number;            // 默认 2；0 = 不扩散（事件原文/知识节点纯检索），1-5 = 扩散跳数（v1.18）
   limit?: number;               // 默认 20
   offset?: number;              // 默认 0
+  repo_ids?: string[];          // v1.29：缺省 = 全部受管库（联合检索）；单值 = 指定册；多值 = 限定联合
 }
 
 export interface SearchResult {
@@ -376,6 +378,11 @@ export interface SearchResult {
   source_type: EventType | 'system'; // 可能值: interaction, data, source, system
   confidence: number;
   degraded: boolean;
+  kind?: 'node' | 'event';      // v1.29：结果种类（联合检索去重键依赖）
+  repo_id?: string;             // v1.29：来源册（联合去重合并时 = 首命中册）
+  repo_name?: string;           // v1.29：来源库名
+  source_repos?: string[];      // v1.29：被去重合并项的全部来源库名
+  content_hash?: string;        // v1.29：事件内容哈希（仅 kind=event）
 }
 
 export interface SearchResponse {
@@ -443,6 +450,10 @@ export interface HealthResponse {
   };
   last_event_at: string;  // ISO8601
   version: string;
+  /** v1.29：队列与册可见性 */
+  queue_depth?: number;
+  worker_running?: boolean;
+  active_repo_id?: string;
 }
 
 // ---- 通用错误 ----
@@ -482,6 +493,47 @@ export interface EventListItem {
   raw_content: string;     // 截断显示
   event_type: EventType;
   status: EventStatus;
+  error?: string;          // v1.28：失败原因（脱敏摘要，仅 failed 非空）
+}
+
+// ==================== 库与分组（v1.29）====================
+
+/** 一库 = 一 memory.db + 一 graph.json；书库 = 文件夹分组 */
+export interface RepoInfo {
+  repo_id: string;
+  name: string;
+  note: string;
+  group: string | null;      // 书库展示名（不入路径）
+  root_kind: 'managed' | 'external';
+  managed: boolean;          // 受管开关：false = 休眠（不加载不检索不构图）
+  active: boolean;           // 是否活动库
+  loaded: boolean;           // 是否已加载
+  total_events: number | null;
+  total_nodes: number | null;
+  db_path: string;
+  json_path: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RepoListResponse {
+  repos: RepoInfo[];
+  active_repo_id: string;
+}
+
+export interface RepoCreateRequest {
+  name: string;              // 1-80 字
+  note?: string;             // ≤500 字
+  group?: string;            // 书库展示名（可选分组）
+  root_kind?: 'managed' | 'external';  // 默认 managed
+  root?: string;             // external 必填：已存在目录（含 memory.db + graph.json）
+}
+
+export interface RepoUpdateRequest {
+  name?: string;
+  note?: string;
+  group?: string;
+  managed?: boolean;         // 受管开关，切换即时生效
 }
 
 /** 事件详情 (GET /events/{event_id}) */

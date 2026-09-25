@@ -315,7 +315,7 @@ async def test_ingest_source_type_skips_pipeline(
     monkeypatch.setattr(core.llm.gateway, "chat_structured", _fail)
     orch = make_orchestrator(db, event_store, graph_store)
     eid, _ = await event_store.insert_event("仅存档的原始资料", "source")
-    await orch._handle_ingest({"event_id": eid})
+    await orch._handle_ingest({"event_id": eid}, event_store, graph_store)
     event = await event_store.get(eid)
     assert event["status"] == "indexed"  # 基础索引完成，但不构图
     assert graph_store.total_nodes() == 0
@@ -332,9 +332,11 @@ async def test_ingest_pipeline_success(
         verdict=make_verdict(pass_=True),
     )
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
     eid, _ = await event_store.insert_event(raw, "interaction")
-    await orch._handle_ingest_pipeline(eid)
+    await orch._handle_ingest_pipeline(eid, event_store, graph_store)
     event = await event_store.get(eid)
     assert event["status"] == "linked"
     assert graph_store.total_nodes() == 1
@@ -358,9 +360,11 @@ async def test_ingest_pipeline_cr_runs_first(
         verdict=make_verdict(pass_=True),
     )
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
     eid, _ = await event_store.insert_event(raw, "interaction")
-    await orch._handle_ingest_pipeline(eid)
+    await orch._handle_ingest_pipeline(eid, event_store, graph_store)
     roles = [c[0] for c in fake.calls]
     assert roles[0] == "cr"  # 首个调用是 Cr 概括
     assert roles.count("cr") == 1
@@ -369,6 +373,45 @@ async def test_ingest_pipeline_cr_runs_first(
     assert "用户想了解异步实现" in in_user
     # Gr 查图基于 Cr 主题关键词（存在相似节点时命中）
     assert any("Python异步" in str(u) for r, _, u in fake.calls if r == "gr") or True
+
+
+async def test_cr_short_circuit_skips_short_content(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """Cr 短路（v1.29）：短文跳过 Cr 概括，省一次 LLM 调用，管线照常完成"""
+    raw = "短事件：Python异步编程"
+    fake = FakeLLM(
+        chunks=make_chunks(raw),
+        proposal=make_proposal(),
+        verdict=make_verdict(pass_=True),
+    )
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    assert len(raw) <= 200  # 默认阈值内
+    orch = make_orchestrator(db, event_store, graph_store)
+    eid, _ = await event_store.insert_event(raw, "interaction")
+    await orch._handle_ingest_pipeline(eid, event_store, graph_store)
+    roles = [c[0] for c in fake.calls]
+    assert "cr" not in roles
+    assert roles.count("in") == 1
+    assert (await event_store.get(eid))["status"] == "linked"
+
+
+async def test_cr_runs_for_long_content(
+    db, event_store, graph_store, enable_ai, monkeypatch
+):
+    """Cr 短路：超过阈值的长文仍执行 Cr 概括"""
+    raw = "用户详细询问了Python异步编程的实现方式，" * 20  # 远超 200 字符
+    fake = FakeLLM(
+        cr=CrSummary(summary=["异步实现"], themes=["Python"], confidence=0.9),
+        chunks=make_chunks(raw),
+        proposal=make_proposal(),
+        verdict=make_verdict(pass_=True),
+    )
+    monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    orch = make_orchestrator(db, event_store, graph_store)
+    eid, _ = await event_store.insert_event(raw, "interaction")
+    await orch._handle_ingest_pipeline(eid, event_store, graph_store)
+    assert [c[0] for c in fake.calls][0] == "cr"
 
 
 async def test_ingest_pipeline_gr_receives_event_id(
@@ -382,9 +425,11 @@ async def test_ingest_pipeline_gr_receives_event_id(
         verdict=make_verdict(pass_=True),
     )
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
     eid, _ = await event_store.insert_event(raw, "interaction")
-    await orch._handle_ingest_pipeline(eid)
+    await orch._handle_ingest_pipeline(eid, event_store, graph_store)
     assert len(fake.propose_user_calls) == 1
     assert f'"event_id": "{eid}"' in fake.propose_user_calls[0]
 
@@ -488,9 +533,11 @@ async def test_ingest_pipeline_retry_gr_then_pass(
         verdict=[make_verdict(pass_=False), make_verdict(pass_=True)],
     )
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
     eid, _ = await event_store.insert_event(raw, "interaction")
-    await orch._handle_ingest_pipeline(eid)
+    await orch._handle_ingest_pipeline(eid, event_store, graph_store)
     event = await event_store.get(eid)
     assert event["status"] == "linked"
     # Gr 被调用两次（重试），且第二次 user 消息携带了反馈
@@ -508,9 +555,11 @@ async def test_ingest_pipeline_failed_after_retries(
         verdict=make_verdict(pass_=False),
     )
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
     eid, _ = await event_store.insert_event(raw, "interaction")
-    await orch._handle_ingest_pipeline(eid)
+    await orch._handle_ingest_pipeline(eid, event_store, graph_store)
     assert (await event_store.get(eid))["status"] == "failed"
 
 
@@ -521,9 +570,11 @@ async def test_ingest_pipeline_in_error_marks_failed(
     fake = FakeLLM(chunks=None, proposal=None, verdict=None)
     fake.raise_on_in = True
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
     eid, _ = await event_store.insert_event(raw, "interaction")
-    await orch._handle_ingest_pipeline(eid)
+    await orch._handle_ingest_pipeline(eid, event_store, graph_store)
     assert (await event_store.get(eid))["status"] == "failed"
 
 
@@ -641,14 +692,14 @@ async def test_ingest_pipeline_transient_error_back_to_indexed(
     original = fake.chat_structured
 
     async def chat_with_timeout(role, response_model, system, user, temperature=0.2, **kw):
-        if role == "cr":
+        if role == "in":  # In 必然被调用（不受 Cr 短路影响）
             raise httpx.ReadTimeout("模型生成超时")
         return await original(role, response_model, system, user, temperature=temperature, **kw)
 
     monkeypatch.setattr(core.llm.gateway, "chat_structured", chat_with_timeout)
     orch = make_orchestrator(db, event_store, graph_store)
     eid, _ = await event_store.insert_event(raw, "interaction")
-    await orch._handle_ingest_pipeline(eid)
+    await orch._handle_ingest_pipeline(eid, event_store, graph_store)
     assert (await event_store.get(eid))["status"] == "indexed"
 
 
@@ -661,7 +712,7 @@ async def test_handle_ingest_degraded_keeps_indexed(
     try:
         orch = make_orchestrator(db, event_store, graph_store)
         eid, _ = await event_store.insert("用户询问了Python异步编程的实现方式", "interaction")
-        await orch._handle_ingest({"event_id": eid})
+        await orch._handle_ingest({"event_id": eid}, event_store, graph_store)
         assert (await event_store.get(eid))["status"] == "indexed"
         assert fake.calls == []
     finally:
@@ -682,8 +733,10 @@ async def test_query_pipeline_returns_results(
         verdict=make_verdict(pass_=True),
     )
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
-    resp = await orch.run_query(SearchRequest(query="Python", limit=5))
+    resp = await orch.run_query(SearchRequest(query="Python", limit=5), event_store, graph_store)
     assert resp.total >= 1
     assert any(r.node_id == created[0] for r in resp.results)
     assert resp.degraded is False
@@ -695,8 +748,10 @@ async def test_query_pipeline_empty_fallback(db, event_store, graph_store, enabl
         verdict=make_verdict(pass_=False),
     )
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
-    resp = await orch.run_query(SearchRequest(query="完全不存在xyzabc", limit=5))
+    resp = await orch.run_query(SearchRequest(query="完全不存在xyzabc", limit=5), event_store, graph_store)
     assert isinstance(resp.results, list)
     assert resp.total == 0
 
@@ -756,8 +811,10 @@ async def test_maintain_graph_full_flow(db, event_store, graph_store, enable_ai,
     )
     fake = FakeLLM(plan=plan, verdict=make_verdict(pass_=True))
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
-    await orch._handle_maintain_graph({})
+    await orch._handle_maintain_graph({}, event_store, graph_store)
 
     # 合并：dup2 消失，dup1 吸收其源证
     assert graph_store.get_node("dup2") is None
@@ -785,8 +842,10 @@ async def test_maintain_graph_rejected_no_change(
     )
     fake = FakeLLM(plan=plan, verdict=make_verdict(pass_=False))
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
-    await orch._handle_maintain_graph({})
+    await orch._handle_maintain_graph({}, event_store, graph_store)
 
     assert graph_store.total_nodes() == 3  # 原样保留
     assert graph_store.get_node("zombie") is not None
@@ -798,8 +857,10 @@ async def test_maintain_graph_skipped_without_candidates(
     """无候选：不调 LLM，直接返回。"""
     fake = FakeLLM()
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
-    await orch._handle_maintain_graph({})
+    await orch._handle_maintain_graph({}, event_store, graph_store)
     assert fake.calls == []  # 未触发任何 LLM 调用
 
 
@@ -807,7 +868,7 @@ async def test_maintain_graph_skipped_when_ai_down(db, event_store, graph_store)
     """AI 不可用：维护跳过（降级即常态）。"""
     ai_state.available = False
     orch = make_orchestrator(db, event_store, graph_store)
-    await orch._handle_maintain_graph({})  # 不抛异常
+    await orch._handle_maintain_graph({}, event_store, graph_store)  # 不抛异常
 
 
 async def test_maintain_graph_auto_skips_small_graph(
@@ -819,8 +880,10 @@ async def test_maintain_graph_auto_skips_small_graph(
     monkeypatch.setattr(settings, "agent_maintain_min_nodes", 100)
     fake = FakeLLM()
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
-    await orch._handle_maintain_graph({"auto": True})
+    await orch._handle_maintain_graph({"auto": True}, event_store, graph_store)
     assert fake.calls == []  # 小图自动触发被拦截
 
 
@@ -834,8 +897,10 @@ async def test_maintain_graph_auto_runs_when_large_enough(
     await _maintain_env(db, event_store, graph_store)
     fake = FakeLLM(plan=GraphMaintenancePlan(), verdict=make_verdict(pass_=True))
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
-    await orch._handle_maintain_graph({"auto": True})
+    await orch._handle_maintain_graph({"auto": True}, event_store, graph_store)
     roles = [c[0] for c in fake.calls]
     assert "gr" in roles  # 自动触发走维护链路
 
@@ -882,8 +947,10 @@ async def test_update_round_two_phases(db, event_store, graph_store, enable_ai, 
 
     fake = TwoPhaseFake()
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
-    await orch._handle_maintain_graph({"mode": "update"})
+    await orch._handle_maintain_graph({"mode": "update"}, event_store, graph_store)
 
     # Phase1：僵尸被删；Phase2：孤岛连回枢纽（端点均为幸存节点）
     assert graph_store.get_node("z1") is None
@@ -902,7 +969,9 @@ async def test_update_round_no_candidates_skips_llm(
     """^update：两阶段均无候选 → 零 LLM 调用。"""
     fake = FakeLLM()
     monkeypatch.setattr(core.llm.gateway, "chat_structured", fake.chat_structured)
+    # Cr 短路阈值置 0：本用例专测 Cr 语义，需完整管线
+    monkeypatch.setattr("core.config.settings.agent_cr_skip_chars", 0)
     orch = make_orchestrator(db, event_store, graph_store)
-    await orch._handle_maintain_graph({"mode": "update"})
+    await orch._handle_maintain_graph({"mode": "update"}, event_store, graph_store)
     assert fake.calls == []
 

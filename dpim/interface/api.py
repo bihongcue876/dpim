@@ -38,12 +38,17 @@ from core.models import (
     NodeListItem,
     NodeListResponse,
     QueueMessage,
+    RepoCreateRequest,
+    RepoInfo,
+    RepoListResponse,
+    RepoUpdateRequest,
     SearchRequest,
     SearchResponse,
     SettingsResponse,
     SettingsUpdateRequest,
     StateHashResponse,
 )
+from core.repos import RepoManager, fuse_joint_results
 from core.search import search as hybrid_search
 from core.security import (
     mask_provider_secret,
@@ -76,37 +81,47 @@ def _ok(**extra: Any) -> dict[str, Any]:
 db: Database | None = None
 event_store: EventStore | None = None
 graph_store: GraphStore | None = None
+repos: RepoManager | None = None
 orchestrator: Orchestrator | None = None
 compensator: Compensator | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db, event_store, graph_store, orchestrator, compensator
+    global db, event_store, graph_store, repos, orchestrator, compensator
     db = Database()
     await db.connect()
     event_store = EventStore(db)
+    # 启动自愈：events_fts 全量重建（T0-3，修「事件存在但检索不到」遗留）
+    await event_store.rebuild_fts()
     graph_store = GraphStore(db)
     await graph_store.load()
     # 启动自愈：图 source_refs 与事件表现状对齐（悬空/漂移源证置 invalid）
     await graph_store.reconcile(event_store)
     await graph_store.flush()
-    orchestrator = Orchestrator(db, event_store, graph_store)
+    # 库管理（v1.29）：现行三件套绑定为默认库（external 登记，零移动迁移），
+    # 再读登记表打开其它受管库
+    repos = RepoManager()
+    repos.bind_default(db, event_store, graph_store)
+    await repos.initialize()
+    orchestrator = Orchestrator(db, event_store, graph_store, repos=repos)
     orchestrator.start()
-    compensator = Compensator(event_store, graph_store, orchestrator.enqueue)
+    compensator = Compensator(event_store, graph_store, orchestrator.enqueue, repos=repos)
     compensator.start()
     yield
     if compensator:
         await compensator.stop()
     if orchestrator:
         await orchestrator.stop()
+    if repos:
+        await repos.close()
     if graph_store and graph_store.dirty:
         await graph_store.save()
     if db:
         await db.close()
 
 
-app = FastAPI(title="DPIM", version="0.2.3", lifespan=lifespan)
+app = FastAPI(title="DPIM", version="0.3.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -129,7 +144,23 @@ async def auth_guard(request, call_next):
     return await call_next(request)
 
 
-def _stores():
+def _resolve_repo(repo_id: str | None = None):
+    """解析册条目（v1.29）：repo_id 空 = 活动库；未初始化/未加载返回 None。"""
+    if repos is None:
+        return None
+    return repos.resolve(repo_id or None)
+
+
+def _stores(repo_id: str | None = None):
+    """解析册三件套：repo_id 空 = 活动库；未知/未加载 → 404。"""
+    entry = _resolve_repo(repo_id)
+    if entry is not None:
+        return entry.event_store, entry.graph_store
+    if repos is not None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Repo not found or not loaded: {repo_id or '(active)'}",
+        )
     if not event_store or not graph_store:
         raise HTTPException(status_code=503, detail="Storage not initialized")
     return event_store, graph_store
@@ -147,7 +178,9 @@ def _command_response(message: str) -> IngestResponse:
 
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(body: IngestRequest):
-    es, gs = _stores()
+    es, gs = _stores(body.repo_id or None)
+    entry = _resolve_repo(body.repo_id or None)
+    repo_id = entry.repo_id if entry else ""
     # 对话指令（^compress、^merge、^data 等）：确定层同步执行；语义层入队；
     # 均不落库为事件（存储类指令除外——它本身就是写事件）。
     cmd = parse_command(body.content)
@@ -157,10 +190,13 @@ async def ingest(body: IngestRequest):
     refresh_key()
     # Agent 管线启用时，入队让管线即时处理（异步，不阻塞写入返回）
     if settings.agent_mode == "pipeline" and ai_state.available and orchestrator:
+        ingest_payload = {"event_id": eid}
+        if repo_id:
+            ingest_payload["repo_id"] = repo_id
         await orchestrator.enqueue(
             QueueMessage(
                 type="ingest",
-                payload={"event_id": eid},
+                payload=ingest_payload,
                 timestamp=datetime.now(timezone.utc).timestamp(),
             )
         )
@@ -169,6 +205,13 @@ async def ingest(body: IngestRequest):
 
 async def _dispatch_command(cmd: Any) -> IngestResponse:
     es, gs = _stores()
+    # 指令作用域 = 当前活动库：入队消息须携带 repo_id，orchestrator 才能路由到同册
+    entry = _resolve_repo()
+    repo_id = entry.repo_id if entry else ""
+
+    def _payload(extra: dict) -> dict:
+        return {"repo_id": repo_id, **extra} if repo_id else extra
+
     # ── ^help：只返回用法说明，不动数据 ──
     if cmd.kind == "help":
         return _command_response(usage_text())
@@ -184,7 +227,7 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
             await orchestrator.enqueue(
                 QueueMessage(
                     type="ingest",
-                    payload={"event_id": eid},
+                    payload=_payload({"event_id": eid}),
                     timestamp=datetime.now(timezone.utc).timestamp(),
                 )
             )
@@ -255,7 +298,7 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
         await orchestrator.enqueue(
             QueueMessage(
                 type="maintain_graph",
-                payload={"scope": scope} if scope else {},
+                payload=_payload({"scope": scope} if scope else {}),
                 timestamp=datetime.now(timezone.utc).timestamp(),
             )
         )
@@ -328,8 +371,8 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
         await orchestrator.enqueue(
             QueueMessage(
                 type="maintain_graph",
-                payload={"mode": "update", "scope": cmd.scope} if cmd.scope
-                else {"mode": "update"},
+                payload=_payload({"mode": "update", "scope": cmd.scope} if cmd.scope
+                                 else {"mode": "update"}),
                 timestamp=datetime.now(timezone.utc).timestamp(),
             )
         )
@@ -384,7 +427,7 @@ async def _dispatch_command(cmd: Any) -> IngestResponse:
         await orchestrator.enqueue(
             QueueMessage(
                 type="maintain_graph",
-                payload={"instruction": cmd.content},
+                payload=_payload({"instruction": cmd.content}),
                 timestamp=datetime.now(timezone.utc).timestamp(),
             )
         )
@@ -587,10 +630,14 @@ async def modify_event_status(event_id: str, body: ModifyEventStatusRequest):
         and ai_state.available
         and orchestrator
     ):
+        entry = _resolve_repo()
+        retry_payload = {"event_id": event_id}
+        if entry:
+            retry_payload["repo_id"] = entry.repo_id
         await orchestrator.enqueue(
             QueueMessage(
                 type="ingest",
-                payload={"event_id": event_id},
+                payload=retry_payload,
                 timestamp=datetime.now(timezone.utc).timestamp(),
             )
         )
@@ -691,13 +738,59 @@ async def clear_graph():
 
 @app.post("/query", response_model=SearchResponse)
 async def query(body: SearchRequest):
-    es, gs = _stores()
+    # 联合检索（v1.29）：显式多册，或未指定且存在多个受管库时，逐册检索后融合；
+    # 单册（显式单册或仅默认库）走原有路径（管线可用时含 Agent 检索管线）
+    use_joint = False
+    if repos is not None:
+        if body.repo_ids is not None:
+            use_joint = len(body.repo_ids) != 1
+        else:
+            use_joint = len(repos.managed_entries()) > 1
+    if use_joint:
+        return await _joint_search(body)
+    target = body.repo_ids[0] if body.repo_ids else None
+    es, gs = _stores(target)
+    resp: SearchResponse
     if settings.agent_mode == "pipeline" and ai_state.available and orchestrator:
         try:
-            return await orchestrator.run_query(body)
+            resp = await orchestrator.run_query(body, es, gs)
         except Exception:
             logger.exception("Query agent pipeline failed, fallback to hybrid search")
-    return await hybrid_search(body, es, gs, degraded=not ai_state.available)
+            resp = await hybrid_search(body, es, gs, degraded=not ai_state.available)
+    else:
+        resp = await hybrid_search(body, es, gs, degraded=not ai_state.available)
+    # 来源册锚定（v1.29）：单册结果同样携带所属册
+    entry = _resolve_repo(target)
+    if entry is not None:
+        for r in resp.results:
+            r.repo_id, r.repo_name = entry.repo_id, entry.name
+    return resp
+
+
+async def _joint_search(body: SearchRequest) -> SearchResponse:
+    """册间联合检索：单册 RRF → 等权 RRF 融合 + 去重 + 来源册锚定（纯本地，降级可用）。"""
+    if body.repo_ids is None:
+        entries = repos.managed_entries()  # 缺省 = 全部受管库
+    else:
+        entries = []
+        for bid in body.repo_ids:
+            record = repos.records.get(bid)
+            if record is None or not record.managed or bid not in repos.entries:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Unknown or unmanaged repo: {bid}",
+                )
+            entries.append(repos.entries[bid])
+    degraded = not ai_state.available
+    per_repo = [
+        (entry, await hybrid_search(body, entry.event_store, entry.graph_store, degraded=degraded))
+        for entry in entries
+    ]
+    results = fuse_joint_results(per_repo)
+    results.sort(key=lambda r: (-r.score, r.repo_id, r.node_id))
+    total = len(results)
+    paged = results[body.offset : body.offset + body.limit]
+    return SearchResponse(results=paged, total=total, degraded=degraded)
 
 
 @app.post("/feedback")
@@ -734,8 +827,9 @@ async def list_events(
     query: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    repo_id: str | None = None,
 ):
-    es, gs = _stores()
+    es, gs = _stores(repo_id)
     if query and query.strip():
         # 关键词检索（v1.19）：直接走事件 FTS（含中文降级），再叠加 status/type 过滤与分页。
         # 供检索页「事件原文」模式使用——不再经由 /query 的 source_filter 过滤（那会滤成图节点而非事件）
@@ -754,6 +848,7 @@ async def list_events(
                 raw_content=e["raw_content"],
                 event_type=e["event_type"],
                 status=e["status"],
+                error=e.get("error", ""),
             )
             for e in sliced
         ]
@@ -793,8 +888,9 @@ async def list_nodes(
     query: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    repo_id: str | None = None,
 ):
-    es, gs = _stores()
+    es, gs = _stores(repo_id)
     if query and query.strip():
         # 关键词检索（v1.19）：直接走节点 FTS（含中文降级），再叠加 type 过滤与分页。
         # 供检索页「知识节点」模式使用——不再经由 /query 的 source_filter 过滤
@@ -915,7 +1011,7 @@ async def update_settings(body: SettingsUpdateRequest):
 
 @app.get("/health", response_model=HealthResponse)
 async def health():
-    es, gs = _stores()
+    es, gs = _stores()  # 活动库
     total_events = await es.total_events()
     status_counts = await es.count_by_status()
     total_nodes = gs.total_nodes()
@@ -935,6 +1031,167 @@ async def health():
             },
         },
         last_event_at=last or "",
+        # 队列与册可见性（v1.29）
+        queue_depth=orchestrator.queue.qsize() if orchestrator else 0,
+        worker_running=bool(orchestrator and orchestrator._running),
+        active_repo_id=repos.active_id if repos else "",
+    )
+
+
+# ── 库管理端点（v1.29：一库 = 一 memory.db + 一 graph.json）────────────────
+
+
+def _repo_info(repo_id: str) -> RepoInfo:
+    record = repos.records[repo_id]
+    entry = repos.entries.get(repo_id)
+    return RepoInfo(
+        repo_id=record.repo_id,
+        name=record.name,
+        note=record.note,
+        group=record.group,
+        root_kind=record.root_kind,
+        managed=record.managed,
+        active=repo_id == repos.active_id,
+        loaded=entry is not None,
+        total_events=None, total_nodes=None,
+        db_path=record.db_path, json_path=record.json_path,
+        created_at=record.created_at, updated_at=record.updated_at,
+    )
+
+
+@app.get("/repos", response_model=RepoListResponse)
+async def list_repos() -> RepoListResponse:
+    """库登记列表：休眠库不打开文件，计数留空。"""
+    if repos is None:
+        raise HTTPException(status_code=503, detail="Repos not initialized")
+    infos = []
+    for repo_id in repos.records:
+        info = _repo_info(repo_id)
+        entry = repos.entries.get(repo_id)
+        if entry is not None:
+            info.total_events = await entry.event_store.total_events()
+            info.total_nodes = entry.graph_store.total_nodes()
+        infos.append(info)
+    return RepoListResponse(repos=infos, active_repo_id=repos.active_id)
+
+
+@app.get("/repos/{repo_id}")
+async def get_repo(repo_id: str) -> dict[str, Any]:
+    if repos is None:
+        raise HTTPException(status_code=503, detail="Repos not initialized")
+    if repo_id not in repos.records:
+        raise HTTPException(status_code=404, detail="Repo not found")
+    info = _repo_info(repo_id)
+    entry = repos.entries.get(repo_id)
+    extra: dict[str, Any] = {}
+    if entry is not None:
+        info.total_events = await entry.event_store.total_events()
+        info.total_nodes = entry.graph_store.total_nodes()
+        extra["status_counts"] = await entry.event_store.count_by_status()
+    return {**info.model_dump(), **extra}
+
+
+@app.post("/repos")
+async def create_repo(body: RepoCreateRequest) -> dict[str, Any]:
+    """建库：managed 落书库根（<group_key>/<repo_id>/）；external 登记既有目录。"""
+    if repos is None:
+        raise HTTPException(status_code=503, detail="Repos not initialized")
+    try:
+        record = await repos.create_repo(
+            name=body.name, note=body.note, group=body.group,
+            root_kind=body.root_kind, root=body.root,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    refresh_key()
+    logger.info("Repo created: %s(%s, %s)", record.name, record.repo_id, record.root_kind)
+    return _ok(repo_id=record.repo_id, message=f"库已创建：{record.name}")
+
+
+@app.put("/repos/{repo_id}")
+async def update_repo(repo_id: str, body: RepoUpdateRequest) -> dict[str, Any]:
+    """改库信息 / 受管开关（false = 休眠：不加载不检索不构图，文件不动）。"""
+    if repos is None:
+        raise HTTPException(status_code=503, detail="Repos not initialized")
+    try:
+        record = await repos.update_repo(
+            repo_id, name=body.name, note=body.note,
+            group=body.group, managed=body.managed,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Repo not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    refresh_key()
+    return _ok(message=f"库已更新：{record.name}")
+
+
+@app.delete("/repos/{repo_id}")
+async def delete_repo(repo_id: str) -> dict[str, Any]:
+    """摘除登记（不删任何磁盘文件）；默认库与活动库不可摘。"""
+    if repos is None:
+        raise HTTPException(status_code=503, detail="Repos not initialized")
+    try:
+        await repos.delete_repo(repo_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Repo not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    refresh_key()
+    return _ok(message="库登记已摘除（磁盘文件保留）")
+
+
+@app.post("/repos/{repo_id}/activate")
+async def activate_repo(repo_id: str) -> dict[str, Any]:
+    """切换活动库：未显式指定 repo_id 的写入目标。"""
+    if repos is None:
+        raise HTTPException(status_code=503, detail="Repos not initialized")
+    try:
+        await repos.activate(repo_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Repo not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    refresh_key()
+    return _ok(active_repo_id=repo_id, message="活动库已切换")
+
+
+@app.post("/repos/{repo_id}/generate")
+async def generate_repo(repo_id: str) -> dict[str, Any]:
+    """库级联合生成知识：把该册全部待构图事件（raw/indexed）批量入队。
+
+    「一库多文件联合管理」的落点——库内容整体（重新）生成知识图谱。
+    """
+    if repos is None:
+        raise HTTPException(status_code=503, detail="Repos not initialized")
+    if repo_id not in repos.records:
+        raise HTTPException(status_code=404, detail="Repo not found")
+    entry = repos.resolve(repo_id)
+    if entry is None:
+        raise HTTPException(status_code=409, detail="Repo not loaded（未受管或加载失败）")
+    if settings.agent_mode != "pipeline" or not ai_state.available or orchestrator is None:
+        raise HTTPException(
+            status_code=409,
+            detail="AI 不可用或 Agent 管线未启用，无法生成知识（纯存储不受影响）",
+        )
+    pending = [
+        *await entry.event_store.list_by_status("raw"),
+        *await entry.event_store.list_by_status("indexed"),
+    ]
+    for ev in pending:
+        await orchestrator.enqueue(
+            QueueMessage(
+                type="ingest",
+                payload={"event_id": ev["event_id"], "repo_id": repo_id},
+                timestamp=datetime.now(timezone.utc).timestamp(),
+            )
+        )
+    refresh_key()
+    logger.info("Repo generate: %s queued %d events", repo_id, len(pending))
+    return _ok(
+        repo_id=repo_id,
+        queued=len(pending),
+        message=f"已入队 {len(pending)} 条待构图事件（Gr → Meta 稍后完成，结果见图页与日志）",
     )
 
 

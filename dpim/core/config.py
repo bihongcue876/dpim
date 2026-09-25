@@ -164,6 +164,10 @@ class Settings:
         self.agent_cmdmsg_max_rounds = int(
             getenv("DPIM_AGENT_CMDMSG_MAX_ROUNDS", "3")
         )
+        # Cr 短路（v1.29）：原文不超过该长度时跳过 Cr 概括，短事件省一次 LLM 调用
+        self.agent_cr_skip_chars = int(
+            getenv("DPIM_AGENT_CR_SKIP_CHARS", "200")
+        )
         # 日志级别读取链同存储路径：env → dpim.json → 默认（前端可改并持久化）
         self.log_level = getenv("DPIM_LOG_LEVEL", str(cfg.get("log_level") or "INFO"))
         self._validate()

@@ -197,5 +197,5 @@ class TestSearchResponse:
 class TestHealthResponse:
     def test_defaults(self):
         h = HealthResponse(status="ok", ai_available=True, layers={})
-        assert h.version == "0.2.3"
+        assert h.version == "0.3.0"
         assert h.last_event_at == ""

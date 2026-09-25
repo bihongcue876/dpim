@@ -255,6 +255,8 @@ class IngestRequest(BaseModel):
     content: str = Field(max_length=1_000_000)
     # 必填枚举：auto 模式已移除（历史上 auto 仅静默落库为 interaction，无 AI 分类）
     event_type: EventType
+    # 目标册（v1.29）：空 = 活动库
+    repo_id: str = ""
 
 
 class IngestResponse(BaseModel):
@@ -318,6 +320,8 @@ class SearchRequest(BaseModel):
     max_hops: int = Field(default=2, ge=0, le=5)
     limit: int = Field(default=20, ge=1, le=100)
     offset: int = Field(default=0, ge=0, le=1_000_000)
+    # 册范围（v1.29 联合检索）：None = 全部受管库；["bk_x"] = 单册；多值 = 限定联合
+    repo_ids: list[str] | None = None
 
 
 class SearchResult(BaseModel):
@@ -329,6 +333,15 @@ class SearchResult(BaseModel):
     source_type: str
     confidence: float
     degraded: bool
+    # 结果种类（v1.29）：node = 图节点，event = 事件原文（联合检索去重键依赖）
+    kind: str = "node"
+    # 来源册锚定（v1.29）：单册检索填所属册；联合检索被去重合并时
+    # repo_id/repo_name 为首命中册，source_repos 列出全部来源库名
+    repo_id: str = ""
+    repo_name: str = ""
+    source_repos: list[str] = []
+    # 事件内容哈希（v1.29，仅 kind=event）：联合检索跨册去重键
+    content_hash: str = ""
 
 
 class SearchResponse(BaseModel):
@@ -347,7 +360,55 @@ class HealthResponse(BaseModel):
     ai_available: bool
     layers: dict[str, Any]
     last_event_at: str = ""
-    version: str = "0.2.3"
+    version: str = "0.3.0"
+    # 队列与册可见性（v1.29）：队列积压深度 / worker 运行态 / 活动库 id
+    queue_depth: int = 0
+    worker_running: bool = False
+    active_repo_id: str = ""
+
+
+# ── 册（Repo）模型（v1.29：一库 = 一 memory.db + 一 graph.json） ────────────────────
+
+
+class RepoCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    note: str = Field(default="", max_length=500)
+    # 书库展示名（可选分组；路径用独立生成的 group_key，展示名不入路径）
+    group: str = Field(default="", max_length=60)
+    root_kind: Literal["managed", "external"] = "managed"
+    # external 必填：已存在目录（须含 memory.db + graph.json），只登记不复制
+    root: str = Field(default="", max_length=1024)
+
+
+class RepoUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    note: str | None = Field(default=None, max_length=500)
+    group: str | None = Field(default=None, max_length=60)
+    # 受管开关（v1.29）：false = 休眠（不加载不检索不构图）；切换即时生效
+    managed: bool | None = None
+
+
+class RepoInfo(BaseModel):
+    repo_id: str
+    name: str
+    note: str = ""
+    group: str | None = None
+    root_kind: str = "external"
+    managed: bool = True
+    active: bool = False
+    loaded: bool = False
+    # 计数仅受管且已加载的册给出；休眠库为 None（不打开文件）
+    total_events: int | None = None
+    total_nodes: int | None = None
+    db_path: str = ""
+    json_path: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class RepoListResponse(BaseModel):
+    repos: list[RepoInfo]
+    active_repo_id: str
 
 
 # ── dpim-webui 新增模型 ────────────────────
@@ -363,6 +424,8 @@ class EventListItem(BaseModel):
     raw_content: str
     event_type: str
     status: str
+    # 失败原因（v1.28 T0-4）：脱敏错误摘要，仅 failed 事件非空
+    error: str = ""
 
 
 class EventListResponse(BaseModel):

@@ -179,6 +179,7 @@ async def _build_results(
                 source_type=source_type,
                 confidence=conf,
                 degraded=False,
+                kind="node",
             ))
         else:
             # 非图节点 key：可能是无图节点关联的事件（含 orchestrator 以空
@@ -194,5 +195,7 @@ async def _build_results(
                     source_type=ev["event_type"],
                     confidence=0.5,
                     degraded=False,
+                    kind="event",
+                    content_hash=ev.get("content_hash", ""),
                 ))
     return results
