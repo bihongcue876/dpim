@@ -2,7 +2,7 @@
 
 > Double-Place Intelligence Memory
 >
-> 版本：v0.2.3
+> 版本：v0.3.0
 
 ## 系统简介
 
