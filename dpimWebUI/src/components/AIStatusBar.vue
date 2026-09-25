@@ -10,7 +10,7 @@
     </div>
     <div class="ai-sub">
       <span>上次检查: {{ secondsAgo }} 秒前</span>
-      <span v-if="health" class="ai-stats">图层: {{ nodes }} 节点 | 事件: {{ events }}</span>
+      <span v-if="health" class="ai-stats">库: {{ repoName }} · 图层: {{ nodes }} 节点 | 事件: {{ events }}</span>
     </div>
   </div>
 </template>
@@ -19,6 +19,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import type { HealthResponse, SettingsResponse } from '@/api/client'
 import * as api from '@/api/client'
+import { activeRepo, loadRepos } from '@/api/repoStore'
 
 const props = defineProps<{
   health: HealthResponse | null
@@ -31,6 +32,8 @@ const secondsAgo = ref(0)
 const aiOk = computed(() => Boolean(props.health?.ai_available))
 const nodes = computed(() => props.health?.layers?.knowledge_graph?.total_nodes ?? 0)
 const events = computed(() => props.health?.layers?.event_line?.total_events ?? 0)
+// 当前库指示（链 U F2）：health 统计是「活动库」口径，不标注易被误读为数据丢失
+const repoName = computed(() => activeRepo.value?.name ?? props.health?.active_repo_id ?? '—')
 
 // 显示活动 provider 的模型/地址（注册表优先，primary 回退环境变量）
 const activeModel = computed(() => {
@@ -64,12 +67,14 @@ let urlTimer: number | null = null
 onMounted(async () => {
   lastChecked.value = Date.now()
   api.getSettings().then(s => (settings.value = s)).catch(() => {})
+  loadRepos()
   tickTimer = window.setInterval(() => {
     secondsAgo.value = Math.max(0, Math.round((Date.now() - lastChecked.value) / 1000))
   }, 1000)
-  // 每 30s 刷新一次模型/地址（settings）
+  // 每 30s 刷新一次模型/地址（settings）与库清单（活动库可能被切换）
   urlTimer = window.setInterval(() => {
     api.getSettings().then(s => (settings.value = s)).catch(() => {})
+    loadRepos()
   }, 30000)
 })
 

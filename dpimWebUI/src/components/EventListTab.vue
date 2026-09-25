@@ -3,6 +3,7 @@
     <!-- 左侧：事件列表 -->
     <div class="event-left">
       <div class="event-toolbar">
+        <n-select v-model:value="filterRepo" :options="repoOpts" size="tiny" style="width:110px" @update:value="load" />
         <n-select v-model:value="filterType" :options="typeOpts" placeholder="类型" clearable size="tiny" style="width:90px" @update:value="load" />
         <n-select v-model:value="filterStatus" :options="statusOpts" placeholder="状态" clearable size="tiny" style="width:90px" @update:value="load" />
         <n-button size="tiny" @click="showNewModal = true">新建</n-button>
@@ -54,6 +55,9 @@
                 <n-button v-if="detail.status === 'failed'" size="tiny" @click="onRetry(detail.event_id as string)">重试</n-button>
               </div>
             </n-descriptions-item>
+            <n-descriptions-item v-if="detail.error" label="失败原因">
+              <span class="mono-text" style="color:var(--dpim-danger,#f85149)">{{ detail.error }}</span>
+            </n-descriptions-item>
             <n-descriptions-item label="时间">{{ detail.created_at }}</n-descriptions-item>
             <n-descriptions-item label="哈希">
               <span class="mono-text">{{ String(detail.content_hash || '').slice(0, 16) }}</span>
@@ -102,10 +106,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { createDiscreteApi } from 'naive-ui'
 import type { EventListItem } from '@/api/client'
 import * as api from '@/api/client'
+import { activeRepo, loadRepos, selectableRepos } from '@/api/repoStore'
 
 const { message, dialog } = createDiscreteApi(['message', 'dialog'])
 
@@ -160,6 +165,19 @@ const statusOpts = [
   { label: 'skipped', value: 'skipped' },
 ]
 
+// 库筛选（链 U U2）：默认跟随活动库；不提供「全部」——列表端点即单库语义
+const filterRepo = ref<string>('')
+const repoOpts = computed(() =>
+  selectableRepos.value.map(r => ({
+    label: r.active ? `${r.name}（当前）` : r.name,
+    value: r.repo_id,
+  })),
+)
+watch(activeRepo, (r) => {
+  // 活动库被切换（配置页）且用户尚未手动选择时，列表跟随活动库
+  if (r && !filterRepo.value) load()
+})
+
 function tagType(t: string) {
   if (t === 'interaction') return 'success'
   if (t === 'data') return 'warning'
@@ -189,7 +207,11 @@ async function onRetry(eventId: string) {
 async function load(p = 1) {
   loading.value = true
   try {
-    const res = await api.listEvents({ status: filterStatus.value, type: filterType.value, limit, offset: (p - 1) * limit })
+    const res = await api.listEvents({
+      status: filterStatus.value, type: filterType.value,
+      repo_id: filterRepo.value || undefined,
+      limit, offset: (p - 1) * limit,
+    })
     items.value = res.items
     total.value = res.total
     page.value = p
@@ -271,6 +293,7 @@ const onFocusEvent = ((e: Event) => {
 }) as EventListener
 
 onMounted(() => {
+  loadRepos()
   load()
   window.addEventListener('dpim:focus-event', onFocusEvent)
 })

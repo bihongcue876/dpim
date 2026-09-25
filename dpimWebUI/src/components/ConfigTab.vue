@@ -29,6 +29,37 @@
             </div>
             <div class="prov-divider"></div>
           </div>
+          <!-- 库与分组（v1.29）：一库 = 一 memory.db + 一 graph.json；书库 = 文件夹分组；
+               受管开关即时生效（休眠 = 不加载不检索不构图，文件不动）；摘除登记不删文件 -->
+          <div v-else-if="sec.name === '存储'" class="prov-block">
+            <div class="prov-toolbar">
+              <span class="prov-hint">册 = 独立知识库（一 db + 一 json）· 书库即文件夹 · 联合检索默认覆盖全部受管库</span>
+              <n-button size="tiny" type="primary" ghost @click="openRepoModal">新建库</n-button>
+            </div>
+            <div v-if="!repos.length" class="prov-empty">暂无登记库（后端启动时会把现有数据登记为「默认库」）</div>
+            <div v-for="b in repos" :key="b.repo_id" class="prov-card">
+              <div class="prov-main">
+                <div class="prov-name">
+                  {{ b.name }}
+                  <n-tag v-if="b.active" size="tiny" type="success" :bordered="false">活动库</n-tag>
+                  <n-tag v-if="!b.managed" size="tiny" type="warning" :bordered="false">休眠</n-tag>
+                  <n-tag v-if="!b.loaded" size="tiny" type="error" :bordered="false">未加载</n-tag>
+                </div>
+                <div class="prov-meta">
+                  {{ b.group ? `书库：${b.group}` : '未分组' }} · {{ b.root_kind === 'external' ? '外部库' : '托管库' }}
+                  · 事件 {{ b.total_events ?? '—' }} · 节点 {{ b.total_nodes ?? '—' }}
+                </div>
+                <div class="prov-meta" :title="b.db_path">{{ b.db_path }}</div>
+              </div>
+              <div class="prov-actions">
+                <n-button v-if="!b.active && b.managed" size="tiny" type="primary" ghost @click="activateRepoAction(b)">设为活动</n-button>
+                <n-button size="tiny" :type="b.managed ? 'warning' : 'success'" ghost @click="toggleManaged(b)">{{ b.managed ? '休眠' : '恢复受管' }}</n-button>
+                <n-button size="tiny" ghost :disabled="!b.managed" @click="generateRepoAction(b)">生成知识</n-button>
+                <n-button size="tiny" type="error" ghost :disabled="b.active" @click="removeRepo(b)">摘除登记</n-button>
+              </div>
+            </div>
+            <div class="prov-divider"></div>
+          </div>
           <div v-for="field in sec.fields" :key="field.key" class="config-row">
             <span class="cf-name">{{ field.label }}</span>
             <span class="cf-current" :title="currentTitle(field)">{{ currentText(field) }}</span>
@@ -90,6 +121,33 @@
       </template>
     </n-modal>
 
+    <!-- 新建库弹窗：managed 落书库根；external 登记既有目录（须含两文件） -->
+    <n-modal v-model:show="showRepoModal" preset="card" title="新建库" class="prov-modal" :mask-closable="false">
+      <n-form label-placement="left" label-width="92">
+        <n-form-item label="库名">
+          <n-input v-model:value="repoForm.name" placeholder="如 小说资料（1-80 字）" />
+        </n-form-item>
+        <n-form-item label="书库分组">
+          <n-input v-model:value="repoForm.group" placeholder="可选，如 文学（同名书库共用一个文件夹）" />
+        </n-form-item>
+        <n-form-item label="存储形态">
+          <n-select v-model:value="repoForm.root_kind" :options="[
+            { label: '托管（落数据目录 repos/ 下）', value: 'managed' },
+            { label: '外部（登记已有目录，不复制）', value: 'external' },
+          ]" size="small" />
+        </n-form-item>
+        <n-form-item v-if="repoForm.root_kind === 'external'" label="目录路径">
+          <n-input v-model:value="repoForm.root" placeholder="已存在目录，须含 memory.db 与 graph.json" />
+        </n-form-item>
+      </n-form>
+      <template #footer>
+        <div class="prov-modal-footer">
+          <n-button size="small" @click="showRepoModal = false">取消</n-button>
+          <n-button size="small" type="primary" @click="saveRepoModal">创建</n-button>
+        </div>
+      </template>
+    </n-modal>
+
     <div class="config-bottom">
       <n-alert v-if="staleHint" type="warning" closable style="margin-bottom:8px;font-size:12px">{{ staleHint }}</n-alert>
       <n-alert v-if="savedHint" type="info" closable style="margin-bottom:8px;font-size:12px">{{ savedHint }}</n-alert>
@@ -101,7 +159,8 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { createDiscreteApi } from 'naive-ui'
-import type { SettingsResponse, HealthResponse } from '@/api/client'
+import type { SettingsResponse, HealthResponse, RepoInfo } from '@/api/client'
+import { activeRepo, loadRepos, repos } from '@/api/repoStore'
 import * as api from '@/api/client'
 
 const { message, dialog } = createDiscreteApi(['message', 'dialog'])
@@ -147,6 +206,87 @@ const form = reactive({
 })
 
 const providerNames = computed(() => Object.keys(providersDraft.value).sort())
+
+// ── 库与分组（v1.29；链 U 改用全局单一来源 repoStore，六标签页共享）──
+const showRepoModal = ref(false)
+const repoForm = reactive({
+  name: '',
+  group: '',
+  root_kind: 'managed' as 'managed' | 'external',
+  root: '',
+})
+
+function openRepoModal() {
+  repoForm.name = ''
+  repoForm.group = ''
+  repoForm.root_kind = 'managed'
+  repoForm.root = ''
+  showRepoModal.value = true
+}
+
+async function saveRepoModal() {
+  const name = repoForm.name.trim()
+  if (!name) { message.error('请填写库名'); return }
+  if (repoForm.root_kind === 'external' && !repoForm.root.trim()) {
+    message.error('外部库必须填写目录路径'); return
+  }
+  try {
+    await api.createRepo({
+      name,
+      group: repoForm.group.trim(),
+      root_kind: repoForm.root_kind,
+      root: repoForm.root.trim(),
+    })
+    showRepoModal.value = false
+    message.success(
+      `库已创建：${name}（活动库仍为「${activeRepo.value?.name ?? '默认库'}」；要向新库写入请点「设为活动」）`,
+      { duration: 8000, closable: true },
+    )
+    await loadRepos()
+  } catch (e: any) {
+    message.error(String(e?.message ?? e))
+  }
+}
+
+async function toggleManaged(b: RepoInfo) {
+  try {
+    await api.updateRepo(b.repo_id, { managed: !b.managed })
+    message.success(b.managed ? `已休眠：${b.name}` : `已恢复受管：${b.name}`)
+    await loadRepos()
+  } catch (e: any) { message.error(String(e?.message ?? e)) }
+}
+
+async function activateRepoAction(b: RepoInfo) {
+  try {
+    await api.activateRepo(b.repo_id)
+    message.success(`活动库已切换：${b.name}`)
+    await loadRepos()
+  } catch (e: any) { message.error(String(e?.message ?? e)) }
+}
+
+async function generateRepoAction(b: RepoInfo) {
+  try {
+    const res = await api.generateRepo(b.repo_id)
+    message.success(res?.message || '已入队')
+    await loadRepos()
+  } catch (e: any) { message.error(String(e?.message ?? e)) }
+}
+
+function removeRepo(b: RepoInfo) {
+  dialog.warning({
+    title: '摘除登记',
+    content: `摘除「${b.name}」的登记？磁盘文件保留不动；休眠或摘除后它不再参与检索与构图。`,
+    positiveText: '摘除',
+    negativeText: '取消',
+    async onPositiveClick() {
+      try {
+        await api.deleteRepo(b.repo_id)
+        message.success('登记已摘除（磁盘文件保留）')
+        await loadRepos()
+      } catch (e: any) { message.error(String(e?.message ?? e)) }
+    },
+  })
+}
 
 /** 名称实时查重：非空且与其他提供商重名（编辑自身原名除外）即报错，重复不允许保存 */
 const nameError = computed(() => {
@@ -409,6 +549,7 @@ async function load() {
   // 初次加载 / 提交成功后：刷新基准并初始化编辑框
   await refreshOriginal()
   providersDraft.value = JSON.parse(JSON.stringify(original.value.providers ?? {}))
+  loadRepos()
   for (const f of fields.value) {
     if (f.key === 'backend_url') continue
     if (f.type === 'password') {

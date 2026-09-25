@@ -15,10 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 class Compensator:
-    def __init__(self, event_store: EventStore, graph_store: GraphStore, enqueue_fn):
+    def __init__(self, event_store: EventStore, graph_store: GraphStore, enqueue_fn, repos=None):
         self.event_store = event_store
         self.graph_store = graph_store
         self.enqueue = enqueue_fn
+        # 库管理器（可选）：提供时高水位维护逐受管库检查（默认库优先）
+        self.repos = repos
         self._failure_count = 0
         self._health_task: asyncio.Task | None = None
         self._running = False
@@ -102,27 +104,35 @@ class Compensator:
     async def _maybe_trigger_maintain(self) -> None:
         """节点规模高水位触发的自动图维护（与 AI 恢复触发互补）。
 
-        总节点数达到 AGENT_MAINTAIN_MAX_NODES 时自动入队一次图维护
-        （清理僵尸节点等）；独立于 AI 恢复，健康检查循环周期调用。
-        冷却期内不重复触发，避免超过高水位后每个周期空转 LLM。
+        受管库逐册检查（v1.29，默认库优先）：任一册节点数达到
+        AGENT_MAINTAIN_MAX_NODES 即入队一次该册的图维护；独立于 AI 恢复，
+        健康检查循环周期调用。冷却期内不重复触发，避免每周期空转 LLM。
         """
         if not settings.agent_maintain_auto:
             return
         now = time.time()
         if now - self._last_auto_maintain < settings.agent_maintain_cooldown:
             return
-        total = self.graph_store.total_nodes()
-        if total < settings.agent_maintain_max_nodes:
-            return
-        self._last_auto_maintain = now
-        await self.enqueue(
-            QueueMessage(
-                type="maintain_graph",
-                payload={"auto": True},
-                timestamp=now,
+        # 逐受管库检查（无库管理器时仅默认库）
+        if self.repos is not None:
+            candidates = [
+                (entry.repo_id, entry.graph_store) for entry in self.repos.managed_entries()
+            ]
+        else:
+            candidates = [("", self.graph_store)]
+        for repo_id, graph_store in candidates:
+            total = graph_store.total_nodes()
+            if total < settings.agent_maintain_max_nodes:
+                continue
+            self._last_auto_maintain = now
+            payload = {"auto": True}
+            if repo_id:
+                payload["repo_id"] = repo_id
+            await self.enqueue(
+                QueueMessage(type="maintain_graph", payload=payload, timestamp=now)
             )
-        )
-        logger.info(
-            "Auto-maintain triggered by node count (%d >= %d)",
-            total, settings.agent_maintain_max_nodes,
-        )
+            logger.info(
+                "Auto-maintain triggered (repo=%s, nodes=%d >= %d)",
+                repo_id or "default", total, settings.agent_maintain_max_nodes,
+            )
+            return  # 每个冷却周期至多触发一册，防积压期雪崩

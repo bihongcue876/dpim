@@ -7,6 +7,7 @@
         @select-node="onSelectNode" @double-click-node="onDbl"
         @select-edge="onSelectEdge" />
       <div class="canvas-toolbar">
+        <n-select v-model:value="filterRepo" :options="repoOpts" size="tiny" style="width:120px;margin-right:4px" @update:value="loadGraph" />
         <n-button size="tiny" quaternary circle @click="refreshGraph" title="重新布局">↻</n-button>
       </div>
     </div>
@@ -144,6 +145,16 @@ import { createDiscreteApi } from 'naive-ui'
 import GraphCanvas from '@/components/GraphCanvas.vue'
 import * as api from '@/api/client'
 import type { NodeListItem, EdgeInfo, NodeDetail } from '@/api/client'
+import { loadRepos, selectableRepos } from '@/api/repoStore'
+
+// 库筛选（链 U U5）：图谱显示所选库的子图；默认 = 活动库
+const filterRepo = ref('')
+const repoOpts = computed(() =>
+  selectableRepos.value.map(r => ({
+    label: r.active ? `${r.name}（当前）` : r.name,
+    value: r.repo_id,
+  })),
+)
 
 const { message, dialog } = createDiscreteApi(['message', 'dialog'])
 
@@ -216,17 +227,23 @@ async function refreshGraph() {
 
 async function loadGraph() {
   try {
-    const all = await api.listNodes({ limit: 400 })
+    const all = await api.listNodes({ limit: 400, repo_id: filterRepo.value || undefined })
     graphNodes.value = all.items
     nodeItems.value = all.items
     const edgeMap = new Map<string, EdgeInfo>()
-    for (const n of all.items) {
-      try {
-        const nd = await api.getNode(n.node_id)
-        for (const e of nd.edges) {
+    // 分批并行取节点详情（链 U U6）：原串行 400 请求墙钟过慢；每批 24 并发
+    const BATCH = 24
+    for (let i = 0; i < all.items.length; i += BATCH) {
+      const batch = all.items.slice(i, i + BATCH)
+      const details = await Promise.all(
+        batch.map(n => api.getNode(n.node_id).catch(() => null)),
+      )
+      for (const nd of details) {
+        if (!nd) continue
+        for (const e of nd.edges as EdgeInfo[]) {
           edgeMap.set(`${e.source}|${e.target}`, e)
         }
-      } catch { /* skip */ }
+      }
     }
     graphEdges.value = Array.from(edgeMap.values())
     selNodeIds.value = new Set()
@@ -260,6 +277,7 @@ function applyFocusNode() {
 const onFocusNode = (() => { applyFocusNode() }) as EventListener
 
 onMounted(() => {
+  loadRepos()
   window.addEventListener('dpim:focus-node', onFocusNode)
 })
 onUnmounted(() => {

@@ -30,6 +30,13 @@
         </template>
       </n-input>
       <n-select
+        v-model:value="repoScope"
+        :options="repoScopeOpts"
+        placeholder="库范围"
+        size="large"
+        style="width:150px;flex-shrink:0"
+      />
+      <n-select
         v-if="searchMode === 'hybrid'"
         v-model:value="sourceFilter"
         :options="sourceFilterOpts"
@@ -225,8 +232,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import * as api from '@/api/client'
+import { loadRepos, selectableRepos } from '@/api/repoStore'
 import type { SearchResult } from '@/api/client'
 import { createDiscreteApi } from 'naive-ui'
 
@@ -246,6 +254,13 @@ const sourceFilter = ref('all')
 const maxHops = ref(2)
 const resultLimit = ref(20)
 const minConfidence = ref(0)
+
+// 库范围（链 U U4）：空 = 全部受管库（联合检索）；单库 = 限定
+const repoScope = ref('')
+const repoScopeOpts = computed(() => [
+  { label: '全部受管库（联合）', value: '' },
+  ...selectableRepos.value.map(r => ({ label: r.name, value: r.repo_id })),
+])
 
 // 分页
 const currentPage = ref(1)
@@ -331,6 +346,8 @@ async function doSearch() {
   await fetchPage(1)
 }
 
+onMounted(loadRepos)
+
 /** 事件 → 检索结果渲染结构（事件原文 / 浏览最近共用） */
 function toEventResult(ev: { event_id: string; raw_content: string; event_type: string }): SearchResult {
   return {
@@ -374,13 +391,13 @@ async function fetchPage(page: number) {
 
     if (searchMode.value === 'events') {
       // 事件原文：直接检索事件表（GET /events?query，FTS 关键词），不再走混合检索过滤
-      const res = await api.listEvents({ query: query.value, limit, offset })
+      const res = await api.listEvents({ query: query.value, repo_id: repoScope.value || undefined, limit, offset })
       if (seq !== fetchSeq) return // 过期响应，丢弃
       results.value = res.items.map(toEventResult)
       realTotal.value = res.total
     } else if (searchMode.value === 'nodes') {
       // 知识节点：直接检索节点表（GET /nodes?query，FTS 关键词）
-      const res = await api.listNodes({ query: query.value, limit, offset })
+      const res = await api.listNodes({ query: query.value, repo_id: repoScope.value || undefined, limit, offset })
       if (seq !== fetchSeq) return
       const detailPromises = res.items.map(n => api.getNode(n.node_id).catch(() => null))
       const details = await Promise.all(detailPromises)
@@ -395,6 +412,7 @@ async function fetchPage(page: number) {
         offset: number
         source_filter?: string
         max_hops?: number
+        repo_ids?: string[]
       } = {
         query: query.value,
         limit,
@@ -402,6 +420,7 @@ async function fetchPage(page: number) {
         source_filter: sourceFilter.value,
         max_hops: maxHops.value,
       }
+      if (repoScope.value) params.repo_ids = [repoScope.value]
       const res = await api.query(params)
       if (seq !== fetchSeq) return
       realTotal.value = res.total
@@ -454,12 +473,12 @@ async function browseRecent() {
   currentPage.value = 1
   try {
     if (searchMode.value === 'events') {
-      const res = await api.listEvents({ limit: resultLimit.value || 20 })
+      const res = await api.listEvents({ repo_id: repoScope.value || undefined, limit: resultLimit.value || 20 })
       if (seq !== fetchSeq) return // 过期响应，丢弃
       results.value = res.items.map(toEventResult)
       realTotal.value = res.total
     } else {
-      const res = await api.listNodes({ limit: resultLimit.value || 20 })
+      const res = await api.listNodes({ repo_id: repoScope.value || undefined, limit: resultLimit.value || 20 })
       if (seq !== fetchSeq) return // 过期响应，丢弃
       const detailPromises = res.items.map(n => api.getNode(n.node_id).catch(() => null))
       const details = await Promise.all(detailPromises)

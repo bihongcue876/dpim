@@ -1,8 +1,8 @@
 # DPIM Spec 规约
 
-> 版本：1.27
-> 日期：2026-09-05
-> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改/节点压缩，POST /agent/maintain，23 端点）+ 安全加固（API Key 掩码 + 可选 API 访问认证 + 输入上限/值域约束 + 日志全文开关）+ 防冗余节点硬规则（redundant_node）+ 节点规模高水位自动维护（AGENT_MAINTAIN_MAX_NODES / COOLDOWN）+ 存储路径/日志级别 dpim.json 持久化 + 事件类型必填化（auto 移除）与类型修订（PUT /events 可改 event_type）+ source 类型管线跳过构图 + max_hops 允许 0（纯检索不扩散）+ GET /events、GET /nodes 支持 query 关键词检索（事件原文/知识节点独立检索）+ 对话指令系统（^compress ^merge ^delete ^data ^node ^cmdmsg 等；语义层需 AI、确定层无 LLM 同步执行、存储类纯离线可用）+ 高水位默认 900→200 / 冷却 300→60 + 压缩底线（内容 <200 字符不再压缩）与合并底线（无规模压力仅近似等价可合并）+ 指令语法收紧（仅 ^英文动词 空格分隔一种形式，其余一律普通文本落库）+ ^help 用法指令 + 前端指令候选弹层（信息传入框，opencode 风格）+ 节点语义（一节点一要点 / 多事件关联 / 子节点层级）+ PUT /nodes 源事件增删（最少保留 1 条有效源证）+ 维护补边通道（edge_adds，孤立节点连线回图）+ 构图边 title 解析修复（弱模型 title 引用不再静默丢边）+ ^update 两阶段结构优化（减碎+补缺失要点 node_adds → 连线，一轮封顶）+ 待连线对候选（link_candidates：词面相关未连边节点对，补边治不连通的主力候选）+ 事件关联节点实时派生（GET /events/{id} 读路径以图层反向索引为准）+ ^cmdmsg 指令消息（笼统自然语言意图 → Gr 读取 Meta 审核，多轮封顶，外部 Agent 调用入口）
+> 版本：1.29
+> 日期：2026-09-26
+> 范围：原型阶段 + dpim-webui + 状态校验密钥 + 事件内容修订 + system 源过滤 + BYOK 多模型网关 + Agent 管线 + 运维可靠性（图谱加载容错）+ 检索（FTS5 + 图扩散两路 RRF）+ 上下文护栏回调（MAX_RAW_CONTENT 默认 600000 → 200000）+ 补偿批检查独立间隔（COMPENSATE_CHECK_INTERVAL）+ 图维护任务（调整/合并/删改/节点压缩，POST /agent/maintain，23 端点）+ 安全加固（API Key 掩码 + 可选 API 访问认证 + 输入上限/值域约束 + 日志全文开关）+ 防冗余节点硬规则（redundant_node）+ 节点规模高水位自动维护（AGENT_MAINTAIN_MAX_NODES / COOLDOWN）+ 存储路径/日志级别 dpim.json 持久化 + 事件类型必填化（auto 移除）与类型修订（PUT /events 可改 event_type）+ source 类型管线跳过构图 + max_hops 允许 0（纯检索不扩散）+ GET /events、GET /nodes 支持 query 关键词检索（事件原文/知识节点独立检索）+ 对话指令系统（^compress ^merge ^delete ^data ^node ^cmdmsg 等；语义层需 AI、确定层无 LLM 同步执行、存储类纯离线可用）+ 高水位默认 900→200 / 冷却 300→60 + 压缩底线（内容 <200 字符不再压缩）与合并底线（无规模压力仅近似等价可合并）+ 指令语法收紧（仅 ^英文动词 空格分隔一种形式，其余一律普通文本落库）+ ^help 用法指令 + 前端指令候选弹层（信息传入框，opencode 风格）+ 节点语义（一节点一要点 / 多事件关联 / 子节点层级）+ PUT /nodes 源事件增删（最少保留 1 条有效源证）+ 维护补边通道（edge_adds，孤立节点连线回图）+ 构图边 title 解析修复（弱模型 title 引用不再静默丢边）+ ^update 两阶段结构优化（减碎+补缺失要点 node_adds → 连线，一轮封顶）+ 待连线对候选（link_candidates：词面相关未连边节点对，补边治不连通的主力候选）+ 事件关联节点实时派生（GET /events/{id} 读路径以图层反向索引为准）+ ^cmdmsg 指令消息（笼统自然语言意图 → Gr 读取 Meta 审核，多轮封顶，外部 Agent 调用入口）+ 存储修复（图层双损坏留档不覆盖 + 64MiB 上限 / 节点合并 content·源证上限 / events_fts 启动自愈 / 事件失败原因落库 events.error / 检索排除 skipped）+ 库与分组（一库 = 一 memory.db + 一 graph.json；书库 = 文件夹分组；repos/index.json 登记表持久化受管开关与活动库；legacy 零移动迁移；+7 库端点；ingest/query/events/nodes 库参数；联合检索 = 册间等权 RRF + content_hash/标题去重 + 来源册锚定；health 暴露队列深度/运行态/活动库）+ Cr 短路（AGENT_CR_SKIP_CHARS 默认 200，短文省一次 LLM 调用）
 
 ---
 
@@ -29,6 +29,7 @@ DPIM（Double-Place Intelligence Memory）是一个独立于大模型上下文�
 | event_type | enum | 是 | interaction / data / source |
 | status | enum | 是 | raw / indexed / linked / failed / skipped |
 | graph_refs | string[] | 否 | 关联的图节点 ID 列表（行字段为构图写入时的一次性快照；**API 读路径实时派生**——以图层反向索引为准、仅含有效源证，v1.26） |
+| error | string | 否 | 失败原因（v1.28）：脱敏错误摘要（错误类型 + 截断 200 字符，单行），仅 failed 事件非空；重试转回时清空 |
 
 **事件类型：**
 
@@ -463,7 +464,7 @@ content
 
 ### 八、API 端点
 
-> 当前共 23 个端点。查询同步返回；写操作在 Agent 管线启用时异步入队，否则同步确认。
+> 当前共 30 个端点（v1.29：+7 库端点）。查询同步返回；写操作在 Agent 管线启用时异步入队，否则同步确认。
 
 **访问认证（可选，v1.13 新增）：** 环境变量 `DPIM_API_KEY` 非空时，所有端点要求请求头 `X-API-Key` 匹配，不匹配返回 `401`；默认为空（本地模式零配置不启用）。WebUI 通过 localStorage `dpim_api_key` 自动附带该头。此密钥仅经环境变量配置，不经 `GET /settings` 下发、不经 `PUT /settings` 修改。
 
@@ -471,7 +472,7 @@ content
 
 | 方法 | 路径 | 说明 | 请求体 |
 |------|------|------|--------|
-| POST | /ingest | 写入事件（event_type 必填；识别对话指令 ^compress ^merge ^delete ^data ^node 等，见 4.5） | IngestRequest |
+| POST | /ingest | 写入事件（event_type 必填；`repo_id` 可选指定目标册，缺省活动库，v1.29；识别对话指令 ^compress ^merge ^delete ^data ^node 等，见 4.5） | IngestRequest |
 | PUT | /events/{event_id} | 修改事件内容与类型（更新 raw_content + FTS5；event_type 可选修订） | `{"content": "...", "event_type": "..."}` |
 | PUT | /events/{event_id}/status | 修改事件状态 | ModifyEventStatusRequest |
 | DELETE | /events/{event_id} | 删除事件（带源证保护） | — |
@@ -482,20 +483,27 @@ content
 | DELETE | /edges | 删除关联边（query: source, target） | — |
 | DELETE | /graph | 清空图谱（节点 + 边，同步清 node_fts） | — |
 | PUT | /settings | 批量更新配置项（持久化 dpim.json） | SettingsUpdateRequest |
-| POST | /agent/compensate | 手动触发补偿：积压 raw/indexed 事件重入队 | — |
+| POST | /repos | 建库（v1.29）：managed 落书库根 `<group_key>/<repo_id>/`；external 登记既有目录（须含两文件，禁设清单校验，只登记不复制） | RepoCreateRequest |
+| PUT | /repos/{repo_id} | 改库信息 / 受管开关（false = 休眠：不加载不检索不构图，文件不动；切换即时生效） | RepoUpdateRequest |
+| DELETE | /repos/{repo_id} | 摘除登记（**不删磁盘文件**；默认库与活动库不可摘 409） | — |
+| POST | /repos/{repo_id}/activate | 切换活动库（未受管 409） | — |
+| POST | /repos/{repo_id}/generate | 库级联合生成知识：该册全部待构图事件（raw/indexed）批量入队（AI 不可用 409） | — |
+| POST | /agent/compensate | 手动触发补偿：积压 raw/indexed 事件重入队（v1.29 起逐受管库收集） | — |
 | POST | /agent/maintain | 手动触发图维护：扫描候选 → Gr 计划 → Meta 审核 → 执行（合并/删除/修改/删边） | — |
 
 #### 8.2 读取类
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /query | 混合检索（Agent 可用时走 Agent 检索，失败回退） |
+| POST | /query | 混合检索（Agent 可用时走 Agent 检索，失败回退）。`repo_ids` 可选（v1.29）：单册 = 指定册检索；缺省多册 = **联合检索**（逐受管库检索 → 册间等权 RRF 融合 + 去重（事件按 content_hash、节点按类型+标题）+ 来源册锚定 `repo_id/repo_name/source_repos`，纯本地降级可用）；列表含未知册 422 |
 | POST | /feedback | 检索反馈（调整节点置信度） |
-| GET | /health | 健康检查 + 双区统计 |
+| GET | /health | 健康检查 + 双区统计（v1.29 增 `queue_depth`/`worker_running`/`active_repo_id`） |
 | GET | /state-hash | 状态校验密钥 |
-| GET | /events | 分页事件列表（v1.19 增 `query` 关键词检索：事件 FTS 中文降级，可叠加 status/type 过滤） |
-| GET | /events/{event_id} | 事件详情（graph_refs 实时派生，v1.26） |
-| GET | /nodes | 分页节点列表（v1.19 增 `query` 关键词检索：节点 FTS 中文降级，可叠加 type 过滤） |
+| GET | /repos | 库登记列表（计数仅已加载册给出；休眠库为 null，v1.29） |
+| GET | /repos/{repo_id} | 册详情（含状态分布；休眠库计数 null） |
+| GET | /events | 分页事件列表（v1.19 增 `query` 关键词检索：事件 FTS 中文降级，可叠加 status/type 过滤；v1.29 增 `repo_id` 册过滤；v1.28 起 items 携带 `error` 失败原因） |
+| GET | /events/{event_id} | 事件详情（graph_refs 实时派生，v1.26；v1.28 起含 `error`） |
+| GET | /nodes | 分页节点列表（v1.19 增 `query` 关键词检索：节点 FTS 中文降级，可叠加 type 过滤；v1.29 增 `repo_id` 册过滤） |
 | GET | /nodes/{node_id} | 节点详情（含关联边） |
 | GET | /settings | 获取所有配置项 |
 | GET | /agent/logs | AI 调用日志（环形缓冲，新→旧） |
@@ -625,6 +633,7 @@ content
 | **AGENT_MAINTAIN_MAX_NODES** | 200 | 节点规模高水位（v1.20 调降）：总节点数达到后每个冷却周期自动入队一次图维护；达到即视为「资料库太过庞大」，允许放宽合并（规模压力标记） |
 | **AGENT_MAINTAIN_COOLDOWN** | 60 | 高水位自动维护触发冷却（秒，v1.20 调降）：此后每个冷却周期都准备压缩 |
 | **AGENT_CMDMSG_MAX_ROUNDS** | 3 | cmdmsg 指令消息多轮封顶（v1.27）：每轮重扫 + Gr 按指令决策 + Meta 审 + 执行；空计划/被驳回/无可动对象即停，防指令驱动的无限循环 |
+| **AGENT_CR_SKIP_CHARS** | 200 | Cr 短路阈值（v1.29）：原文长度不超过该值时跳过 Cr 概括，短事件管线省一次 LLM 调用；0 = 关闭短路 |
 | **API_KEY** | (空) | API 访问认证（v1.13）：非空时所有端点要求 `X-API-Key` 请求头匹配；仅 env 配置，不经 API 下发/修改 |
 | **AGENT_LOGS_FULL** | true | AI 调用日志全文开关（v1.13）：false 时 GET /agent/logs 忽略 full 参数 |
 | LOG_LEVEL | INFO | 日志级别（v1.16：env → dpim.json → 默认；可经 PUT /settings 修改） |
@@ -655,6 +664,8 @@ content
 > 2026-08-29：规约升级至 v1.25。待连线对候选（治「Phase 2 无活可干/补边为零」）：用户实测 ^update 后反馈「没有第二轮、完全没有补边」——根因是连线候选只覆盖 degree=0 的孤立节点（真实图中仅 2~3 个），41 个 degree=1 的弱连接节点无候选可依。① 候选扫描新增**第六类 `link_candidates`**：未连边且词重叠 ≥ 0.35 的节点对（任意类型组合、双方非 system；高重合同类型对仍归 merge_candidates 不重复入选；已连边排除）——补边的主力候选面；② `^update` Phase 2 候选 = isolated_nodes + link_candidates，`^compress` 的补边通道同步受益；③ Phase 1 补全过碎事件原文摘录注入（node_adds 锚定上下文，v1.24 规划项落地）；④ `^update`/`^compress` 响应消息与无候选判据纳入待连线对计数；Gr 补边规则扩展为双来源（孤立节点 + 待连线对）。
 > 2026-08-29：规约升级至 v1.26。事件关联节点实时派生：用户反馈「处理历史等处的事件关联节点数是旧的、加起来对不上」。根因——事件行上的 `graph_refs` 是构图写入时的一次性快照，此后的节点合并/删除/聚合均不回写行字段（被合并节点 id 残留、归并节点缺失）；多重关联（一节点多源事件，设计行为）会使其出现在多个事件的列表中，跨事件加总 ≠ 总节点数。修复：`GET /events/{event_id}` 读路径改为**实时派生**——以图层反向索引（event_to_nodes，所有图操作同步维护）为准、仅保留有效源证；前端「处理历史」节点数与「图关联」展示随之变准。注意：跨事件加总仍不等于总节点数——手工 system 节点无事件来源、多重关联节点在多个事件下各计一次，均为设计语义。
 > 2026-09-05：规约升级至 v1.27。**^cmdmsg 指令消息**：① 新指令 `^cmdmsg <自然语言指令>`（语义层，需 AI）：用户/外部 Agent 给管线发笼统调整意图（如「帮我减少某些记忆」「补充游戏相关记忆」，≤2000 字符，不带节点数据）；入队 `maintain_graph` payload `instruction`。② Gr 读取指令在候选内决定通道与力度（增加/减少/整理三类），node_adds 从 mineable_events 可挖掘事件池锚定；Meta 审「计划是否回应指令」（第 9 条审查规则）；指令只影响决策倾向，不扩大权限（所有底线与保护照常生效）。③ 多轮封顶 `AGENT_CMDMSG_MAX_ROUNDS`（默认 3）：每轮执行后重扫续轮，空计划/被驳回/无可动对象即停。④ 外部调用：`POST /ingest` + `X-API-Key` 即通用入口，无需新端点。
+> 2026-09-26：规约升级至 v1.28。**存储修复链（先修易错点）**：① **图层损坏留档**——graph.json 主文件与 .bak 双损坏（或超 64MiB 体量上限）时，损坏原件改名留档 `graph.json.corrupt-<时间戳>` 后以空图启动，不再静默以空图覆盖可恢复原件；写入超 64MiB 上限拒绝。② **节点合并护栏**——merge_into/merge_nodes 的 content 追加封顶 20000 字符、source_refs 并集封顶 500 条（保留最新），防反复合并致节点无限膨胀。③ **events_fts 启动自愈**——启动时以事件表为唯一真源全量重建 FTS（对齐 node_fts 先例），修「insert 与 insert_fts 分离提交中途崩溃 → 事件存在但检索不到」。④ **事件失败原因落库**——events 表增 `error` 列（PRAGMA user_version 1→2，ALTER TABLE 只增列，旧库无感迁移），管线判死写脱敏单行摘要（类型+截断 200 字符），瞬时错误回 indexed 时清空；GET /events 列表与详情透出。⑤ **检索排除 skipped**——search_fts 的 FTS 与 LIKE 降级分支均加 `status != 'skipped'`（用户明确跳过 = 不再召回）。
+> 2026-09-26：规约升级至 v1.29。**库与分组 + 联合检索 + Agent 优化**：① **库模型**——一库 = 一 memory.db + 一 graph.json，完全隔离（独立线层/图层/FTS/管线，不跨册建边扩散）；书库 = 文件夹（managed 册落 `<数据根>/repos/<group_key>/<repo_id>/`，展示名不入路径）；登记表 `repos/index.json` 原子写持久化库记录、受管开关与活动库，坏索引保留原件仅以默认库启动。② **legacy 零移动迁移**——首次运行把现行 memory.db/graph.json 登记为外部默认库 `rp_default`（不移动不复制不改名）。③ **+7 库端点**（23→30）：POST/GET/PUT/DELETE /repos、GET /repos/{id}、POST /repos/{id}/activate、POST /repos/{id}/generate（库级联合生成知识）；摘登记不删文件；受管开关即时加载/卸载。④ **库参数**——ingest `repo_id`（缺省活动库）、GET /events 与 /nodes `repo_id` 过滤、/query `repo_ids`（单册 = 指定册；缺省多册 = 联合检索：册间等权 RRF + 去重（事件 content_hash / 节点类型+标题）+ 来源册锚定 repo_id/repo_name/source_repos，纯本地降级可用；结果 SearchResult 增 kind/repo_id/repo_name/source_repos/content_hash 字段）。⑤ **队列与册可见性**——/health 增 queue_depth/worker_running/active_repo_id；补偿逐受管库收集；高水位维护逐册检查。⑥ **Cr 短路**——AGENT_CR_SKIP_CHARS（默认 200）内跳过 Cr 概括，短事件管线 4-5 次 LLM 调用降至 3-4 次。
 
 ---
 
