@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import networkx as nx
@@ -14,6 +15,27 @@ from core.database import Database
 from core.models import GraphEdge, GraphNode, SourceRef
 
 logger = logging.getLogger(__name__)
+
+# 图层文件体量上限（v1.28 T0-1）：超限视为损坏走留档/拒绝写入，防异常膨胀拖垮内存
+MAX_GRAPH_BYTES = 64 * 1024 * 1024
+# 节点合并护栏（v1.28 T0-2）：content 追加与源证并集上限，防反复合并致节点无限膨胀
+_MAX_NODE_CONTENT = 20_000
+_MAX_SOURCE_REFS = 500
+
+
+def _quarantine_corrupt(path: Path) -> None:
+    """损坏原件留档改名（T0-1）：绝不用空图覆盖可恢复数据。
+
+    主文件与备份均不可读（或超体量上限）时，把原件改名留存后以空图启动；
+    图层是派生读模型，可从线层重建，但原件必须给用户留观察与手工抢救的余地。
+    """
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = path.with_name(f"{path.name}.corrupt-{stamp}")
+    try:
+        os.replace(path, target)
+        logger.warning("graph.json 不可用（损坏/超限），原件已留档 %s，以空图启动", target)
+    except OSError as exc:
+        logger.error("损坏原件留档失败（不影响启动，请手工处理）: %s", exc)
 
 
 class GraphStore:
@@ -33,6 +55,9 @@ class GraphStore:
         """
         path = Path(self.json_path)
         data: dict | None = None
+        if path.exists() and path.stat().st_size > MAX_GRAPH_BYTES:
+            logger.error("graph.json 超过 %d 字节读取上限", MAX_GRAPH_BYTES)
+            _quarantine_corrupt(path)
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
@@ -45,9 +70,11 @@ class GraphStore:
                         logger.warning("已从备份 %s 恢复图谱", backup)
                     except (json.JSONDecodeError, OSError) as bexc:
                         logger.error("graph.json 备份亦损坏，以空图启动: %s", bexc)
+                        _quarantine_corrupt(path)
                         data = None
                 else:
                     logger.error("graph.json 无可用备份，以空图启动（请检查存储文件）")
+                    _quarantine_corrupt(path)
                     data = None
         if data is not None:
             nodes_data = data.get("nodes", {})
@@ -61,6 +88,7 @@ class GraphStore:
                     self.graph.add_edge(edge.source, edge.target, data=edge)
             except Exception as exc:
                 logger.error("图谱节点/边构建失败，以空图启动: %s", exc)
+                _quarantine_corrupt(path)
                 self.graph.clear()
             else:
                 self._rebuild_reverse_index()
@@ -99,10 +127,16 @@ class GraphStore:
             if edata is not None:
                 edges_data.append(edata.model_dump())
         payload = {"nodes": nodes_data, "edges": edges_data}
+        encoded = json.dumps(payload, ensure_ascii=False, indent=2)
+        if len(encoded.encode("utf-8")) > MAX_GRAPH_BYTES:
+            raise RuntimeError(
+                f"graph.json 序列化超过 {MAX_GRAPH_BYTES} 字节上限，拒绝写入"
+                "（请先压缩/清理图层，或调低节点规模）"
+            )
         fd, tmp = tempfile.mkstemp(suffix=".tmp", dir=path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.write(encoded)
             os.replace(tmp, path)
         except Exception:
             os.unlink(tmp)
@@ -254,9 +288,11 @@ class GraphStore:
             return None
         if event_id not in {sr.event_id for sr in node.source_refs}:
             node.source_refs.append(SourceRef(event_id=event_id, valid=True, hash=content_hash))
+            # 源证上限护栏：保留最新 500 条，防反复合并无限膨胀
+            node.source_refs = node.source_refs[-_MAX_SOURCE_REFS:]
             self.event_to_nodes.setdefault(event_id, []).append(target_id)
         if content and content not in node.content:
-            node.content = (node.content + "\n" + content).strip()
+            node.content = (node.content + "\n" + content).strip()[:_MAX_NODE_CONTENT]
         if confidence is not None and confidence > node.confidence:
             node.confidence = confidence
         self.graph.nodes[target_id]["data"] = node
@@ -284,16 +320,19 @@ class GraphStore:
             src_node = self.get_node(src)
             if src_node is None:
                 continue
-            # ── 吸收 source_refs（并集）+ 反向索引 ──
+            # ── 吸收 source_refs（并集 + 上限护栏，保留最新）+ 反向索引 ──
             known = {sr.event_id for sr in target.source_refs}
             for sr in src_node.source_refs:
                 if sr.event_id not in known:
                     target.source_refs.append(sr)
                     known.add(sr.event_id)
                     self.event_to_nodes.setdefault(sr.event_id, []).append(target_id)
-            # ── content 合并（整段去重）──
+            target.source_refs = target.source_refs[-_MAX_SOURCE_REFS:]
+            # ── content 合并（整段去重 + 上限护栏）──
             if src_node.content and src_node.content not in target.content:
-                target.content = (target.content + "\n" + src_node.content).strip()
+                target.content = (
+                    (target.content + "\n" + src_node.content).strip()[:_MAX_NODE_CONTENT]
+                )
             # ── confidence 取 max ──
             if src_node.confidence > target.confidence:
                 target.confidence = src_node.confidence

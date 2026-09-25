@@ -5,6 +5,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 from core.database import Database
 
@@ -84,17 +85,26 @@ class EventStore:
             result[d["event_id"]] = d
         return result
 
-    async def update_status(self, event_id: str, status: str, graph_refs: list[str] | None = None):
+    async def update_status(
+        self,
+        event_id: str,
+        status: str,
+        graph_refs: list[str] | None = None,
+        error: str | None = None,
+    ):
+        """更新事件状态；error 非空时同步失败原因（None = 保持不变，"" = 清空）。"""
+        sets = ["status = ?"]
+        params: list[Any] = [status]
         if graph_refs is not None:
-            await self.db.conn.execute(
-                "UPDATE events SET status = ?, graph_refs = ? WHERE event_id = ?",
-                (status, json.dumps(graph_refs), event_id),
-            )
-        else:
-            await self.db.conn.execute(
-                "UPDATE events SET status = ? WHERE event_id = ?",
-                (status, event_id),
-            )
+            sets.append("graph_refs = ?")
+            params.append(json.dumps(graph_refs))
+        if error is not None:
+            sets.append("error = ?")
+            params.append(str(error)[:500])
+        params.append(event_id)
+        await self.db.conn.execute(
+            f"UPDATE events SET {', '.join(sets)} WHERE event_id = ?", params
+        )
         await self.db.conn.commit()
 
     async def update_type(self, event_id: str, event_type: str) -> bool:
@@ -209,12 +219,28 @@ class EventStore:
         )
         await self.db.conn.commit()
 
+    async def rebuild_fts(self):
+        """全量重建 events_fts（启动自愈，T0-3）：以事件表为唯一真源。
+
+        insert 与 insert_fts 分两次提交，中途崩溃会遗留「事件存在但检索不到」；
+        与 node_fts 的启动全量重建（链 F2）对齐，先清后插一次提交。
+        """
+        await self.db.conn.execute("DELETE FROM events_fts")
+        await self.db.conn.execute(
+            "INSERT INTO events_fts (event_id, raw_content)"
+            " SELECT event_id, raw_content FROM events"
+        )
+        await self.db.conn.commit()
+
     async def search_fts(self, query: str, limit: int = 100) -> list[dict]:
-        """FTS5 搜索，中文不命中或查询串含特殊字符（语法错误）时降级为 LIKE 查询"""
+        """FTS5 搜索，中文不命中或查询串含特殊字符（语法错误）时降级为 LIKE 查询。
+
+        skipped 事件一律排除（v1.28）：用户明确跳过 = 不再召回。
+        """
         try:
             cursor = await self.db.conn.execute(
                 "SELECT e.*, rank FROM events_fts f JOIN events e ON f.event_id = e.event_id "
-                "WHERE events_fts MATCH ? ORDER BY rank LIMIT ?",
+                "WHERE events_fts MATCH ? AND e.status != 'skipped' ORDER BY rank LIMIT ?",
                 (query, limit),
             )
             rows = await cursor.fetchall()
@@ -228,9 +254,9 @@ class EventStore:
         tokens = tokenize_query(query)
         if not tokens:
             tokens = [query]
-        like_sql = "SELECT e.* FROM events e WHERE " + " OR ".join(
+        like_sql = "SELECT e.* FROM events e WHERE e.status != 'skipped' AND (" + " OR ".join(
             ["e.raw_content LIKE ?"] * len(tokens)
-        )
+        ) + ")"
         # LIMIT 护栏：全表 LIKE 无上限会把所有命中行载入内存逐行计分（DoS 放大点）
         like_cursor = await self.db.conn.execute(
             like_sql + " LIMIT 500", [f"%{t}%" for t in tokens]

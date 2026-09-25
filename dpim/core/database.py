@@ -19,6 +19,7 @@ class Database:
         await self.conn.execute("PRAGMA journal_mode=WAL")
         await self.conn.execute("PRAGMA foreign_keys=ON")
         await self._create_tables()
+        await self._migrate()
 
     async def _create_tables(self):
         await self.conn.executescript("""
@@ -31,7 +32,8 @@ class Database:
                     CHECK(event_type IN ('interaction','data','source')),
                 status TEXT NOT NULL DEFAULT 'raw'
                     CHECK(status IN ('raw','indexed','linked','failed','skipped')),
-                graph_refs TEXT DEFAULT '[]'
+                graph_refs TEXT DEFAULT '[]',
+                error TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_events_ts ON events(created_at);
             CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
@@ -45,8 +47,26 @@ class Database:
                 title,
                 content
             );
-            PRAGMA user_version = 1;
         """)
+        await self.conn.commit()
+
+    async def _migrate(self):
+        """轻量迁移（按 user_version 递进）。
+
+        v1 → v2：events 增 error 列（v1.28 失败原因落库）。
+        只增列不重写，旧库无感升级；新库建表即含 error，此处仅对齐版本号。
+        """
+        cursor = await self.conn.execute("PRAGMA user_version")
+        version = (await cursor.fetchone())[0]
+        if version >= 2:
+            return
+        cursor = await self.conn.execute("PRAGMA table_info(events)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        if cols and "error" not in cols:
+            await self.conn.execute(
+                "ALTER TABLE events ADD COLUMN error TEXT NOT NULL DEFAULT ''"
+            )
+        await self.conn.execute("PRAGMA user_version = 2")
         await self.conn.commit()
 
     async def close(self):
