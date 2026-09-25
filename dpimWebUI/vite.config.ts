@@ -2,6 +2,20 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'
 
+// 后端 API 端口可经环境变量覆盖（与启动脚本 start.bat / start.sh 联动），默认 8000
+const API_PORT = process.env.DPIM_API_PORT || '8000'
+const API_TARGET = `http://localhost:${API_PORT}`
+
+// 代理路径清单：与后端 30 端点的前缀保持同步
+const PROXY_PATHS = [
+  '/health', '/agent', '/state-hash', '/ingest', '/events', '/nodes',
+  '/query', '/feedback', '/settings', '/edges', '/graph', '/books', '/repos',
+]
+
+const proxy = Object.fromEntries(
+  PROXY_PATHS.map((p) => [p, { target: API_TARGET, changeOrigin: true }]),
+)
+
 export default defineConfig({
   plugins: [vue()],
   resolve: {
@@ -11,19 +25,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: {
-      '/health': { target: 'http://localhost:8000', changeOrigin: true },
-      '/agent': { target: 'http://localhost:8000', changeOrigin: true },
-      '/state-hash': { target: 'http://localhost:8000', changeOrigin: true },
-      '/ingest': { target: 'http://localhost:8000', changeOrigin: true },
-      '/events': { target: 'http://localhost:8000', changeOrigin: true },
-      '/nodes': { target: 'http://localhost:8000', changeOrigin: true },
-      '/query': { target: 'http://localhost:8000', changeOrigin: true },
-      '/feedback': { target: 'http://localhost:8000', changeOrigin: true },
-      '/settings': { target: 'http://localhost:8000', changeOrigin: true },
-      '/edges': { target: 'http://localhost:8000', changeOrigin: true },
-      '/graph': { target: 'http://localhost:8000', changeOrigin: true },
-    },
+    proxy,
   },
   test: {
     environment: 'jsdom',

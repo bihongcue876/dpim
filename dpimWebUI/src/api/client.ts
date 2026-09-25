@@ -64,6 +64,7 @@ export interface EventListItem {
   raw_content: string
   event_type: string
   status: string
+  error?: string  // v1.28：失败原因（仅 failed 非空）
 }
 
 export interface PaginatedResponse<T> {
@@ -109,12 +110,74 @@ export interface SearchResult {
   degraded: boolean
 }
 
+export interface RepoListResponse {
+  repos: RepoInfo[]
+  active_repo_id: string
+}
+
 export interface HealthResponse {
   status: string
   ai_available: boolean
   layers: { event_line: Record<string, number>; knowledge_graph: Record<string, number> }
   last_event_at: string
   version: string
+  queue_depth?: number
+  worker_running?: boolean
+  active_repo_id?: string
+}
+
+// ==================== 库与分组（v1.29）====================
+
+export interface RepoInfo {
+  repo_id: string
+  name: string
+  note: string
+  group: string | null
+  root_kind: 'managed' | 'external'
+  managed: boolean
+  active: boolean
+  loaded: boolean
+  total_events: number | null
+  total_nodes: number | null
+  db_path: string
+  json_path: string
+  created_at: string
+  updated_at: string
+}
+
+export async function listRepos(): Promise<RepoListResponse> {
+  return req<RepoListResponse>('/repos')
+}
+
+export async function createRepo(body: {
+  name: string
+  note?: string
+  group?: string
+  root_kind?: 'managed' | 'external'
+  root?: string
+}): Promise<{ repo_id: string; message: string }> {
+  return req('/repos', { method: 'POST', body: JSON.stringify(body) })
+}
+
+export async function updateRepo(repoId: string, body: {
+  name?: string
+  note?: string
+  group?: string
+  managed?: boolean
+}): Promise<{ message: string }> {
+  return req(`/repos/${repoId}`, { method: 'PUT', body: JSON.stringify(body) })
+}
+
+export async function deleteRepo(repoId: string): Promise<{ message: string }> {
+  return req(`/repos/${repoId}`, { method: 'DELETE' })
+}
+
+export async function activateRepo(repoId: string): Promise<{ message: string }> {
+  return req(`/repos/${repoId}/activate`, { method: 'POST' })
+}
+
+export async function generateRepo(repoId: string): Promise<{ message: string; queued?: number }> {
+  return req(`/repos/${repoId}/generate`, { method: 'POST' })
 }
 
 export interface SettingsResponse {
@@ -182,11 +245,13 @@ export async function listEvents(params: {
   query?: string
   limit?: number
   offset?: number
+  repo_id?: string  // v1.29：库筛选（缺省 = 活动库）
 }): Promise<PaginatedResponse<EventListItem>> {
   const q = new URLSearchParams()
   if (params.status) q.set('status', params.status)
   if (params.type) q.set('type', params.type)
   if (params.query) q.set('query', params.query)
+  if (params.repo_id) q.set('repo_id', params.repo_id)
   if (params.limit) q.set('limit', String(params.limit))
   if (params.offset) q.set('offset', String(params.offset))
   return req(`/events?${q}`)
@@ -245,10 +310,12 @@ export async function listNodes(params: {
   query?: string
   limit?: number
   offset?: number
+  repo_id?: string  // v1.29：库筛选（缺省 = 活动库）
 }): Promise<PaginatedResponse<NodeListItem>> {
   const q = new URLSearchParams()
   if (params.type) q.set('type', params.type)
   if (params.query) q.set('query', params.query)
+  if (params.repo_id) q.set('repo_id', params.repo_id)
   if (params.limit) q.set('limit', String(params.limit))
   if (params.offset) q.set('offset', String(params.offset))
   return req(`/nodes?${q}`)
@@ -288,10 +355,14 @@ export async function deleteNode(nodeId: string, force = false): Promise<void> {
   })
 }
 
-export async function ingest(content: string, eventType: string): Promise<{ event_id: string; status: string; command_triggered?: boolean; message?: string }> {
+export async function ingest(
+  content: string,
+  eventType: string,
+  repoId = '',  // v1.29：目标库，空 = 活动库
+): Promise<{ event_id: string; status: string; command_triggered?: boolean; message?: string }> {
   return req('/ingest', {
     method: 'POST',
-    body: JSON.stringify({ content, event_type: eventType }),
+    body: JSON.stringify({ content, event_type: eventType, repo_id: repoId }),
   })
 }
 
@@ -301,6 +372,7 @@ export async function query(params: {
   max_hops?: number
   limit?: number
   offset?: number
+  repo_ids?: string[]  // v1.29：缺省 = 全部受管库（联合）；单值 = 指定库
 }): Promise<{ results: SearchResult[]; total: number; degraded: boolean }> {
   return req('/query', {
     method: 'POST',

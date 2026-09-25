@@ -22,6 +22,13 @@
       </div>
       <div class="it-controls">
         <n-select
+          v-model:value="targetRepo"
+          :options="repoOpts"
+          size="small"
+          style="width: 170px"
+          placeholder="目标库"
+        />
+        <n-select
           v-model:value="eventType"
           :options="typeOpts"
           size="small"
@@ -96,6 +103,7 @@ import { createDiscreteApi } from 'naive-ui'
 import type { HealthResponse, LLMCallLog } from '@/api/client'
 import * as api from '@/api/client'
 import { commandToken, filterCommands, type CommandCandidate } from '@/api/commands'
+import { activeRepo, loadRepos, selectableRepos } from '@/api/repoStore'
 import AIStatusBar from '@/components/AIStatusBar.vue'
 import CommandHints from '@/components/CommandHints.vue'
 import IngestHistory from '@/components/IngestHistory.vue'
@@ -207,6 +215,15 @@ const typeOpts = [
   { label: 'source（原始数据，仅存储）', value: 'source' },
 ]
 
+// 目标库（链 U U3）：空 = 跟随活动库；切换库去配置页
+const targetRepo = ref('')
+const repoOpts = computed(() => [
+  { label: `跟随活动库${activeRepo.value ? `（${activeRepo.value.name}）` : ''}`, value: '' },
+  ...selectableRepos.value
+    .filter(r => r.repo_id !== activeRepo.value?.repo_id)
+    .map(r => ({ label: r.name, value: r.repo_id })),
+])
+
 function renderTypeLabel(option: { label?: string; value: string }) {
   const map: Record<string, string> = {
     interaction: 'interaction — 对话记录、决策过程',
@@ -304,7 +321,7 @@ async function onSubmit() {
   if (submitDisabled.value) return
   submitting.value = true
   try {
-    const res = await api.ingest(content.value, eventType.value)
+    const res = await api.ingest(content.value, eventType.value, targetRepo.value)
     // 对话指令（^compress、^merge、^data 等）：未创建事件，message 携带执行结果；
     // 含「未执行」（拒绝/用法错误/保护拦截）用警示样式区分成功
     if (res.command_triggered) {
@@ -377,6 +394,7 @@ function onSelectEvent(eventId: string) {
 
 onMounted(() => {
   loadHealth()
+  loadRepos()
   restore()
   startPolling()
   loadLogs()
