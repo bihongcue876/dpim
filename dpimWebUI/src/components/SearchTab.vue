@@ -526,7 +526,7 @@ async function onFeedback(id: string, accepted: boolean) {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 4px 24px 12px;
+  padding: 10px 32px 20px;
   overflow: hidden;
   /* 统一面板底色：empty-area（flex:1 撑满的空状态区）背景透明，
      若无此底色会透出页面最深的 --dpim-bg，形成一块突兀的"底部黑色区域" */
@@ -536,9 +536,9 @@ async function onFeedback(id: string, accepted: boolean) {
 /* 搜索栏 */
 .search-bar {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   flex-shrink: 0;
-  margin-top: 8px;
+  margin-top: 12px;
 }
 
 /* 高级筛选 */
@@ -555,9 +555,10 @@ async function onFeedback(id: string, accepted: boolean) {
   gap: 12px 28px;
   padding: 12px 16px;
   margin-bottom: 8px;
-  background: var(--dpim-surface, #161b22);
+  background: var(--dpim-inset, var(--dpim-surface, #161b22));
   border-radius: var(--dpim-radius-sm, 8px);
   border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  box-shadow: var(--dpim-inset-shadow, none);
 }
 .filter-row {
   display: flex;
@@ -588,8 +589,7 @@ async function onFeedback(id: string, accepted: boolean) {
   color: var(--dpim-text-3, #7c8694);
   border-bottom: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
   margin-bottom: 10px;
-}
-.stats-text { display: flex; align-items: center; }
+}.stats-text { display: flex; align-items: center; }
 
 /* 结果区 */
 .search-results {
@@ -616,24 +616,25 @@ async function onFeedback(id: string, accepted: boolean) {
 .group-count {
   font-size: 11px;
   color: var(--dpim-text-3, #7c8694);
-  background: rgba(255,255,255,0.07);
+  background: var(--dpim-surface-hover, rgba(255, 255, 255, 0.07));
   padding: 0 8px;
   border-radius: 999px;
 }
 
-/* 结果卡片：bg 深色做内容槽（页面底已改 surface，卡片下沉一级区分层级） */
+/* 结果卡片：暗色=下沉深槽；亮色=白卡轻阴影浮起 */
 .result-card {
   border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
   border-radius: var(--dpim-radius-sm, 8px);
-  padding: 12px 14px;
-  margin-bottom: 10px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
   cursor: pointer;
-  background: var(--dpim-bg, #0e1217);
+  background: var(--dpim-inset, var(--dpim-bg, #0e1217));
+  box-shadow: var(--dpim-inset-shadow, none);
   transition: border-color 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
 }
 .result-card:hover {
   border-color: var(--dpim-primary, #5b8cff);
-  box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  box-shadow: var(--dpim-shadow, 0 4px 14px rgba(0,0,0,0.35));
   transform: translateY(-1px);
 }
 .card-header {

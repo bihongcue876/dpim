@@ -628,11 +628,11 @@ async function onSubmit() {
 </script>
 
 <style scoped>
-.config-tab { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 16px 24px 12px; }
-.config-scroll { flex: 1; overflow-y: auto; min-height: 0; padding-right: 4px; }
+.config-tab { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 20px 32px 16px; }
+.config-scroll { flex: 1; overflow-y: auto; min-height: 0; padding-right: 6px; }
 
 .config-section {
-  margin-bottom: 18px;
+  margin-bottom: 20px;
   border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
   border-radius: var(--dpim-radius, 12px);
   background: var(--dpim-surface, #161b22);
@@ -640,16 +640,16 @@ async function onSubmit() {
 }
 .section-header {
   display: flex; align-items: center; gap: 8px;
-  padding: 10px 16px;
+  padding: 12px 18px;
   background: var(--dpim-surface-2, #1c2230);
   border-bottom: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
 }
 .section-title { font-size: 13px; font-weight: 600; color: var(--dpim-text, #e6edf3); letter-spacing: 0.3px; }
 .section-count {
   font-size: 11px; color: var(--dpim-text-3, #7c8694);
-  background: rgba(255,255,255,0.06); padding: 0 8px; border-radius: 999px;
+  background: var(--dpim-surface-hover, rgba(255,255,255,0.06)); padding: 0 8px; border-radius: 999px;
 }
-.section-body { padding: 4px 16px 8px; }
+.section-body { padding: 6px 18px 10px; }
 
 /* ── 提供商管理块 ── */
 .prov-block { padding: 6px 0 10px; }
@@ -666,10 +666,11 @@ async function onSubmit() {
 }
 .prov-card {
   display: flex; align-items: center; gap: 12px;
-  padding: 8px 10px; margin-bottom: 6px;
+  padding: 10px 12px; margin-bottom: 8px;
   border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
   border-radius: 8px;
-  background: var(--dpim-surface-2, rgba(255,255,255,0.02));
+  background: var(--dpim-inset, var(--dpim-surface-2, rgba(255,255,255,0.02)));
+  box-shadow: var(--dpim-inset-shadow, none);
 }
 .prov-main { flex: 1; min-width: 0; }
 .prov-name { font-size: 13px; font-weight: 600; color: var(--dpim-text, #e6edf3); }
@@ -684,7 +685,7 @@ async function onSubmit() {
 .prov-modal-footer { display: flex; justify-content: flex-end; gap: 8px; }
 
 .config-row {
-  display: flex; align-items: center; gap: 12px; padding: 7px 0;
+  display: flex; align-items: center; gap: 12px; padding: 9px 0;
   border-bottom: 1px dashed var(--dpim-border, rgba(255,255,255,0.07));
   font-size: 13px;
 }

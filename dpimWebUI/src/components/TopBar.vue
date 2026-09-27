@@ -16,6 +16,17 @@
       </span>
     </div>
     <div class="topbar-right">
+      <button class="theme-toggle" :title="themeMode === 'dark' ? '切换到亮色模式' : '切换到暗色模式'"
+        :aria-label="themeMode === 'dark' ? '切换到亮色模式' : '切换到暗色模式'" @click="$emit('toggle-theme')">
+        <!-- 暗色时显示太阳（点击切到亮色）；亮色时显示月亮 -->
+        <svg v-if="themeMode === 'dark'" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+        </svg>
+        <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
       <n-button size="small" secondary :loading="loading" @click="$emit('refresh-key')">
         {{ loading ? '获取中' : '获取最新状态' }}
       </n-button>
@@ -29,9 +40,13 @@ import { computed } from 'vue'
 const props = defineProps<{
   keyStatus: 'unknown' | 'synced' | 'stale'
   loading: boolean
+  themeMode?: 'dark' | 'light'
 }>()
 
-defineEmits<{ 'refresh-key': [] }>()
+defineEmits<{ 'refresh-key': [], 'toggle-theme': [] }>()
+
+// 供模板使用（无 props 使用告警则忽略）；默认暗色
+const themeMode = computed(() => props.themeMode ?? 'dark')
 
 const badgeText = computed(() => {
   if (props.keyStatus === 'unknown') return '待校验'
@@ -64,5 +79,20 @@ const badgeClass = computed(() => props.keyStatus)
 .key-badge.unknown { background: rgba(242,201,76,0.12); color: #f2c94c; border-color: rgba(242,201,76,0.3); }
 .key-badge.synced { background: rgba(63,182,139,0.12); color: #3fb68b; border-color: rgba(63,182,139,0.3); }
 .key-badge.stale { background: rgba(240,128,128,0.12); color: #f08080; border-color: rgba(240,128,128,0.3); }
-.topbar-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.topbar-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 8px;
+  border: 1px solid var(--dpim-border, rgba(255, 255, 255, 0.09));
+  background: transparent; color: var(--dpim-text-2, #aab4c0);
+  cursor: pointer; transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.theme-toggle:hover {
+  color: var(--dpim-primary, #5b8cff);
+  border-color: var(--dpim-primary, #5b8cff);
+  background: var(--dpim-primary-soft, rgba(91, 140, 255, 0.14));
+}
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--dpim-primary, #5b8cff); outline-offset: 1px;
+}
 </style>

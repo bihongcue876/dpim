@@ -36,10 +36,10 @@ defineEmits<{ (e: 'select', c: CommandCandidate): void }>()
   margin: 0;
   padding: 4px;
   list-style: none;
-  background: var(--dpim-surface-raised, #1c2129);
+  background: var(--dpim-surface-raised, var(--dpim-surface, #1c2129));
   border: 1px solid var(--dpim-border, rgba(255, 255, 255, 0.12));
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--dpim-shadow, 0 8px 24px rgba(0, 0, 0, 0.45));
   max-height: 260px;
   overflow-y: auto;
 }
@@ -57,7 +57,7 @@ defineEmits<{ (e: 'select', c: CommandCandidate): void }>()
   background: var(--dpim-primary-soft, rgba(88, 166, 255, 0.12));
 }
 .cmd-name {
-  color: var(--dpim-primary, #58a6ff);
+  color: var(--dpim-primary, #5b8cff);
   font-family: 'Cascadia Code', Consolas, monospace;
   font-weight: 600;
   flex-shrink: 0;

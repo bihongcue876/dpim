@@ -6,7 +6,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import * as d3 from 'd3'
 import Graph from 'graphology'
 import forceatlas2 from 'graphology-layout-forceatlas2'
@@ -49,6 +49,41 @@ const COLOR_MAP: Record<string, string> = {
   system: '#5b8cff',       // 蓝
   interaction: '#3fb68b',  // 绿
   data: '#4cb5f5',         // 浅蓝
+}
+
+// ---------- 主题感知绘制配色 ----------
+// 画布内容由 JS 绘制（SVG attr），CSS 变量无法直接用于 d3 attr 字符串，
+// 从 documentElement 的 data-dpim-mode 读取当前模式并映射两套绘图色；
+// 模式切换由 App.vue 控制 documentElement，此 watch 触发重绘。
+function currentThemeMode(): 'dark' | 'light' {
+  const m = document.documentElement?.dataset?.dpimMode
+  return m === 'light' ? 'light' : 'dark'
+}
+const themeMode = ref<'dark' | 'light'>(currentThemeMode())
+
+// 亮色：边/箭头/文字加深保证可读；暗色沿用原值。
+// 高亮描边（#fff）在亮色下改为深色墨色。
+const paint = computed(() => ({
+  edge: themeMode.value === 'light' ? '#5a667e' : '#7c8694',
+  edgeLabel: themeMode.value === 'light' ? '#6a7686' : '#777',
+  arrow: themeMode.value === 'light' ? '#5a667e' : '#666',
+  narration: themeMode.value === 'light' ? '#3d4a5e' : '#bbb',
+  badgeText: themeMode.value === 'light' ? '#79859c' : '#666',
+  highlightRing: themeMode.value === 'light' ? '#1a2233' : '#fff',
+}))
+
+watch(themeMode, () => { if (!destroyed) refresh() })
+
+// 同步外部主题切换：documentElement 的 data-dpim-mode 由 App.vue 更新，
+// 用 MutationObserver 监听卡在 helper 的模式变化最可靠
+let modeObserver: MutationObserver | null = null
+function observeThemeMode() {
+  if (modeObserver || typeof MutationObserver === 'undefined') return
+  modeObserver = new MutationObserver(() => {
+    const m = currentThemeMode()
+    if (m !== themeMode.value) themeMode.value = m
+  })
+  modeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-dpim-mode'] })
 }
 
 /** 获取圆半径：根据置信度 + 最少可见大小 */
@@ -95,7 +130,7 @@ function build() {
     .attr('orient', 'auto')
     .append('path')
     .attr('d', 'M0,-5L10,0L0,5')
-    .attr('fill', '#666')
+    .attr('fill', paint.value.arrow)
 
   // Zoom
   zoom = d3.zoom<SVGSVGElement, unknown>()
@@ -312,7 +347,7 @@ function render() {
     .data(d => [d])
     .join('path')
     .attr('fill', 'none')
-    .attr('stroke', '#7c8694')
+    .attr('stroke', paint.value.edge)
     .attr('stroke-width', 1.2)
     .attr('stroke-opacity', 0.45)
     .attr('marker-end', 'url(#arrow)')
@@ -331,7 +366,7 @@ function render() {
     .join('text')
     .text(d => d.relation)
     .attr('font-size', 9)
-    .attr('fill', '#777')
+    .attr('fill', paint.value.edgeLabel)
     .attr('text-anchor', 'middle')
     .attr('dy', -6)
 
@@ -347,7 +382,7 @@ function render() {
     .join('circle')
     .attr('r', d => nodeRadius(d))
     .attr('fill', d => COLOR_MAP[d.node_type] || '#888')
-    .attr('stroke', d => d.id === props.highlightNodeId ? '#fff' : 'transparent')
+    .attr('stroke', d => d.id === props.highlightNodeId ? paint.value.highlightRing : 'transparent')
     .attr('stroke-width', d => d.id === props.highlightNodeId ? 3 : 2)
     .attr('stroke-opacity', d => d.id === props.highlightNodeId ? 0.9 : 0)
     .style('cursor', 'pointer')
@@ -362,7 +397,7 @@ function render() {
     .attr('font-size', 10)
     .attr('dx', d => nodeRadius(d) + 5)
     .attr('dy', 4)
-    .attr('fill', '#bbb')
+    .attr('fill', paint.value.narration)
     .style('pointer-events', 'none')
 
   // Confidence badge (small, inside circle bottom-right)
@@ -374,7 +409,7 @@ function render() {
     .attr('font-size', 7)
     .attr('dx', d => nodeRadius(d) + 5)
     .attr('dy', 15)
-    .attr('fill', '#666')
+    .attr('fill', paint.value.badgeText)
     .style('pointer-events', 'none')
 
   // Highlight glow: extra translucent ring behind the node
@@ -384,7 +419,7 @@ function render() {
     .attr('class', 'glow')
     .attr('r', d => nodeRadius(d) + 5)
     .attr('fill', 'none')
-    .attr('stroke', '#fff')
+    .attr('stroke', paint.value.highlightRing)
     .attr('stroke-width', 1)
     .attr('stroke-opacity', 0.3)
     .style('pointer-events', 'none')
@@ -465,7 +500,7 @@ watch(() => props.highlightNodeId, (newVal) => {
   if (destroyed || !mainG) return
   // Update circle stroke
   mainG.selectAll<SVGCircleElement, SimNode>('circle:not(.glow)')
-    .attr('stroke', d => d.id === newVal ? '#fff' : 'transparent')
+    .attr('stroke', d => d.id === newVal ? paint.value.highlightRing : 'transparent')
     .attr('stroke-width', d => d.id === newVal ? 3 : 2)
     .attr('stroke-opacity', d => d.id === newVal ? 0.9 : 0)
   // Update glow
@@ -476,13 +511,14 @@ watch(() => props.highlightNodeId, (newVal) => {
     .attr('class', 'glow')
     .attr('r', d => nodeRadius(d) + 5)
     .attr('fill', 'none')
-    .attr('stroke', '#fff')
+    .attr('stroke', paint.value.highlightRing)
     .attr('stroke-width', 1)
     .attr('stroke-opacity', 0.3)
     .style('pointer-events', 'none')
 })
 
 onMounted(async () => {
+  observeThemeMode()
   await new Promise(r => requestAnimationFrame(r))
   if (containerRef.value) {
     resizeObs = new ResizeObserver(() => {
@@ -495,6 +531,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  if (modeObserver) { modeObserver.disconnect(); modeObserver = null }
   if (resizeObs) { resizeObs.disconnect(); resizeObs = null }
   clearTimeout(resizeTimer)
   destroy()
@@ -511,7 +548,7 @@ function resetZoom() {
 .graph-canvas {
   width: 100%; height: 100%; overflow: hidden; position: relative;
   background-color: var(--dpim-bg, #0e1217);
-  background-image: radial-gradient(rgba(255,255,255,0.05) 1px, transparent 1px);
+  background-image: radial-gradient(var(--dpim-grid-dot, rgba(255, 255, 255, 0.05)) 1px, transparent 1px);
   background-size: 22px 22px;
 }
 .empty-hint {
