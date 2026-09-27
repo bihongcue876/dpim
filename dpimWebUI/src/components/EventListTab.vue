@@ -437,7 +437,7 @@ async function doCreate() {
 .event-tab { flex: 1; display: flex; min-height: 0; }
 .event-left {
   width: 36%; display: flex; flex-direction: column;
-  padding: 12px 14px; gap: 8px;
+  padding: 14px 18px; gap: 10px;
   border-right: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
   background: var(--dpim-surface, #161b22);
 }
@@ -448,11 +448,12 @@ async function doCreate() {
   flex: 1; overflow-y: auto; min-height: 0;
   border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
   border-radius: var(--dpim-radius-sm, 8px);
-  background: var(--dpim-bg, #0e1217);
+  background: var(--dpim-inset, var(--dpim-bg, #0e1217));
+  box-shadow: var(--dpim-inset-shadow, none);
   padding: 4px;
 }
 .event-row {
-  display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12px;
+  display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 12px;
   cursor: pointer; border-radius: 6px; border-left: 2px solid transparent;
   transition: background 0.12s ease;
 }
@@ -460,7 +461,7 @@ async function doCreate() {
 .event-row.active { background: var(--dpim-primary-soft, rgba(91,140,255,0.14)); border-left-color: var(--dpim-primary, #5b8cff); }
 .ev-time { color: var(--dpim-text-3, #7c8694); width: 84px; flex-shrink: 0; font-family: 'Cascadia Code', Consolas, monospace; font-size: 11px; }
 .ev-content { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dpim-text-2, #aab4c0); }
-.event-right { flex: 1; display: flex; flex-direction: column; padding: 16px 20px; overflow: hidden; }
+.event-right { flex: 1; display: flex; flex-direction: column; padding: 20px 28px; overflow: hidden; }
 /* n-spin 容器补 flex 传递链：否则 detail-scroll 的 flex:1 失效，
    内容超高时底部操作按钮被 overflow:hidden 裁掉且无法滚动 */
 .event-right :deep(.n-spin-container),
@@ -471,7 +472,8 @@ async function doCreate() {
 .detail-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
 .raw-content {
   font-size: 13px; line-height: 1.7; white-space: pre-wrap; max-height: 320px; overflow-y: auto;
-  background: var(--dpim-bg, #0e1217); border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  background: var(--dpim-inset, var(--dpim-bg, #0e1217)); border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  box-shadow: var(--dpim-inset-shadow, none);
   padding: 10px 12px; border-radius: var(--dpim-radius-sm, 8px);
   color: var(--dpim-text-2, #aab4c0);
 }

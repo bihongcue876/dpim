@@ -96,7 +96,8 @@ watch(
   display: flex; flex-direction: column; gap: 6px;
   padding: 12px 16px; border-radius: var(--dpim-radius, 12px);
   border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
-  background: var(--dpim-surface, #161b22);
+  background: var(--dpim-inset, var(--dpim-surface, #161b22));
+  box-shadow: var(--dpim-inset-shadow, none);
   border-left: 3px solid #3fb68b;
 }
 .ai-status.offline { border-left-color: #f08080; }

@@ -411,21 +411,21 @@ onUnmounted(() => {
 
 <style scoped>
 .ingest-tab {
-  flex: 1; min-height: 0; overflow-y: auto; padding: 16px 24px;
-  display: flex; flex-direction: column; gap: 14px;
+  flex: 1; min-height: 0; overflow-y: auto; padding: 20px 32px;
+  display: flex; flex-direction: column; gap: 18px;
 }
 .it-card {
   border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
   border-radius: var(--dpim-radius, 12px);
   background: var(--dpim-surface, #161b22);
-  padding: 14px 16px;
+  padding: 18px 22px;
 }
 .it-card-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: var(--dpim-text, #e6edf3); letter-spacing: 0.3px; }
 .it-controls { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; flex-wrap: wrap; gap: 10px; }
 .textarea-wrap { position: relative; }
 .it-count { font-size: 12px; color: var(--dpim-text-3, #7c8694); font-family: 'Cascadia Code', Consolas, monospace; }
 .it-cmd-hint { margin-top: 8px; font-size: 12px; color: var(--dpim-text-3, #7c8694); line-height: 1.7; }
-.it-cmd-hint .ftag { color: var(--dpim-primary, #58a6ff); font-family: 'Cascadia Code', Consolas, monospace; }
+.it-cmd-hint .ftag { color: var(--dpim-primary, #5b8cff); font-family: 'Cascadia Code', Consolas, monospace; }
 .it-actions { display: flex; gap: 12px; align-items: center; }
 .it-actions-spacer { flex: 1; }
 .it-log-title { display: flex; align-items: center; }
@@ -440,6 +440,6 @@ onUnmounted(() => {
 .it-log-error { color: #f08080; word-break: break-all; white-space: pre-wrap; }
 .it-log-out { color: var(--dpim-text-2, #aab4c0); word-break: break-all; white-space: pre-wrap; }
 .it-log-label { font-size: 11px; color: var(--dpim-text-3, #7c8694); margin: 6px 0 2px; letter-spacing: 0.5px; }
-.it-log-text { color: var(--dpim-text-2, #aab4c0); font-size: 11.5px; line-height: 1.55; margin: 0; padding: 6px 8px; background: rgba(0,0,0,0.22); border-radius: 6px; word-break: break-all; white-space: pre-wrap; max-height: 40vh; overflow-y: auto; }
+.it-log-text { color: var(--dpim-text-2, #aab4c0); font-size: 11.5px; line-height: 1.55; margin: 0; padding: 6px 8px; background: var(--dpim-log-bg, rgba(0,0,0,0.22)); border-radius: 6px; word-break: break-all; white-space: pre-wrap; max-height: 40vh; overflow-y: auto; }
 .mono { font-family: 'Cascadia Code', Consolas, monospace; }
 </style>

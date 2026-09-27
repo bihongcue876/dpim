@@ -528,7 +528,7 @@ async function onDeleteSelNodes() {
 <style scoped>
 .graph-tab { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .graph-canvas-area { flex: 1; min-height: 0; position: relative; background: var(--dpim-bg, #0e1217); }
-.canvas-toolbar { position: absolute; top: 8px; right: 8px; z-index: 5; display: flex; gap: 4px; }
+.canvas-toolbar { position: absolute; top: 10px; right: 10px; z-index: 5; display: flex; gap: 6px; background: var(--dpim-surface, #161b22); border: 1px solid var(--dpim-border, rgba(255,255,255,0.09)); border-radius: 999px; padding: 3px 6px; box-shadow: var(--dpim-inset-shadow, none); }
 
 /* 面板：流式布局，高度由内容决定（上限 45%），收起时折叠为 0 */
 .panel-slider {
@@ -546,7 +546,7 @@ async function onDeleteSelNodes() {
   overflow: hidden;
 }
 .panel-inner { display: flex; flex: 1; min-height: 0; overflow-y: auto; }
-.panel-left, .panel-right { flex: 1; padding: 12px 16px; overflow-y: auto; }
+.panel-left, .panel-right { flex: 1; padding: 14px 20px; overflow-y: auto; }
 .panel-left { border-right: 1px solid var(--dpim-border, rgba(255,255,255,0.09)); }
 .node-list-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .node-mini-row {
@@ -561,7 +561,7 @@ async function onDeleteSelNodes() {
 .toggle-row {
   flex-shrink: 0;
   display: flex; justify-content: space-between; align-items: center;
-  padding: 3px 12px; background: var(--dpim-surface, #161b22);
+  padding: 5px 16px; background: var(--dpim-surface, #161b22);
   border-top: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
 }
 h4 { margin: 0 0 10px; font-size: 14px; color: var(--dpim-text, #e6edf3); }
@@ -571,7 +571,8 @@ h4 { margin: 0 0 10px; font-size: 14px; color: var(--dpim-text, #e6edf3); }
 .edge-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dpim-text-2, #aab4c0); }
 .node-content {
   font-size: 13px; line-height: 1.6; white-space: pre-wrap; max-height: 200px; overflow-y: auto;
-  background: var(--dpim-bg, #0e1217); border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  background: var(--dpim-inset, var(--dpim-bg, #0e1217)); border: 1px solid var(--dpim-border, rgba(255,255,255,0.09));
+  box-shadow: var(--dpim-inset-shadow, none);
   padding: 10px 12px; border-radius: var(--dpim-radius-sm, 8px);
   color: var(--dpim-text-2, #aab4c0);
 }
