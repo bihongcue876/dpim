@@ -1,0 +1,7 @@
+# pnpm 11 起，依赖的安装脚本默认拒绝执行（取代旧的 onlyBuiltDependencies），
+# 本文件的 allowBuilds 是唯一被识别的裁决位置。
+# 注意：pnpm 自动脚手架会写入占位串 "set this to true or false"，
+# 那是「未裁决」= 仍然拒绝，会让 pnpm install 直接以 ERR_PNPM_IGNORED_BUILDS 失败。
+allowBuilds:
+  # esbuild 的 postinstall 仅校验/链接平台二进制，vite 与 vitest 都依赖它
+  esbuild: true

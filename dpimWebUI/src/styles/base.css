@@ -1,0 +1,88 @@
+/* ── 全局基座：重置 / 全高布局链 / 滚动条 / 可达性 ─────────────────────────
+   只允许使用 tokens.css 里的令牌；本文件与 tokens.css 是唯二允许出现
+   颜色与尺寸字面量的地方（Naive UI 镜像在 styles/naive-theme.ts）。 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--dpim-bg);
+  color: var(--dpim-text);
+  font-size: var(--dpim-fs-base);
+  font-family: var(--dpim-font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition: background-color var(--dpim-dur-slow) ease, color var(--dpim-dur-slow) ease;
+}
+
+::selection {
+  background: var(--dpim-selection-bg);
+  color: var(--dpim-selection-text);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--dpim-scroll-thumb);
+  border-radius: var(--dpim-radius-sm);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--dpim-scroll-thumb-hover);
+}
+
+:focus-visible {
+  outline: 2px solid var(--dpim-primary);
+  outline-offset: 1px;
+  border-radius: var(--dpim-radius-xs);
+}
+
+/* 应用外壳：顶栏 + 主体（侧栏 + 内容）三段式全高布局。
+   每个 flex 层级都必须显式写 min-height:0，否则内层滚动链会断（链 O4 教训）。 */
+.app-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--dpim-bg);
+}
+
+.app-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--dpim-bg);
+}
+
+/* Naive UI 的 layout/scroll 容器默认是 block，不转 flex 的话内部全高约束会失效 */
+.n-layout-scroll-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}

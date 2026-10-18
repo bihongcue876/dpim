@@ -2,11 +2,15 @@ import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 import GraphCanvas from '@/components/GraphCanvas.vue'
 
-const nodes = [
+import type { EdgeInfo, NodeListItem } from '@/api/types'
+
+const nodes: NodeListItem[] = [
   { node_id: 'n1', title: '节点一', node_type: 'data', confidence: 0.9 },
   { node_id: 'n2', title: '节点二', node_type: 'interaction', confidence: 0.8 },
 ]
-const edges = [{ source: 'n1', target: 'n2', relation: '关联于', evidence_event_id: 'e1' }]
+const edges: EdgeInfo[] = [
+  { source: 'n1', target: 'n2', relation: '关联于', evidence_event_id: 'e1' },
+]
 
 async function waitFrame() {
   await new Promise(r => requestAnimationFrame(r))

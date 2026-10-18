@@ -1,7 +1,12 @@
 <template>
   <div ref="containerRef" class="graph-canvas" @dblclick="resetZoom">
-    <div v-if="!initialized" class="empty-hint">初始化中…</div>
-    <div v-else-if="nodes.length === 0" class="empty-hint">暂无节点数据</div>
+    <!-- 三态统一走 StateBlock：叠在画布之上，不参与 SVG 布局 -->
+    <div v-if="!initialized" class="canvas-state">
+      <StateBlock loading empty-text="初始化中…" min-height="120px" />
+    </div>
+    <div v-else-if="nodes.length === 0" class="canvas-state">
+      <StateBlock empty-text="暂无节点数据" min-height="120px" />
+    </div>
   </div>
 </template>
 
@@ -10,7 +15,8 @@ import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import * as d3 from 'd3'
 import Graph from 'graphology'
 import forceatlas2 from 'graphology-layout-forceatlas2'
-import type { NodeListItem, EdgeInfo } from '@/api/client'
+import StateBlock from '@/components/ui/StateBlock.vue'
+import type { NodeListItem, EdgeInfo } from '@/api/types'
 
 const props = defineProps<{
   nodes: NodeListItem[]
@@ -45,32 +51,54 @@ interface SimLink extends d3.SimulationLinkDatum<SimNode> {
   relation: string
 }
 
-const COLOR_MAP: Record<string, string> = {
-  system: '#5b8cff',       // 蓝
-  interaction: '#3fb68b',  // 绿
-  data: '#4cb5f5',         // 浅蓝
+// ---------- 绘制配色：一律从 CSS 令牌读取 ----------
+// 画布内容由 JS 绘制（SVG attr），CSS 变量无法直接作为 d3 attr 字符串使用，
+// 故绘制时读取 :root 上的 --dpim-* 令牌；令牌缺失（如 jsdom 测试环境）回退到
+// 与暗色令牌一致的兜底色。令牌值随 data-dpim-mode 变化，themeMode watch 触发重绘。
+const COLOR_FALLBACK: Record<string, string> = {
+  system: '#5b8cff',        // ← --dpim-primary
+  interaction: '#3fb68b',   // ← --dpim-success
+  data: '#4cb5f5',          // ← --dpim-info
+  nodeDefault: '#888888',   // ← --dpim-text-3
+  edge: '#7c8694',          // ← --dpim-text-3
+  edgeLabel: '#777777',     // ← --dpim-text-3
+  arrow: '#666666',         // ← --dpim-text-3
+  narration: '#bbbbbb',     // ← --dpim-text-2
+  badgeText: '#666666',     // ← --dpim-text-3
+  highlightRing: '#ffffff', // ← --dpim-text
 }
 
-// ---------- 主题感知绘制配色 ----------
-// 画布内容由 JS 绘制（SVG attr），CSS 变量无法直接用于 d3 attr 字符串，
-// 从 documentElement 的 data-dpim-mode 读取当前模式并映射两套绘图色；
-// 模式切换由 App.vue 控制 documentElement，此 watch 触发重绘。
+/** 读取设计令牌；取不到（无 DOM / jsdom）时用兜底色 */
+function cssVar(name: string, fallback: string): string {
+  if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
+}
+
 function currentThemeMode(): 'dark' | 'light' {
   const m = document.documentElement?.dataset?.dpimMode
   return m === 'light' ? 'light' : 'dark'
 }
 const themeMode = ref<'dark' | 'light'>(currentThemeMode())
 
-// 亮色：边/箭头/文字加深保证可读；暗色沿用原值。
-// 高亮描边（#fff）在亮色下改为深色墨色。
-const paint = computed(() => ({
-  edge: themeMode.value === 'light' ? '#5a667e' : '#7c8694',
-  edgeLabel: themeMode.value === 'light' ? '#6a7686' : '#777',
-  arrow: themeMode.value === 'light' ? '#5a667e' : '#666',
-  narration: themeMode.value === 'light' ? '#3d4a5e' : '#bbb',
-  badgeText: themeMode.value === 'light' ? '#79859c' : '#666',
-  highlightRing: themeMode.value === 'light' ? '#1a2233' : '#fff',
-}))
+const paint = computed(() => {
+  // 依赖 themeMode：模式切换后令牌值变化，需重算并重绘
+  void themeMode.value
+  return {
+    node: {
+      system: cssVar('--dpim-primary', COLOR_FALLBACK.system),
+      interaction: cssVar('--dpim-success', COLOR_FALLBACK.interaction),
+      data: cssVar('--dpim-info', COLOR_FALLBACK.data),
+    } as Record<string, string>,
+    nodeDefault: cssVar('--dpim-text-3', COLOR_FALLBACK.nodeDefault),
+    edge: cssVar('--dpim-text-3', COLOR_FALLBACK.edge),
+    edgeLabel: cssVar('--dpim-text-3', COLOR_FALLBACK.edgeLabel),
+    arrow: cssVar('--dpim-text-3', COLOR_FALLBACK.arrow),
+    narration: cssVar('--dpim-text-2', COLOR_FALLBACK.narration),
+    badgeText: cssVar('--dpim-text-3', COLOR_FALLBACK.badgeText),
+    highlightRing: cssVar('--dpim-text', COLOR_FALLBACK.highlightRing),
+  }
+})
 
 watch(themeMode, () => { if (!destroyed) refresh() })
 
@@ -381,7 +409,7 @@ function render() {
     .data(d => [d])
     .join('circle')
     .attr('r', d => nodeRadius(d))
-    .attr('fill', d => COLOR_MAP[d.node_type] || '#888')
+    .attr('fill', d => paint.value.node[d.node_type] || paint.value.nodeDefault)
     .attr('stroke', d => d.id === props.highlightNodeId ? paint.value.highlightRing : 'transparent')
     .attr('stroke-width', d => d.id === props.highlightNodeId ? 3 : 2)
     .attr('stroke-opacity', d => d.id === props.highlightNodeId ? 0.9 : 0)
@@ -547,12 +575,10 @@ function resetZoom() {
 <style scoped>
 .graph-canvas {
   width: 100%; height: 100%; overflow: hidden; position: relative;
-  background-color: var(--dpim-bg, #0e1217);
-  background-image: radial-gradient(var(--dpim-grid-dot, rgba(255, 255, 255, 0.05)) 1px, transparent 1px);
+  background-color: var(--dpim-bg);
+  background-image: radial-gradient(var(--dpim-grid-dot) 1px, transparent 1px);
   background-size: 22px 22px;
 }
-.empty-hint {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  color: var(--dpim-text-3, #7c8694); font-size: 14px;
-}
+/* 空/初始化态：叠在画布之上（不参与 SVG 布局），三态外观由 StateBlock 统一 */
+.canvas-state { position: absolute; inset: 0; display: flex; }
 </style>
