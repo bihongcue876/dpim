@@ -7,10 +7,11 @@ COMMANDS = [
     "status", "state-key",
     "ingest", "events", "event",
     "nodes", "node",
-    "edge",
+    "edge", "edges",
     "search", "feedback",
     "config",
     "graph",
+    "repo", "maintenance", "logs", "trash", "agent",
     "help", "quit", "exit",
     "format", "timing", "clear", "history",
 ]
@@ -19,22 +20,39 @@ SUB_COMMANDS = {
     "event": ["view", "edit", "retry", "skip", "unskip", "delete"],
     "node": ["view", "create", "edit", "delete"],
     "edge": ["create", "delete"],
-    "config": ["list", "set"],
+    "config": ["list", "set", "probe"],
     "graph": ["clear"],
+    "repo": ["list", "show", "create", "update", "delete", "activate",
+             "refresh", "generate", "adopt", "rebuild", "purge"],
+    "maintenance": ["backup", "backups", "verify", "ops", "checkpoint"],
+    "trash": ["list", "restore"],
+    "agent": ["logs", "compensate", "maintain"],
     "format": ["table", "json", "yaml"],
     "timing": ["on", "off"],
 }
 
+# 库作用域（v1.29/v1.30）：读命令单库 --repo；列表/检索类还可 --repos 联查
+_SCOPE_SINGLE = ["--repo"]
+_SCOPE_JOINT = ["--repo", "--repos"]
+
 OPTIONS = {
-    "ingest": ["--type"],
-    "events": ["--type", "--status", "--limit", "--offset"],
-    "event": ["--event"],
-    "nodes": ["--type", "--limit", "--offset"],
-    "node": ["--title", "--content", "--type", "--event", "--force"],
+    "ingest": ["--type", *_SCOPE_SINGLE],
+    "events": ["--type", "--status", "--limit", "--offset", *_SCOPE_JOINT],
+    "event": ["--event", *_SCOPE_SINGLE],
+    "nodes": ["--type", "--limit", "--offset", *_SCOPE_JOINT],
+    "node": ["--title", "--content", "--type", "--event", "--force", *_SCOPE_SINGLE],
     "edge": ["--source", "--target", "--relation", "--event"],
-    "search": ["--type", "--hops", "--limit", "--offset", "--format"],
-    "feedback": ["--accept", "--reject"],
-    "config": ["--config"],
+    "edges": ["--node", "--source", "--target", "--relation", "--limit", "--offset",
+              *_SCOPE_JOINT],
+    "search": ["--type", "--hops", "--limit", "--offset", "--format", *_SCOPE_JOINT],
+    "feedback": ["--accept", "--reject", *_SCOPE_SINGLE],
+    "config": ["--config", "--base-url", "--api-key"],
+    "repo": ["--name", "--note", "--group", "--root", "--kind", "--managed",
+             "--no-missing", "--yes"],
+    "maintenance": ["--note", "--limit", "--offset", *_SCOPE_SINGLE],
+    "logs": ["--kind", "--date", "--level", "--keyword", "--tail"],
+    "trash": ["--kind", *_SCOPE_SINGLE],
+    "agent": ["--limit", "--full", "--mode", *_SCOPE_SINGLE],
     "node create": ["--title", "--content", "--type", "--event"],
     "edge create": ["--source", "--target", "--relation", "--event"],
     "edge delete": ["--source", "--target"],
@@ -49,6 +67,9 @@ OPTION_VALUES = {
     "--type": TYPE_VALUES,
     "--status": STATUS_VALUES,
     "--color": BOOL_VALUES,
+    "--kind": ["managed", "external", "event", "node", "backend", "frontend"],
+    "--managed": ["true", "false"],
+    "--mode": ["update", "compress"],
 }
 
 

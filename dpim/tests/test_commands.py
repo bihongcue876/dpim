@@ -1,4 +1,4 @@
-﻿"""对话指令系统测试（v1.21：仅 ^英文动词、空格分隔；其余一律普通文本落库）：
+"""对话指令系统测试（v1.21：仅 ^英文动词、空格分隔；其余一律普通文本落库）：
 
 - parse_command 严格语法（^ 前缀 + 英文动词；/ 前缀、中文词、冒号、未知 ^词 → 非指令）
 - POST /ingest 指令分发：
@@ -16,23 +16,23 @@ from core.commands import parse_command, usage_text
 from core.config import settings
 from core.models import NodeType
 from core.state import ai_state
-from interface import api
+from interface import api, deps
 from tests.factories import make_node
 
 
 @pytest.fixture
 def test_app(db, event_store, graph_store, monkeypatch):
     """同 test_integration 夹具 + 注入记录型 orchestrator 桩。"""
-    api.db = db
-    api.event_store = event_store
-    api.graph_store = graph_store
+    deps.db = db
+    deps.event_store = event_store
+    deps.graph_store = graph_store
     enqueued: list = []
 
     class _StubOrchestrator:
         async def enqueue(self, msg):
             enqueued.append(msg)
 
-    monkeypatch.setattr(api, "orchestrator", _StubOrchestrator())
+    monkeypatch.setattr(deps, "orchestrator", _StubOrchestrator())
     client = TestClient(api.app)
     client.enqueued = enqueued  # type: ignore[attr-defined]
     return client

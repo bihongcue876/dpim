@@ -32,8 +32,23 @@ def mock_client(monkeypatch):
         def __getattr__(self, name: str):
             def _call(*args, **kwargs):
                 calls.append((name, args, kwargs))
-                # 常见响应兜底：列表类命令需要 items/total 字段，其余原样回显
-                if name in ("list_events", "list_nodes", "search"):
+                # 常见响应兜底：列表类命令需要各自的外层字段名，其余原样回显
+                # （注意后端用的是 `repos` / `ops` / `backups` / `logs`，
+                #   只有 /events、/nodes、/edges、/trash 用 `items`）
+                if name in ("list_events", "list_nodes", "list_edges", "trash_list"):
+                    return {"items": [], "total": 0, "results": []}
+                if name == "list_repos":
+                    return {"repos": [], "active_repo_id": ""}
+                if name == "maintenance_ops":
+                    return {"ops": [], "total": 0}
+                if name == "maintenance_backups":
+                    return {"backups": []}
+                if name == "agent_logs":
+                    return {"logs": []}
+                if name == "logs":
+                    return {"kind": "backend", "date": "2026-10-17", "dir": "d",
+                            "files": [], "lines": [], "truncated": False}
+                if name == "search":
                     return {"items": [], "total": 0, "results": []}
                 return {"ok": True, "message": "done", "data": {}}
 
@@ -61,17 +76,17 @@ def test_cmd_state_key(mock_client, capsys):
 
 
 def test_cmd_ingest_default_type(mock_client):
-    # auto 模式已移除：默认类型为 interaction
+    # auto 模式已移除：默认类型为 interaction；v1.39 起带库作用域（缺省空串 = 活动库）
     commands.cmd_ingest(make_args("ingest", content="hello", type="interaction"))
     name, args, kwargs = mock_client[0]
     assert name == "ingest"
     assert args == ("hello",)
-    assert kwargs == {"event_type": "interaction"}
+    assert kwargs == {"event_type": "interaction", "repo_id": ""}
 
 
 def test_cmd_ingest_explicit_type(mock_client):
     commands.cmd_ingest(make_args("ingest", content="x", type="data"))
-    assert mock_client[0][2] == {"event_type": "data"}
+    assert mock_client[0][2] == {"event_type": "data", "repo_id": ""}
 
 
 def test_formatter_ingest_command_triggered(capsys):
@@ -100,12 +115,14 @@ def test_cmd_events_filters_forwarded(mock_client):
     ))
     name, args, kwargs = mock_client[0]
     assert name == "list_events"
-    assert kwargs == {"type": "interaction", "status": "raw", "limit": 5, "offset": 10}
+    assert kwargs == {"type": "interaction", "status": "raw", "limit": 5, "offset": 10,
+                      "repo_id": "", "repo_ids": []}
 
 
 def test_cmd_events_defaults(mock_client):
     commands.cmd_events(make_args("events", type="", status="", limit=20, offset=0))
-    assert mock_client[0][2] == {"type": "", "status": "", "limit": 20, "offset": 0}
+    assert mock_client[0][2] == {"type": "", "status": "", "limit": 20, "offset": 0,
+                                 "repo_id": "", "repo_ids": []}
 
 
 def test_cmd_event_view(mock_client):
@@ -143,13 +160,14 @@ def test_cmd_event_delete(mock_client):
 
 def test_cmd_nodes_filters(mock_client):
     commands.cmd_nodes(make_args("nodes", type="data", limit=10, offset=0))
-    assert mock_client[0][2] == {"type": "data", "limit": 10, "offset": 0}
+    assert mock_client[0][2] == {"type": "data", "limit": 10, "offset": 0,
+                                 "repo_id": "", "repo_ids": []}
 
 
 def test_cmd_node_view(mock_client):
     commands.cmd_node(make_args("node", node_id="n1", content="", action="view",
                                 title="", event="", force=False))
-    assert mock_client[0] == ("get_node", ("n1",), {})
+    assert mock_client[0] == ("get_node", ("n1",), {"repo_id": ""})
 
 
 def test_cmd_node_action_inferred_from_title(mock_client):
@@ -216,17 +234,17 @@ def test_cmd_search_params_mapping(mock_client):
     name, args, kwargs = mock_client[0]
     assert name == "search"
     assert kwargs == {"query": "记忆", "source_filter": "data",
-                      "max_hops": 3, "limit": 10, "offset": 5}
+                      "max_hops": 3, "limit": 10, "offset": 5, "repo_ids": []}
 
 
 def test_cmd_feedback_accept(mock_client):
     commands.cmd_feedback(make_args("feedback", result_id="n1", accept=True, reject=False))
-    assert mock_client[0] == ("feedback", ("n1", True), {})
+    assert mock_client[0] == ("feedback", ("n1", True), {"repo_id": ""})
 
 
 def test_cmd_feedback_reject(mock_client):
     commands.cmd_feedback(make_args("feedback", result_id="n1", accept=False, reject=True))
-    assert mock_client[0] == ("feedback", ("n1", False), {})
+    assert mock_client[0] == ("feedback", ("n1", False), {"repo_id": ""})
 
 
 # ── 配置与图谱 ──
@@ -293,7 +311,7 @@ def test_main_dispatch_ingest(monkeypatch, mock_client, capsys):
     name, args, kwargs = mock_client[0]
     assert name == "ingest"
     assert args == ("测试内容",)
-    assert kwargs == {"event_type": "data"}
+    assert kwargs == {"event_type": "data", "repo_id": ""}
 
 
 def test_main_global_opts_after_command(monkeypatch, mock_client):
@@ -321,3 +339,290 @@ def test_main_prefixed_api_not_clobbered(monkeypatch, mock_client):
     main_mod.main()
     # 客户端 base_url 应为前置地址，而非子 parser 默认（None → 回退 localhost:8000）
     assert mock_client[0][0] == "health"
+
+
+# ── 库作用域（v1.29/v1.30，链 AD）─────────────────────────────────────────
+
+
+def test_repo_params_drops_empty_and_joins():
+    """`repo_params` 只拼非空值：空串会让后端踩 404/422（缺省语义 ≠ 空串）。"""
+    from dpim_cli.api_client import repo_params
+
+    assert repo_params() == {}
+    assert repo_params("", []) == {}
+    assert repo_params("rp_a") == {"repo_id": "rp_a"}
+    assert repo_params(repo_ids=["rp_a", "", "rp_b"]) == {"repo_ids": "rp_a,rp_b"}
+    assert repo_params("rp_a", ["rp_b"]) == {"repo_id": "rp_a", "repo_ids": "rp_b"}
+
+
+def test_cmd_events_forwards_scope(mock_client):
+    commands.cmd_events(make_args("events", type="", status="", limit=20, offset=0,
+                                  repo="rp_a", repos="rp_b,rp_c"))
+    kwargs = mock_client[0][2]
+    assert kwargs["repo_id"] == "rp_a"
+    assert kwargs["repo_ids"] == ["rp_b", "rp_c"]
+
+
+def test_cmd_ingest_forwards_repo(mock_client):
+    commands.cmd_ingest(make_args("ingest", content="x", type="data", repo="rp_a"))
+    assert mock_client[0][2] == {"event_type": "data", "repo_id": "rp_a"}
+
+
+def test_cmd_node_view_forwards_repo(mock_client):
+    """跨库跳转必须带 repo_id，否则后端只在活动库里找 → 404。"""
+    commands.cmd_node(make_args("node", node_id="n1", content="", action="view",
+                                title="", event="", force=False, repo="rp_a"))
+    assert mock_client[0] == ("get_node", ("n1",), {"repo_id": "rp_a"})
+
+
+def test_cmd_search_forwards_repos(mock_client):
+    commands.cmd_search(make_args("search", query="q", type="all", hops=2, limit=20,
+                                  offset=0, repos="rp_a,rp_b"))
+    assert mock_client[0][2]["repo_ids"] == ["rp_a", "rp_b"]
+
+
+# ── 边列表（GET /edges，v1.37）───────────────────────────────────────────
+
+
+def test_cmd_edges_forwards_filters(mock_client):
+    commands.cmd_edges(make_args("edges", node="n1", source="", target="n2",
+                                 relation="part_of", limit=50, offset=5,
+                                 repo="", repos="rp_a"))
+    name, args, kwargs = mock_client[0]
+    assert name == "list_edges"
+    assert kwargs == {"node_id": "n1", "source": "", "target": "n2",
+                      "relation": "part_of", "limit": 50, "offset": 5,
+                      "repo_id": "", "repo_ids": ["rp_a"]}
+
+
+# ── 库管理（11 个端点）──────────────────────────────────────────────────
+
+
+def test_cmd_repo_list(mock_client):
+    commands.cmd_repo(make_args("repo", action="list"))
+    assert mock_client[0][0] == "list_repos"
+
+
+def test_cmd_repo_show(mock_client):
+    commands.cmd_repo(make_args("repo", action="show", repo_id="rp_a"))
+    assert mock_client[0] == ("get_repo", ("rp_a",), {})
+
+
+def test_cmd_repo_create_maps_fields(mock_client):
+    commands.cmd_repo(make_args("repo", action="create", name="新库", group="工作",
+                                note="备注", root="D:/data/x", kind="external"))
+    name, args, kwargs = mock_client[0]
+    assert name == "create_repo"
+    assert kwargs == {"name": "新库", "group": "工作", "note": "备注",
+                      "root": "D:/data/x", "root_kind": "external"}
+
+
+def test_cmd_repo_update_only_sends_given_fields(mock_client):
+    commands.cmd_repo(make_args("repo", action="update", repo_id="rp_a", name="改",
+                                note="", group="", root="", managed=None))
+    assert mock_client[0] == ("update_repo", ("rp_a",), {"name": "改"})
+
+
+def test_cmd_repo_update_managed_flag(mock_client):
+    """--managed false → 休眠（不加载、不检索、不构图，文件不动）。"""
+    commands.cmd_repo(make_args("repo", action="update", repo_id="rp_a", name="",
+                                note="", group="", root="", managed="false"))
+    assert mock_client[0][2] == {"managed": False}
+
+
+def test_cmd_repo_update_requires_a_field(mock_client, capsys):
+    with pytest.raises(SystemExit) as ei:
+        commands.cmd_repo(make_args("repo", action="update", repo_id="rp_a", name="",
+                                    note="", group="", root="", managed=None))
+    assert ei.value.code == 1
+    assert "至少给一项" in capsys.readouterr().err
+
+
+def test_cmd_repo_lifecycle_actions(mock_client):
+    for action, method in (("delete", "delete_repo"), ("activate", "activate_repo"),
+                           ("refresh", "refresh_repo"), ("generate", "generate_repo")):
+        mock_client.clear()
+        commands.cmd_repo(make_args("repo", action=action, repo_id="rp_a"))
+        assert mock_client[0] == (method, ("rp_a",), {})
+
+
+def test_cmd_repo_adopt_defaults_to_filling_missing(mock_client):
+    commands.cmd_repo(make_args("repo", action="adopt", root="D:/half", name="半损",
+                                group="", no_missing=False))
+    name, args, kwargs = mock_client[0]
+    assert name == "adopt_repo"
+    assert kwargs == {"root": "D:/half", "name": "半损", "group": "",
+                      "adopt_missing": True}
+
+
+def test_cmd_repo_adopt_no_missing_flag(mock_client):
+    commands.cmd_repo(make_args("repo", action="adopt", root="D:/half", name="",
+                                group="", no_missing=True))
+    assert mock_client[0][2]["adopt_missing"] is False
+
+
+def test_cmd_repo_rebuild(mock_client):
+    commands.cmd_repo(make_args("repo", action="rebuild"))
+    assert mock_client[0][0] == "rebuild_repos"
+
+
+def test_cmd_repo_purge_requires_yes(mock_client, capsys):
+    """purge 会删库文件（后端先自动备份）：没有 --yes 一律拒绝执行。"""
+    with pytest.raises(SystemExit) as ei:
+        commands.cmd_repo(make_args("repo", action="purge", repo_id="rp_a", yes=False))
+    assert ei.value.code == 1
+    assert "--yes" in capsys.readouterr().err
+    assert mock_client == []  # 连请求都没发
+
+
+def test_cmd_repo_purge_with_yes(mock_client):
+    commands.cmd_repo(make_args("repo", action="purge", repo_id="rp_a", yes=True))
+    assert mock_client[0] == ("purge_repo", ("rp_a",), {})
+
+
+# ── 存储维护（5 个端点）─────────────────────────────────────────────────
+
+
+def test_cmd_maintenance_backup_with_note_and_repo(mock_client):
+    commands.cmd_maintenance(make_args("maintenance", action="backup", note="发版前",
+                                       repo="rp_a"))
+    assert mock_client[0] == ("maintenance_backup", (), {"note": "发版前", "repo_id": "rp_a"})
+
+
+def test_cmd_maintenance_backups(mock_client):
+    commands.cmd_maintenance(make_args("maintenance", action="backups", repo=""))
+    assert mock_client[0] == ("maintenance_backups", (), {"repo_id": ""})
+
+
+def test_cmd_maintenance_verify(mock_client):
+    commands.cmd_maintenance(make_args("maintenance", action="verify", repo="rp_a"))
+    assert mock_client[0] == ("maintenance_verify", (), {"repo_id": "rp_a"})
+
+
+def test_cmd_maintenance_ops_paging(mock_client):
+    commands.cmd_maintenance(make_args("maintenance", action="ops", limit=20, offset=40,
+                                       repo=""))
+    assert mock_client[0][2] == {"limit": 20, "offset": 40, "repo_id": ""}
+
+
+def test_cmd_maintenance_checkpoint(mock_client):
+    commands.cmd_maintenance(make_args("maintenance", action="checkpoint", repo=""))
+    assert mock_client[0] == ("maintenance_checkpoint", (), {"repo_id": ""})
+
+
+# ── 本地日志与回收站 ────────────────────────────────────────────────────
+
+
+def test_cmd_logs_forwards_filters(mock_client):
+    commands.cmd_logs(make_args("logs", kind="frontend", date="2026-10-17",
+                                level="error", keyword="超时", tail=50))
+    name, args, kwargs = mock_client[0]
+    assert name == "logs"
+    assert kwargs == {"kind": "frontend", "date": "2026-10-17", "level": "error",
+                      "keyword": "超时", "tail": 50}
+
+
+def test_cmd_trash_list_and_restore(mock_client):
+    commands.cmd_trash(make_args("trash", action="list", repo="rp_a"))
+    assert mock_client[0] == ("trash_list", (), {"repo_id": "rp_a"})
+
+    mock_client.clear()
+    commands.cmd_trash(make_args("trash", action="restore", kind="node",
+                                 item_id="n1", repo=""))
+    assert mock_client[0] == ("trash_restore", (), {"kind": "node", "item_id": "n1",
+                                                    "repo_id": ""})
+
+    # 整图留档（v1.42）：kind=graph 走同一恢复端点（后端为合并式补回）
+    mock_client.clear()
+    commands.cmd_trash(make_args("trash", action="restore", kind="graph",
+                                 item_id="graph-20261017-144222", repo="rp_a"))
+    assert mock_client[0] == ("trash_restore", (), {
+        "kind": "graph", "item_id": "graph-20261017-144222", "repo_id": "rp_a",
+    })
+
+
+# ── Agent 运维 ──────────────────────────────────────────────────────────
+
+
+def test_cmd_agent_logs(mock_client):
+    commands.cmd_agent(make_args("agent", action="logs", limit=10, full=True, repo=""))
+    assert mock_client[0] == ("agent_logs", (), {"limit": 10, "full": True})
+
+
+def test_cmd_agent_compensate_and_maintain(mock_client):
+    commands.cmd_agent(make_args("agent", action="compensate", repo="rp_a"))
+    assert mock_client[0] == ("agent_compensate", (), {"repo_id": "rp_a"})
+
+    mock_client.clear()
+    commands.cmd_agent(make_args("agent", action="maintain", mode="compress", repo=""))
+    assert mock_client[0] == ("agent_maintain", (), {"mode": "compress", "repo_id": ""})
+
+
+# ── 配置探测（POST /settings/models，v1.34）──────────────────────────────
+
+
+def test_cmd_config_probe(mock_client):
+    commands.cmd_config(make_args("config", action="probe", key="siliconflow",
+                                  value="", base_url="", api_key=""))
+    assert mock_client[0] == ("probe_models", (), {"provider": "siliconflow",
+                                                   "base_url": "", "api_key": ""})
+
+
+def test_formatter_probe_reports_error_without_4xx(capsys):
+    """探测失败不报 4xx：错误摘要必须显示出来（否则像"没模型"）。"""
+    from dpim_cli import formatter
+
+    text = formatter.probe_result({"models": [], "error": "AuthenticationError: bad key",
+                                   "elapsed_ms": 12})
+    assert "探测失败" in text and "AuthenticationError" in text
+    text = formatter.probe_result({"models": ["a", "b"], "error": "", "elapsed_ms": 30})
+    assert "可用模型 2 个" in text
+
+
+def test_formatter_trash_list_labels_graph_kind():
+    """整图留档（v1.42）必须显示成「整图」——旧实现是 `event ? 事件 : 节点`，
+    第三类会**冒充节点**（看起来像误删了一个节点）。"""
+    from dpim_cli import formatter
+
+    text = formatter.trash_list({
+        "dir": "D:/dpim/trash",
+        "items": [
+            {"kind": "graph", "id": "graph-20261017-144222", "size": 67967,
+             "archived_at": "2026-10-17T06:42:22+00:00",
+             "title": "整图留档：51 节点 / 56 边"},
+            {"kind": "event", "id": "e1", "size": 12,
+             "archived_at": "2026-10-17T06:00:00+00:00", "title": "一段原文"},
+        ],
+    })
+    assert "整图" in text
+    assert "整图留档：51 节点 / 56 边" in text
+    assert "事件" in text
+    assert "共 2 份" in text
+
+
+# ── status 分层统计取键修复（链 AD）─────────────────────────────────────
+
+
+def test_status_shows_real_breakdown():
+    """`/health` 的分项字段名是 `raw`/`indexed`/`system`…，不是 `status_raw`/`system_nodes`。
+
+    此前取错键 → 每个分项恒显示 0（看起来像"没有数据"）。
+    """
+    from dpim_cli import formatter
+
+    text = formatter.status({
+        "status": "unconfigured", "ai_available": False,
+        "ai_unavailable_reason": "未配置任何 AI 提供商（无 AI 模式）",
+        "version": "0.4.0", "active_repo_id": "rp_default",
+        "queue_depth": 0, "worker_running": True,
+        "layers": {
+            "event_line": {"total_events": 10, "raw": 0, "indexed": 0, "linked": 10,
+                           "failed": 0, "skipped": 0},
+            "knowledge_graph": {"total_nodes": 66, "system": 1, "interaction": 1,
+                                "data": 49},
+        },
+    })
+    assert "linked=10" in text
+    assert "system=1" in text and "data=49" in text
+    assert "rp_default" in text
+    assert "未配置任何 AI 提供商" in text

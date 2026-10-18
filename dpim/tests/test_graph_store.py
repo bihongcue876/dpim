@@ -112,6 +112,32 @@ class TestGraphStoreEdgeCRUD:
     async def test_remove_nonexistent_edge(self, graph_store_with_data: GraphStore):
         assert graph_store_with_data.remove_edge("nothing", "nowhere") is False
 
+    def test_list_edges_all(self, graph_store_with_data: GraphStore):
+        edges = graph_store_with_data.list_edges()
+        assert {(e["source"], e["target"]) for e in edges} == {("n1", "n2"), ("n1", "n3")}
+
+    def test_list_edges_node_id_hits_both_directions(self, graph_store_with_data: GraphStore):
+        """node_id 命中两侧：出边 + 入边（与 GET /nodes/{id} 的 edges 同口径）。"""
+        assert len(graph_store_with_data.list_edges(node_id="n1")) == 2  # 两条出边
+        inbound = graph_store_with_data.list_edges(node_id="n2")
+        assert [(e["source"], e["target"]) for e in inbound] == [("n1", "n2")]
+
+    def test_list_edges_source_target_relation_filters(self, graph_store_with_data: GraphStore):
+        """v1.37 新增 source / target / relation 筛选。"""
+        gs = graph_store_with_data
+        assert [e["target"] for e in gs.list_edges(source="n1")] == ["n2", "n3"]
+        assert [e["source"] for e in gs.list_edges(target="n3")] == ["n1"]
+        assert gs.list_edges(relation="has_concept") == [
+            {
+                "source": "n1",
+                "target": "n2",
+                "relation": "has_concept",
+                "evidence_event_id": "e1",
+            }
+        ]
+        assert gs.list_edges(source="n1", relation="related_to")[0]["target"] == "n3"
+        assert gs.list_edges(source="n2") == []
+
 
 class TestGraphStoreReverseIndex:
     @pytest.mark.asyncio
@@ -192,9 +218,9 @@ class TestGraphStorePersistence:
 
     @pytest.mark.asyncio
     async def test_load_corrupt_json_recovers_from_backup(self, db, tmp_path):
-        """容错：主文件损坏 → 自动从 .json.bak 快照恢复"""
+        """容错：主文件损坏 → 自动从 `.bak.1` 快照恢复"""
         json_path = tmp_path / "graph.json"
-        # 先正常保存一次生成 .bak
+        # 先正常保存一次生成第一代备份
         gs1 = GraphStore(db, json_path=str(json_path))
         await gs1.load()
         node = GraphNode(
@@ -223,12 +249,12 @@ class TestGraphStorePersistence:
 
     @pytest.mark.asyncio
     async def test_load_success_creates_backup(self, db, tmp_path):
-        """容错：正常加载后留存 .json.bak 快照，供下次损坏时恢复"""
+        """容错：正常加载后留存 `.bak.1` 快照，供下次损坏时恢复"""
         json_path = tmp_path / "graph.json"
         json_path.write_text('{"nodes": {}, "edges": []}', encoding="utf-8")
         gs = GraphStore(db, json_path=str(json_path))
         await gs.load()
-        assert json_path.with_suffix(".json.bak").exists()
+        assert (tmp_path / "graph.json.bak.1").exists()
 
     @pytest.mark.asyncio
     async def test_flush_writes_when_dirty(self, db, tmp_path):
@@ -627,3 +653,76 @@ class TestGraphStoreReconcile:
         ))
         assert await graph_store.reconcile(event_store) == 0
         assert graph_store.get_node("ok").source_refs[0].valid is True
+
+
+class TestDanglingEndpoints:
+    """v1.42：端点不存在的边不再让 NetworkX 造出无 data 的空壳节点。
+
+    实测背景（活动库）：`graph.json` 里 51 个真节点 / 56 条边，15 个端点不在 `nodes`
+    中 → 内存图 66 个节点（`/health` 报 66），而 `GET /nodes` / `node_fts` 只有 51；
+    且 `save()` 不写空壳节点、却照写它们的边 → 每次加载都把空壳重新造出来（自续循环）。
+    """
+
+    @pytest.mark.asyncio
+    async def test_add_edge_rejects_unknown_endpoints(self, graph_store: GraphStore):
+        """拒绝 + 留痕：返回 False，不建节点、不计边、不污染计数。"""
+        graph_store.add_node(GraphNode(
+            node_id="n1", title="A", content="c", node_type=NodeType.data,
+            source_refs=[], confidence=0.5, metadata=NodeMetadata(evidence_quote="c"),
+        ))
+        assert graph_store.add_edge(GraphEdge(
+            source="n1", target="ghost", relation="r", evidence_event_id="e1",
+        )) is False
+        assert graph_store.get_node("ghost") is None      # 没有空壳节点
+        assert graph_store.total_nodes() == 1
+        assert graph_store.total_edges() == 0
+        assert graph_store.get_edge("n1", "ghost") is None
+
+    @pytest.mark.asyncio
+    async def test_add_edge_accepts_known_endpoints(self, graph_store: GraphStore):
+        for nid in ("n1", "n2"):
+            graph_store.add_node(GraphNode(
+                node_id=nid, title=nid, content="c", node_type=NodeType.data,
+                source_refs=[], confidence=0.5, metadata=NodeMetadata(evidence_quote="c"),
+            ))
+        assert graph_store.add_edge(GraphEdge(
+            source="n1", target="n2", relation="r", evidence_event_id="e1",
+        )) is True
+        assert graph_store.total_edges() == 1
+
+    @pytest.mark.asyncio
+    async def test_load_skips_dangling_edges_and_cleans_file(
+        self, db, tmp_path
+    ):
+        """文件里有悬空边 → 加载时跳过 + 计数 + 标脏；落盘后文件即干净。"""
+        path = tmp_path / "graph.json"
+        node = GraphNode(
+            node_id="n1", title="A", content="c", node_type=NodeType.data,
+            source_refs=[], confidence=0.5, metadata=NodeMetadata(evidence_quote="c"),
+        )
+        path.write_text(json.dumps({
+            "format_version": 1,
+            "nodes": {"n1": node.model_dump()},
+            "edges": [
+                {"source": "n1", "target": "ghost", "relation": "r",
+                 "evidence_event_id": "e1"},
+                {"source": "n1", "target": "n1", "relation": "self",
+                 "evidence_event_id": "e1"},
+            ],
+        }, ensure_ascii=False), encoding="utf-8")
+
+        gs = GraphStore(db, json_path=str(path))
+        await gs.load()
+
+        assert gs.total_nodes() == 1          # 不再被空壳撑到 3
+        assert gs.total_edges() == 1          # 自环那条两端都在 nodes 里，保留
+        assert gs.dropped_dangling_edges == 1
+        assert gs.dirty is True               # 标脏 → 下次落盘清除文件里的残留
+
+        await gs.save()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert [e["source"] for e in raw["edges"]] == ["n1"]
+        assert all(
+            e["source"] in raw["nodes"] and e["target"] in raw["nodes"]
+            for e in raw["edges"]
+        )

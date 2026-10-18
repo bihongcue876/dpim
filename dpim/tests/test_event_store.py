@@ -3,6 +3,44 @@ import pytest
 from core.event_store import EventStore, _content_hash, _make_event_id
 
 
+class TestUnlinkGraphRefs:
+    """v1.42：整图清空后撤销「事件 → 图节点」派生链接。
+
+    不撤销的后果是双重的：概览台一直显示「已入图 N」（谎报），而 `linked` 不在补偿
+    队列（raw/indexed）里 → 图再也长不回来。
+    """
+
+    @pytest.mark.asyncio
+    async def test_clears_refs_and_relinks(self, event_store):
+        eid, _ = await event_store.insert_event("已入图的事件", "data")
+        await event_store.update_status(eid, "linked", graph_refs=["n1", "n2"])
+        other, _ = await event_store.insert_event("另一条已入图的事件", "data")
+        await event_store.update_status(other, "linked", graph_refs=["n3"])
+
+        assert await event_store.unlink_graph_refs() == {"cleared": 2, "relinked": 2}
+        for e in (eid, other):
+            ev = await event_store.get(e)
+            assert ev["status"] == "indexed"
+            assert (ev["graph_refs"] or "") in ("", "[]")
+
+    @pytest.mark.asyncio
+    async def test_noop_when_nothing_linked(self, event_store):
+        eid, _ = await event_store.insert_event("只是待处理", "data")
+        assert await event_store.unlink_graph_refs() == {"cleared": 0, "relinked": 0}
+        assert (await event_store.get(eid))["status"] == "indexed"
+
+    @pytest.mark.asyncio
+    async def test_clears_refs_on_non_linked_event(self, event_store):
+        """状态不是 linked 但残留引用的（节点被单独删过）同样要清干净。"""
+        eid, _ = await event_store.insert_event("残留引用", "data")
+        await event_store.update_status(eid, "indexed", graph_refs=["gone"])
+
+        assert await event_store.unlink_graph_refs() == {"cleared": 1, "relinked": 0}
+        ev = await event_store.get(eid)
+        assert ev["status"] == "indexed"
+        assert (ev["graph_refs"] or "") in ("", "[]")
+
+
 class TestEventId:
     def test_format(self):
         eid = _make_event_id()

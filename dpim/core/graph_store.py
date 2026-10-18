@@ -3,34 +3,65 @@
 import json
 import logging
 import os
-import shutil
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
 import networkx as nx
 
+from core.atomic import atomic_write_text, backup_candidates, backup_file
 from core.config import settings
 from core.database import Database
+from core.graph_ops import (
+    count_ops,
+    diff_ops,
+    load_all_ops,
+    record_ops,
+    replay,
+    snapshot_graph,
+)
 from core.models import GraphEdge, GraphNode, SourceRef
 
 logger = logging.getLogger(__name__)
 
 # 图层文件体量上限（v1.28 T0-1）：超限视为损坏走留档/拒绝写入，防异常膨胀拖垮内存
 MAX_GRAPH_BYTES = 64 * 1024 * 1024
+# 图层文件格式版本（写进 graph.json）：格式演进时识别并拒绝读取更高版本
+GRAPH_FORMAT_VERSION = 1
 # 节点合并护栏（v1.28 T0-2）：content 追加与源证并集上限，防反复合并致节点无限膨胀
 _MAX_NODE_CONTENT = 20_000
 _MAX_SOURCE_REFS = 500
 
 
-def _quarantine_corrupt(path: Path) -> None:
-    """损坏原件留档改名（T0-1）：绝不用空图覆盖可恢复数据。
+def _cap_source_refs(node: GraphNode, node_id: str) -> None:
+    """源证上限护栏：超出则截断最旧并**留痕**（静默丢溯源信息不可接受）。"""
+    if len(node.source_refs) > _MAX_SOURCE_REFS:
+        dropped = len(node.source_refs) - _MAX_SOURCE_REFS
+        logger.warning(
+            "节点 %s 源证 %d 条超过上限 %d，截断最旧 %d 条（溯源信息丢失）",
+            node_id, len(node.source_refs), _MAX_SOURCE_REFS, dropped,
+        )
+        node.source_refs = node.source_refs[-_MAX_SOURCE_REFS:]
 
-    主文件与备份均不可读（或超体量上限）时，把原件改名留存后以空图启动；
-    图层是派生读模型，可从线层重建，但原件必须给用户留观察与手工抢救的余地。
+
+def _cap_content(node: GraphNode, node_id: str) -> None:
+    """内容上限护栏：超出则截断并**留痕**（原文仍在事件层可追溯）。"""
+    if len(node.content) > _MAX_NODE_CONTENT:
+        logger.warning(
+            "节点 %s 内容 %d 字超过上限 %d，已截断（原文仍在事件层）",
+            node_id, len(node.content), _MAX_NODE_CONTENT,
+        )
+        node.content = node.content[:_MAX_NODE_CONTENT]
+
+
+def _quarantine_corrupt(path: Path, label: str = "corrupt") -> None:
+    """原件留档改名（T0-1）：绝不用空图覆盖可恢复数据。
+
+    主文件与备份均不可读（或超体量上限/格式版本更高）时，把原件改名留存，
+    再尝试从 `graph_ops` 重放恢复（P4）；仍不可恢复才以空图启动。
+    原件必须给用户留观察与手工抢救的余地。
     """
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    target = path.with_name(f"{path.name}.corrupt-{stamp}")
+    target = path.with_name(f"{path.name}.{label}-{stamp}")
     try:
         os.replace(path, target)
         logger.warning("graph.json 不可用（损坏/超限），原件已留档 %s，以空图启动", target)
@@ -45,9 +76,20 @@ class GraphStore:
         self.graph = nx.DiGraph()
         self.event_to_nodes: dict[str, list[str]] = {}
         self._dirty = False
+        # 图层操作日志（graph_ops）：上次落盘快照 + 本批变更的「因何」标签
+        self._saved_nodes: dict[str, dict] = {}
+        self._saved_edges: dict[tuple[str, str], dict] = {}
+        self._op_reason = ""
+        # 上次 load 从 graph.json 里跳过的悬空边条数（v1.42）：端点不在 nodes 里的边，
+        # 加载时跳过并落盘清除；verify 会把它作为「文件级残留」报出来。
+        self.dropped_dangling_edges = 0
 
     async def load(self):
-        """从 graph.json 加载图谱（损坏自动回退 .bak / 空图），并重建 node_fts。
+        """从 graph.json 加载图谱，并重建 node_fts。
+
+        恢复链（依次尝试）：graph.json → `.bak` 备份 → **graph_ops 重放**（P4）→ 空图。
+        重放让「图层是派生 read-model」在故障路径上真正成立：文件丢了也能从操作日志复原。
+        `format_version` 高于本程序支持的版本时留档拒读，避免用旧格式覆盖新数据。
 
         node_fts 以内存图为唯一真源全量重建：解决手动编辑 graph.json、
         清空图谱、备份恢复后索引与图层不一致的问题（新节点检索不到、
@@ -55,27 +97,44 @@ class GraphStore:
         """
         path = Path(self.json_path)
         data: dict | None = None
+        # 图层文件是否不可用（不存在/损坏）——只有不可用才走重放恢复，
+        # 避免把「用户手动清空 graph.json」也当成故障而复活旧节点
+        file_unusable = not path.exists()
         if path.exists() and path.stat().st_size > MAX_GRAPH_BYTES:
             logger.error("graph.json 超过 %d 字节读取上限", MAX_GRAPH_BYTES)
             _quarantine_corrupt(path)
+            file_unusable = True
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError) as exc:
                 logger.error("graph.json 解析失败，尝试从备份恢复: %s", exc)
-                backup = path.with_suffix(".json.bak")
-                if backup.exists():
+                file_unusable = True
+                restored = False
+                for cand in backup_candidates(path):
                     try:
-                        data = json.loads(backup.read_text(encoding="utf-8"))
-                        logger.warning("已从备份 %s 恢复图谱", backup)
+                        data = json.loads(cand.read_text(encoding="utf-8"))
+                        logger.warning("已从备份 %s 恢复图谱", cand.name)
+                        file_unusable = False
+                        restored = True
+                        break
                     except (json.JSONDecodeError, OSError) as bexc:
-                        logger.error("graph.json 备份亦损坏，以空图启动: %s", bexc)
-                        _quarantine_corrupt(path)
-                        data = None
-                else:
-                    logger.error("graph.json 无可用备份，以空图启动（请检查存储文件）")
+                        logger.error("备份 %s 不可读: %s", cand.name, bexc)
+                if not restored:
+                    logger.error("graph.json 无可用备份（请检查存储文件）")
                     _quarantine_corrupt(path)
                     data = None
+        if data is not None:
+            version = int(data.get("format_version") or 0)
+            if version > GRAPH_FORMAT_VERSION:
+                logger.error(
+                    "graph.json 格式版本 %s 高于本程序支持的 %s，留档拒读"
+                    "（避免用旧格式覆盖新数据）",
+                    version, GRAPH_FORMAT_VERSION,
+                )
+                _quarantine_corrupt(path, label=f"newer-v{version}")
+                data = None
+                file_unusable = False  # 不用旧日志重放，防止覆盖更新格式的数据
         if data is not None:
             nodes_data = data.get("nodes", {})
             edges_data = data.get("edges", [])
@@ -83,20 +142,43 @@ class GraphStore:
                 for nid, ndata in nodes_data.items():
                     node = GraphNode(**ndata)
                     self.graph.add_node(nid, data=node)
+                dropped = 0
                 for edata in edges_data:
                     edge = GraphEdge(**edata)
+                    # v1.42：端点不在 nodes 里的边一律跳过。以前直接交给 NetworkX，
+                    # 而 `add_edge` 遇到未知端点会**自动造出无 data 的空壳节点**——
+                    # 于是节点数（/health）、node_fts 一致性、verify 口径全被污染，
+                    # 且每次加载都从文件里把空壳重新造出来（自续循环）。
+                    if edge.source not in self.graph or edge.target not in self.graph:
+                        dropped += 1
+                        continue
                     self.graph.add_edge(edge.source, edge.target, data=edge)
             except Exception as exc:
-                logger.error("图谱节点/边构建失败，以空图启动: %s", exc)
+                logger.error("图谱节点/边构建失败，尝试从操作日志重放: %s", exc)
                 _quarantine_corrupt(path)
                 self.graph.clear()
+                file_unusable = True
             else:
                 self._rebuild_reverse_index()
                 # 留存最近一次可用快照，供下次加载损坏时恢复
-                try:
-                    shutil.copy(path, path.with_suffix(".json.bak"))
-                except OSError as exc:
-                    logger.warning("备份 graph.json 失败（不影响运行）: %s", exc)
+                backup_file(path)
+                if dropped:
+                    self.dropped_dangling_edges = dropped
+                    logger.warning(
+                        "graph.json 有 %d 条边的端点不在 nodes 中（悬空边），已跳过；"
+                        "已标记脏位，本次落盘即从文件中清除（原件进 .bak）",
+                        dropped,
+                    )
+                    self._mark_dirty()
+        if file_unusable and self.graph.number_of_nodes() == 0:
+            restored = await self.replay_recover()
+            if restored:
+                logger.warning(
+                    "graph.json 不可用，已从 graph_ops 重放恢复 %d 个节点（待落盘）",
+                    restored,
+                )
+        # 基线快照：本进程启动时的图层状态，供 save() 计算差分 ops
+        self._saved_nodes, self._saved_edges = snapshot_graph(self.graph)
         # 统一收尾：node_fts 全量重建（含空图/损坏路径，清除残留索引）
         await self.rebuild_node_fts()
 
@@ -126,31 +208,98 @@ class GraphStore:
         for u, v, edata in self.graph.edges(data="data"):
             if edata is not None:
                 edges_data.append(edata.model_dump())
-        payload = {"nodes": nodes_data, "edges": edges_data}
+        payload = {
+            "format_version": GRAPH_FORMAT_VERSION,
+            "nodes": nodes_data,
+            "edges": edges_data,
+        }
         encoded = json.dumps(payload, ensure_ascii=False, indent=2)
         if len(encoded.encode("utf-8")) > MAX_GRAPH_BYTES:
             raise RuntimeError(
                 f"graph.json 序列化超过 {MAX_GRAPH_BYTES} 字节上限，拒绝写入"
                 "（请先压缩/清理图层，或调低节点规模）"
             )
-        fd, tmp = tempfile.mkstemp(suffix=".tmp", dir=path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(encoded)
-            os.replace(tmp, path)
-        except Exception:
-            os.unlink(tmp)
-            raise
+        # 备份必须在覆盖前做（否则备份到的是刚写的新内容 = 没有上一代）
+        had_backup = backup_file(path)
+        # 原子写（pid 临时名 + fsync + Windows 共享冲突重试），见 core/atomic.py
+        atomic_write_text(path, encoded)
         self._dirty = False
-        # 保存成功后同步留存快照：下次加载损坏时可从最近一次成功保存恢复
-        try:
-            shutil.copy(path, path.with_suffix(".json.bak"))
-        except OSError as exc:
-            logger.warning("备份 graph.json 失败（不影响运行）: %s", exc)
+        if not had_backup:
+            backup_file(path)  # 首次写入没有上一代：以当前内容建立第一代备份
+        # 落盘成功后把「相对上次落盘的差分」追加到 graph_ops（审计 + 重放依据）
+        await self._record_diff()
 
     def _mark_dirty(self) -> None:
         """标记脏位：任何内存图修改后必须调用，flush/save 据此落盘。"""
         self._dirty = True
+
+    def set_op_reason(self, reason: str) -> None:
+        """给下一批落盘变更打「因何」标签（审计用；save 后自动清空）。"""
+        self._op_reason = reason[:200]
+
+    async def _record_diff(self) -> None:
+        """把「上次落盘 → 当前」的差分追加到 graph_ops。
+
+        ops 写入失败只记 ERROR 不阻断：JSON 是主产物，ops 是审计/恢复依据，
+        不能因为日志表写失败就让调用方收到「写失败」的错觉。失败时不更新基线快照，
+        下一轮 save 会重试同一批差分（自愈）。
+        """
+        nodes, edges = snapshot_graph(self.graph)
+        ops = diff_ops(self._saved_nodes, self._saved_edges, nodes, edges)
+        if not ops:
+            self._op_reason = ""
+            return
+        try:
+            await record_ops(self.db.conn, ops, reason=self._op_reason)
+        except Exception:
+            logger.exception("graph_ops 写入失败（图层已落盘，重放依据缺 %d 条）", len(ops))
+            return
+        self._saved_nodes, self._saved_edges = nodes, edges
+        self._op_reason = ""
+
+    async def replay_recover(self) -> int:
+        """从 graph_ops 重放图层，返回恢复的节点数（无日志返回 0）。
+
+        用于 graph.json 丢失/损坏且无可用备份时的恢复；结果标记脏位，
+        由调用方（启动路径的 reconcile+flush 或显式 refresh）落盘成新的 graph.json。
+        """
+        try:
+            ops = await load_all_ops(self.db.conn)
+        except Exception as exc:
+            logger.warning("graph_ops 读取失败，跳过重放恢复: %s", exc)
+            return 0
+        if not ops:
+            return 0
+        nodes, edges = replay(ops)
+        self.graph.clear()
+        for nid, ndata in nodes.items():
+            try:
+                self.graph.add_node(nid, data=GraphNode(**ndata))
+            except Exception as exc:
+                logger.warning("重放节点 %s 失败（跳过）: %s", nid, exc)
+        skipped = 0
+        for (src, dst), edata in edges.items():
+            if src not in self.graph or dst not in self.graph:
+                skipped += 1
+                continue  # 端点缺失的边不重建（NetworkX 会造出无 data 的节点）
+            try:
+                self.graph.add_edge(src, dst, data=GraphEdge(**edata))
+            except Exception as exc:
+                logger.warning("重放边 %s→%s 失败（跳过）: %s", src, dst, exc)
+        if skipped:
+            logger.warning(
+                "重放恢复：%d 条边的端点不在重放结果里，未重建（不造空壳节点）", skipped
+            )
+        self._rebuild_reverse_index()
+        self._mark_dirty()
+        return self.graph.number_of_nodes()
+
+    async def ops_count(self) -> int:
+        """graph_ops 累计条数（health / verify 用）。"""
+        try:
+            return await count_ops(self.db.conn)
+        except Exception:
+            return 0
 
     def _rebuild_reverse_index(self):
         self.event_to_nodes.clear()
@@ -190,9 +339,26 @@ class GraphStore:
         self._mark_dirty()
         return True
 
-    def add_edge(self, edge: GraphEdge):
+    def add_edge(self, edge: GraphEdge) -> bool:
+        """加边（v1.42 起**拒绝未知端点**），返回是否真的加上。
+
+        以前直接交给 NetworkX：`add_edge` 遇到未知端点会**自动造出一个无 data 的
+        空壳节点**，于是 `/health` 的节点数、`node_fts` 一致性、`verify` 的口径
+        全被污染（实测活动库 51 个真节点被算成 66 个），且每次 load 都从文件里
+        把空壳重新造出来。端点缺失一律拒绝并留痕，绝不静默造节点。
+
+        生产调用方（`POST /edges`、AI 工具、回收站恢复）都已先校验端点存在，
+        故本守卫只拦「漏校验」的路径；调用方若忽略返回值，日志里有 WARNING。
+        """
+        if self.get_node(edge.source) is None or self.get_node(edge.target) is None:
+            logger.warning(
+                "边被拒绝（端点不存在）：%s→%s relation=%s（不造空壳节点）",
+                edge.source, edge.target, edge.relation,
+            )
+            return False
         self.graph.add_edge(edge.source, edge.target, data=edge)
         self._mark_dirty()
+        return True
 
     def remove_edge(self, source: str, target: str) -> bool:
         if self.graph.has_edge(source, target):
@@ -288,11 +454,11 @@ class GraphStore:
             return None
         if event_id not in {sr.event_id for sr in node.source_refs}:
             node.source_refs.append(SourceRef(event_id=event_id, valid=True, hash=content_hash))
-            # 源证上限护栏：保留最新 500 条，防反复合并无限膨胀
-            node.source_refs = node.source_refs[-_MAX_SOURCE_REFS:]
             self.event_to_nodes.setdefault(event_id, []).append(target_id)
+            _cap_source_refs(node, target_id)
         if content and content not in node.content:
-            node.content = (node.content + "\n" + content).strip()[:_MAX_NODE_CONTENT]
+            node.content = (node.content + "\n" + content).strip()
+            _cap_content(node, target_id)
         if confidence is not None and confidence > node.confidence:
             node.confidence = confidence
         self.graph.nodes[target_id]["data"] = node
@@ -327,12 +493,10 @@ class GraphStore:
                     target.source_refs.append(sr)
                     known.add(sr.event_id)
                     self.event_to_nodes.setdefault(sr.event_id, []).append(target_id)
-            target.source_refs = target.source_refs[-_MAX_SOURCE_REFS:]
             # ── content 合并（整段去重 + 上限护栏）──
             if src_node.content and src_node.content not in target.content:
-                target.content = (
-                    (target.content + "\n" + src_node.content).strip()[:_MAX_NODE_CONTENT]
-                )
+                target.content = (target.content + "\n" + src_node.content).strip()
+                _cap_content(target, target_id)
             # ── confidence 取 max ──
             if src_node.confidence > target.confidence:
                 target.confidence = src_node.confidence
@@ -356,6 +520,7 @@ class GraphStore:
             # ── 删除 source（GraphStore.remove_node 同步清理反向索引）──
             self.remove_node(src)
             removed.append(src)
+        _cap_source_refs(target, target_id)
         self.graph.nodes[target_id]["data"] = target
         self._mark_dirty()
         return removed
@@ -464,6 +629,9 @@ class GraphStore:
     def total_nodes(self) -> int:
         return self.graph.number_of_nodes()
 
+    def total_edges(self) -> int:
+        return self.graph.number_of_edges()
+
     def node_counts_by_type(self) -> dict[str, int]:
         counts: dict[str, int] = {"system": 0, "interaction": 0, "data": 0}
         for _, ndata in self.graph.nodes(data="data"):
@@ -483,13 +651,29 @@ class GraphStore:
             result.append(ndata.model_dump())
         return result
 
-    def list_edges(self, node_id: str | None = None) -> list[dict]:
-        """返回边列表，可选按节点 ID 筛选（含出边和入边）。"""
+    def list_edges(
+        self,
+        node_id: str | None = None,
+        source: str | None = None,
+        target: str | None = None,
+        relation: str | None = None,
+    ) -> list[dict]:
+        """返回边列表，可选筛选（v1.37 增 source/target/relation）。
+
+        `node_id` 命中**两侧**（出边 + 入边，与 `GET /nodes/{node_id}` 的 edges 同口径）。
+        返回顺序 = NetworkX 边迭代顺序（插入序），分页稳定性由调用方排序保证。
+        """
         result: list[dict] = []
         for s, t, edata in self.graph.edges(data="data"):
             if edata is None:
                 continue
             if node_id and node_id not in (s, t):
+                continue
+            if source and s != source:
+                continue
+            if target and t != target:
+                continue
+            if relation and edata.relation != relation:
                 continue
             result.append({
                 "source": s,

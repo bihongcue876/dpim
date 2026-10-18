@@ -172,6 +172,21 @@ class TestSearchRequest:
         assert req.limit == 20
         assert req.offset == 0
 
+    def test_default_hops_follow_runtime_setting(self, monkeypatch):
+        """v1.36：不传 max_hops 时取「图谱最大跳数」配置。
+
+        此前这里写死 2，运行时配置 `max_graph_hops` **没有任何代码读**——
+        界面上那个字段配了等于没配（死旋钮）。
+        """
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "max_graph_hops", 4)
+        assert SearchRequest(query="x").max_hops == 4
+        monkeypatch.setattr(settings, "max_graph_hops", 0)
+        assert SearchRequest(query="x").max_hops == 0
+        # 显式传入优先于配置
+        assert SearchRequest(query="x", max_hops=1).max_hops == 1
+
 
 class TestSearchResult:
     def test_minimal(self):
@@ -197,5 +212,5 @@ class TestSearchResponse:
 class TestHealthResponse:
     def test_defaults(self):
         h = HealthResponse(status="ok", ai_available=True, layers={})
-        assert h.version == "0.3.0"
+        assert h.version == "0.4.0"
         assert h.last_event_at == ""

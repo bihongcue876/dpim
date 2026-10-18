@@ -10,10 +10,14 @@ class AIState:
     """AI 可用性的线程安全封装。
 
     单例，所有模块通过 core.state.ai_state 访问。测试中可安全重置。
+
+    v1.34：带**原因**——「未配置」（没有 AI，无 AI 模式的默认运行态）与
+    「降级」（配好了但连不上）必须能区分，否则界面只能笼统说「AI 不可用」。
     """
 
     def __init__(self) -> None:
         self._available: bool = False
+        self._reason: str = ""
         self._lock = threading.Lock()
 
     @property
@@ -25,6 +29,20 @@ class AIState:
     def available(self, value: bool) -> None:
         with self._lock:
             self._available = value
+            if value:
+                self._reason = ""
+
+    @property
+    def reason(self) -> str:
+        """不可用原因（可用时为空串）。"""
+        with self._lock:
+            return self._reason
+
+    def set_state(self, available: bool, reason: str = "") -> None:
+        """原子设置「可用性 + 原因」（避免中间态被读到）。"""
+        with self._lock:
+            self._available = available
+            self._reason = "" if available else reason
 
 
 # 模块级单例

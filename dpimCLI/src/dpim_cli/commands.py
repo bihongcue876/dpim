@@ -36,6 +36,17 @@ def _call(client, method: str, *args_method, fmt: str = "table", **kwargs):
         sys.exit(1)
 
 
+def _repo(args) -> str:
+    """`--repo <id>` 单库作用域（缺省空串 = 活动库）。"""
+    return getattr(args, "repo", "") or ""
+
+
+def _repos(args) -> list[str]:
+    """`--repos a,b` 联查作用域（缺省空列表 = 不限定）。"""
+    raw = getattr(args, "repos", "") or ""
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
 # ── 命令处理函数 ──
 
 def cmd_status(args):
@@ -55,7 +66,7 @@ def cmd_state_key(args):
 def cmd_ingest(args):
     """写入事件。"""
     client = _client(args)
-    data = _call(client, "ingest", args.content, event_type=args.type)
+    data = _call(client, "ingest", args.content, event_type=args.type, repo_id=_repo(args))
     if _fmt(args) == "table":
         print(formatter.ingest_result(data, _fmt(args)))
     else:
@@ -69,7 +80,8 @@ def cmd_events(args):
                  type=getattr(args, "type", "") or "",
                  status=getattr(args, "status", "") or "",
                  limit=getattr(args, "limit", 20),
-                 offset=getattr(args, "offset", 0))
+                 offset=getattr(args, "offset", 0),
+                 repo_id=_repo(args), repo_ids=_repos(args))
     print(formatter.event_list(data, _fmt(args)))
 
 
@@ -80,7 +92,7 @@ def cmd_event(args):
     eid = args.event_id
 
     if action == "view":
-        data = _call(client, "get_event", eid)
+        data = _call(client, "get_event", eid, repo_id=_repo(args))
         print(formatter.event_detail(data, _fmt(args)))
     elif action == "edit":
         data = _call(client, "edit_event", eid, args.content)
@@ -105,7 +117,8 @@ def cmd_nodes(args):
     data = _call(client, "list_nodes",
                  type=getattr(args, "type", "") or "",
                  limit=getattr(args, "limit", 20),
-                 offset=getattr(args, "offset", 0))
+                 offset=getattr(args, "offset", 0),
+                 repo_id=_repo(args), repo_ids=_repos(args))
     print(formatter.node_list(data, _fmt(args)))
 
 
@@ -127,7 +140,7 @@ def cmd_node(args):
             action = "view"
 
     if action == "view":
-        data = _call(client, "get_node", args.node_id)
+        data = _call(client, "get_node", args.node_id, repo_id=_repo(args))
         print(formatter.node_detail(data, _fmt(args)))
     elif action == "create":
         data = _call(client, "create_node",
@@ -166,6 +179,20 @@ def cmd_edge(args):
         print(_ok(data, _fmt(args)))
 
 
+def cmd_edges(args):
+    """边列表（GET /edges，v1.37）：图谱页一次取全的读端点。"""
+    client = _client(args)
+    data = _call(client, "list_edges",
+                 node_id=getattr(args, "node", "") or "",
+                 source=getattr(args, "source", "") or "",
+                 target=getattr(args, "target", "") or "",
+                 relation=getattr(args, "relation", "") or "",
+                 limit=getattr(args, "limit", 200),
+                 offset=getattr(args, "offset", 0),
+                 repo_id=_repo(args), repo_ids=_repos(args))
+    print(formatter.edge_list(data, _fmt(args)))
+
+
 def cmd_search(args):
     """混合检索。"""
     client = _client(args)
@@ -178,7 +205,8 @@ def cmd_search(args):
                  source_filter=sf,
                  max_hops=getattr(args, "hops", 2),
                  limit=getattr(args, "limit", 20),
-                 offset=getattr(args, "offset", 0))
+                 offset=getattr(args, "offset", 0),
+                 repo_ids=_repos(args))
     print(formatter.search_results(data, _fmt(args)))
 
 
@@ -188,12 +216,12 @@ def cmd_feedback(args):
     accepted = getattr(args, "accept", False) or not getattr(args, "reject", False)
     if getattr(args, "reject", False):
         accepted = False
-    data = _call(client, "feedback", args.result_id, accepted)
+    data = _call(client, "feedback", args.result_id, accepted, repo_id=_repo(args))
     print(_ok(data, _fmt(args)))
 
 
 def cmd_config(args):
-    """配置管理 (list / set)。"""
+    """配置管理 (list / set / probe)。"""
     client = _client(args)
     action = getattr(args, "action", "list")
 
@@ -202,6 +230,152 @@ def cmd_config(args):
         print(formatter.settings(data, _fmt(args)))
     elif action == "set":
         data = _call(client, "update_settings", **{args.key: args.value})
+        print(_ok(data, _fmt(args)))
+    elif action == "probe":
+        # 联网探测某提供商的模型列表：探测失败**不报 4xx**，错误摘要放在 error 里
+        data = _call(client, "probe_models",
+                     provider=args.key,
+                     base_url=getattr(args, "base_url", "") or "",
+                     api_key=getattr(args, "api_key", "") or "")
+        print(formatter.probe_result(data, _fmt(args)))
+
+
+# ── 库管理（v1.29+）────────────────────────────────────────────────────────
+
+def cmd_repo(args):
+    """库管理：list / show / create / update / delete / activate / refresh /
+    generate / adopt / rebuild / purge。"""
+    client = _client(args)
+    action = getattr(args, "action", "list")
+    rid = getattr(args, "repo_id", "") or ""
+
+    if action == "list":
+        print(formatter.repo_list(_call(client, "list_repos"), _fmt(args)))
+    elif action == "show":
+        print(formatter.repo_detail(_call(client, "get_repo", rid), _fmt(args)))
+    elif action == "create":
+        data = _call(client, "create_repo",
+                     name=args.name,
+                     group=getattr(args, "group", "") or "",
+                     note=getattr(args, "note", "") or "",
+                     root=getattr(args, "root", "") or "",
+                     root_kind=getattr(args, "kind", "managed"))
+        print(_ok(data, _fmt(args)))
+    elif action == "update":
+        fields: dict = {}
+        for cli_key, api_key in (("name", "name"), ("note", "note"), ("group", "group"),
+                                 ("root", "root")):
+            value = getattr(args, cli_key, None)
+            if value:
+                fields[api_key] = value
+        managed = getattr(args, "managed", None)
+        if managed is not None:
+            fields["managed"] = str(managed).lower() in ("1", "true", "yes", "on")
+        if not fields:
+            print("错误: repo update 至少给一项（--name/--note/--group/--root/--managed）",
+                  file=sys.stderr)
+            sys.exit(1)
+        print(_ok(_call(client, "update_repo", rid, **fields), _fmt(args)))
+    elif action == "delete":
+        print(_ok(_call(client, "delete_repo", rid), _fmt(args)))
+    elif action == "activate":
+        print(_ok(_call(client, "activate_repo", rid), _fmt(args)))
+    elif action == "refresh":
+        print(formatter.out(_call(client, "refresh_repo", rid), _fmt(args)))
+    elif action == "generate":
+        print(_ok(_call(client, "generate_repo", rid), _fmt(args)))
+    elif action == "adopt":
+        data = _call(client, "adopt_repo",
+                     root=args.root,
+                     name=getattr(args, "name", "") or "",
+                     group=getattr(args, "group", "") or "",
+                     adopt_missing=not getattr(args, "no_missing", False))
+        print(_ok(data, _fmt(args)))
+    elif action == "rebuild":
+        print(formatter.out(_call(client, "rebuild_repos"), _fmt(args)))
+    elif action == "purge":
+        # 危险操作：删 memory.db + graph.json（先自动整库备份）→ 必须显式 --yes
+        if not getattr(args, "yes", False):
+            print("错误: repo purge 会删除该库的 memory.db 与 graph.json"
+                  "（后端会先自动做一次整库备份）。确认请加 --yes", file=sys.stderr)
+            sys.exit(1)
+        print(formatter.out(_call(client, "purge_repo", rid), _fmt(args)))
+
+
+# ── 存储维护（v1.30）──────────────────────────────────────────────────────
+
+def cmd_maintenance(args):
+    """存储维护：backup / backups / verify / ops / checkpoint。"""
+    client = _client(args)
+    action = getattr(args, "action", "verify")
+    rid = _repo(args)
+
+    if action == "backup":
+        data = _call(client, "maintenance_backup",
+                     note=getattr(args, "note", "") or "", repo_id=rid)
+        print(formatter.out(data, _fmt(args)))
+    elif action == "backups":
+        print(formatter.backup_list(_call(client, "maintenance_backups", repo_id=rid),
+                                    _fmt(args)))
+    elif action == "verify":
+        print(formatter.verify_result(_call(client, "maintenance_verify", repo_id=rid),
+                                      _fmt(args)))
+    elif action == "ops":
+        print(formatter.op_list(_call(client, "maintenance_ops",
+                                      limit=getattr(args, "limit", 100),
+                                      offset=getattr(args, "offset", 0),
+                                      repo_id=rid), _fmt(args)))
+    elif action == "checkpoint":
+        print(formatter.out(_call(client, "maintenance_checkpoint", repo_id=rid),
+                            _fmt(args)))
+
+
+# ── 本地日志与回收站（v1.31）──────────────────────────────────────────────
+
+def cmd_logs(args):
+    """翻看本地日志尾部（backend-*.log / frontend-*.log）。"""
+    client = _client(args)
+    data = _call(client, "logs",
+                 kind=getattr(args, "kind", "backend"),
+                 date=getattr(args, "date", "") or "",
+                 level=getattr(args, "level", "") or "",
+                 keyword=getattr(args, "keyword", "") or "",
+                 tail=getattr(args, "tail", 200))
+    print(formatter.logs_result(data, _fmt(args)))
+
+
+def cmd_trash(args):
+    """回收站：list / restore。"""
+    client = _client(args)
+    action = getattr(args, "action", "list")
+    rid = _repo(args)
+
+    if action == "list":
+        print(formatter.trash_list(_call(client, "trash_list", repo_id=rid), _fmt(args)))
+    elif action == "restore":
+        data = _call(client, "trash_restore",
+                     kind=getattr(args, "kind", "event"),
+                     item_id=args.item_id, repo_id=rid)
+        print(_ok(data, _fmt(args)))
+
+
+# ── Agent 运维 ────────────────────────────────────────────────────────────
+
+def cmd_agent(args):
+    """Agent 运维：logs / compensate / maintain。"""
+    client = _client(args)
+    action = getattr(args, "action", "logs")
+    rid = _repo(args)
+
+    if action == "logs":
+        print(formatter.agent_logs(_call(client, "agent_logs",
+                                         limit=getattr(args, "limit", 50),
+                                         full=getattr(args, "full", False)), _fmt(args)))
+    elif action == "compensate":
+        print(_ok(_call(client, "agent_compensate", repo_id=rid), _fmt(args)))
+    elif action == "maintain":
+        data = _call(client, "agent_maintain",
+                     mode=getattr(args, "mode", "update"), repo_id=rid)
         print(_ok(data, _fmt(args)))
 
 
