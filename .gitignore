@@ -21,12 +21,19 @@ dpim/htmlcov/
 
 # 环境变量（含 API Key）
 dpim/.env
+# .env 备份（本地部署文件，不入库；`.env.example` 是模板，照常入库）
+dpim/.env.bak*
 
 # 结构化配置（含 API Key，前端改配置写回此文件）
 dpim/dpim.json
+# 本地配置的备份（含明文密钥，绝不入库；dpim.json.bak-* 等）
+dpim/dpim.json.*
 
 # 运行期存储文件（SQLite + JSON 图谱）
 dpim/data/
+
+# 本地日志（前后端分文件，按天轮转）
+dpim/logs/
 
 # 前端项目
 dpimWebUI/node_modules/
@@ -64,4 +71,13 @@ docs/
 
 # Agent 本地协作引导（仅本地使用，不入库）
 AGENTS.md
+# AGENTS 历史分派表归档（本机文件，AGENTS.md 超指令预算后拆出）
+/AGENTS-历史分派表.md
 
+.dsh-vision-toolkit/
+
+# 本地数据副本（用户图数据的保护性留档，属数据不属代码，绝不入库）
+/graph-PROTECTED-*.json
+
+# 一次性探针脚本（历史遗留的本机工具，文件自身即写明「用完即删；不属于交付物」）
+/covplugin.py

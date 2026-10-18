@@ -1,127 +1,190 @@
-"""FastAPI 应用，23 个 REST 端点"""
+"""FastAPI 应用装配：lifespan / 中间件 / router 挂载。
 
+REST 端点按职责拆到 `interface/routers/*`（纯搬移：路径、方法、状态码、
+响应模型与拆分前逐一对应；v1.31 起端点总数 42）；共享状态（`db` / `event_store` /
+`graph_store` / `repos` / `orchestrator` / `compensator`）与共享工具在
+`interface/deps.py`——router 一律 `from interface import deps` 后在**调用时**
+读 `deps.xxx`，测试替换这些全局即刻生效。
+
+本模块保留：`app`、`lifespan`、两个 HTTP 中间件、`_flush_loaded_repos`
+（app 级写收口）。`from interface.api import app` 仍是唯一应用入口
+（`main.py` / `uvicorn interface.api:app` / 测试均依赖它）。
+"""
+
+import asyncio
+import contextlib
 import logging
 import secrets
-import uuid
+import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from controller.compensator import Compensator
 from controller.orchestrator import Orchestrator
-from core.commands import parse_command, usage_text
 from core.config import settings
 from core.database import Database
 from core.event_store import EventStore
+from core.graph_ops import compact_ops
 from core.graph_store import GraphStore
-from core.llm import get_llm_logs
-from core.models import (
-    CreateEdgeRequest,
-    CreateNodeRequest,
-    DeleteNodeRequest,
-    EdgeInfo,
-    EventListItem,
-    EventListResponse,
-    EventStatus,
-    FeedbackRequest,
-    GraphEdge,
-    HealthResponse,
-    IngestRequest,
-    IngestResponse,
-    ModifyEventRequest,
-    ModifyEventStatusRequest,
-    ModifyNodeRequest,
-    NodeDetailResponse,
-    NodeListItem,
-    NodeListResponse,
-    QueueMessage,
-    RepoCreateRequest,
-    RepoInfo,
-    RepoListResponse,
-    RepoUpdateRequest,
-    SearchRequest,
-    SearchResponse,
-    SettingsResponse,
-    SettingsUpdateRequest,
-    StateHashResponse,
+from core.logging_setup import setup_file_logging
+from core.repos import RepoManager
+from core.state import refresh_key
+from core.trash import prune_trash
+from interface import deps
+from interface.routers import (
+    agent_router,
+    events_router,
+    logs_router,
+    maintenance_router,
+    nodes_router,
+    query_router,
+    repos_router,
+    settings_router,
+    trash_router,
 )
-from core.repos import RepoManager, fuse_joint_results
-from core.search import search as hybrid_search
-from core.security import (
-    mask_provider_secret,
-    mask_secret,
-    resolve_provider_secret,
-    resolve_secret,
-)
-from core.state import ai_state, get_key, refresh_key
 
 logger = logging.getLogger(__name__)
 
-# 事件状态转换白名单：raw→linked 等绕过管线的转换一律拒绝
-ALLOWED_EVENT_TRANSITIONS = {
-    ("raw", "indexed"),
-    ("indexed", "linked"),
-    ("indexed", "failed"),
-    ("indexed", "skipped"),
-    ("failed", "indexed"),
-    ("failed", "skipped"),
-    ("skipped", "indexed"),
-    ("skipped", "failed"),
-}
+# 保留策略检查节流（秒）：压实/清理都是「看一眼再决定动不动」的廉价操作，
+# 没必要跟着 WAL 周期（默认 300s）跑——每小时一次足够，且启动时先跑一次。
+_RETENTION_EVERY_SECONDS = 3600
 
 
-def _ok(**extra: Any) -> dict[str, Any]:
-    """统一成功响应信封：所有简单端点返回 status=ok + message + 可选字段。"""
-    return {"status": "ok", "message": "ok", **extra}
+async def _run_retention_once() -> dict[str, int]:
+    """对所有已加载库跑一轮保留策略（v1.39）：graph_ops 压实 + 回收站过期留档清理。
+
+    **压实而非截断**：`graph_ops` 是「graph.json 丢失/损坏且无备份时的重放恢复依据」，
+    直接删老 op 会让重放只能还原后半段（恢复不完整、`verify` 恒红）——`compact_ops`
+    把最老明细换成等价快照，重放结果不变。回收站则按年龄清（留档是已删数据的最后一份副本）。
+
+    失败只记日志不抛出：这是后台卫生工作，绝不该影响服务可用性。
+    """
+    out = {"repos": 0, "compacted": 0, "ops_removed": 0, "trash_removed": 0}
+    if deps.repos is None:
+        return out
+    for entry in list(deps.repos.entries.values()):
+        out["repos"] += 1
+        try:
+            result = await compact_ops(entry.db.conn, keep=settings.graph_ops_retention)
+            if result["compacted"]:
+                out["compacted"] += 1
+                out["ops_removed"] += result["removed"]
+        except Exception:
+            logger.exception("graph_ops 压实失败（库 %s，继续）", entry.repo_id)
+        try:
+            pruned = prune_trash(entry.db.db_path, settings.trash_retention_days)
+            out["trash_removed"] += pruned["removed"]
+        except Exception:
+            logger.exception("回收站清理失败（库 %s，继续）", entry.repo_id)
+    return out
 
 
-db: Database | None = None
-event_store: EventStore | None = None
-graph_store: GraphStore | None = None
-repos: RepoManager | None = None
-orchestrator: Orchestrator | None = None
-compensator: Compensator | None = None
+async def _storage_housekeeping_loop() -> None:
+    """周期性存储卫生：保留策略（压实/清理）+ WAL 超阈值 checkpoint(TRUNCATE)。
+
+    ① 保留策略（v1.39）：`graph_ops` 表与 `trash/` 目录此前**只增不减**。并入本循环
+    （两者都是「看一眼再决定动不动」的廉价操作，共用一次遍历已加载库的开销），
+    另有节流——最多每 `_RETENTION_EVERY_SECONDS` 跑一次，启动时先跑一次。
+    ② WAL 治理（P4）：此前全仓没有任何 checkpoint → 长期运行 WAL 无界增长；
+    只做「超阈值才动」，避免频繁截断影响写性能。
+    """
+    last_retention = 0.0
+    first_pass = True
+    while True:
+        now = time.time()
+        if now - last_retention >= _RETENTION_EVERY_SECONDS:
+            last_retention = now
+            try:
+                stats = await _run_retention_once()
+                # 启动那一轮**无论有没有动作都留一行**（否则「跑过了」无从查证）；
+                # 之后只在真的压实/清理时记，避免每小时刷一行噪声
+                if stats["compacted"] or stats["trash_removed"] or first_pass:
+                    logger.info(
+                        "保留策略：检查 %d 个库（保留 op %d 条 / 留档 %d 天）→ "
+                        "压实 %d 个库（压掉 %d 条 op）/ 清理过期留档 %d 份",
+                        stats["repos"], settings.graph_ops_retention,
+                        settings.trash_retention_days, stats["compacted"],
+                        stats["ops_removed"], stats["trash_removed"],
+                    )
+                first_pass = False
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("保留策略轮次异常（继续）")
+        await asyncio.sleep(max(30, settings.wal_checkpoint_interval))
+        try:
+            entries = (
+                list(deps.repos.entries.values()) if deps.repos is not None else []
+            )
+            for entry in entries:
+                try:
+                    size = await entry.db.wal_size()
+                    if size <= settings.wal_checkpoint_bytes:
+                        continue
+                    busy, log_frames, done = await entry.db.checkpoint("TRUNCATE")
+                    logger.info(
+                        "WAL 检查点 %s: 触发阈值=%d 当前=%d busy=%d 帧=%d/%d",
+                        entry.repo_id, settings.wal_checkpoint_bytes, size,
+                        busy, log_frames, done,
+                    )
+                except Exception:
+                    logger.exception("WAL 检查点失败（库 %s，继续）", entry.repo_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("WAL 治理循环异常（继续）")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db, event_store, graph_store, repos, orchestrator, compensator
-    db = Database()
-    await db.connect()
-    event_store = EventStore(db)
+    # 本地日志系统（前后端分文件）：最先就位，启动期失败也能落到文件里
+    setup_file_logging()
+    deps.db = Database()
+    await deps.db.connect()
+    deps.event_store = EventStore(deps.db)
     # 启动自愈：events_fts 全量重建（T0-3，修「事件存在但检索不到」遗留）
-    await event_store.rebuild_fts()
-    graph_store = GraphStore(db)
-    await graph_store.load()
+    await deps.event_store.rebuild_fts()
+    deps.graph_store = GraphStore(deps.db)
+    await deps.graph_store.load()
     # 启动自愈：图 source_refs 与事件表现状对齐（悬空/漂移源证置 invalid）
-    await graph_store.reconcile(event_store)
-    await graph_store.flush()
+    await deps.graph_store.reconcile(deps.event_store)
+    await deps.graph_store.flush()
     # 库管理（v1.29）：现行三件套绑定为默认库（external 登记，零移动迁移），
     # 再读登记表打开其它受管库
-    repos = RepoManager()
-    repos.bind_default(db, event_store, graph_store)
-    await repos.initialize()
-    orchestrator = Orchestrator(db, event_store, graph_store, repos=repos)
-    orchestrator.start()
-    compensator = Compensator(event_store, graph_store, orchestrator.enqueue, repos=repos)
-    compensator.start()
-    yield
-    if compensator:
-        await compensator.stop()
-    if orchestrator:
-        await orchestrator.stop()
-    if repos:
-        await repos.close()
-    if graph_store and graph_store.dirty:
-        await graph_store.save()
-    if db:
-        await db.close()
+    deps.repos = RepoManager()
+    deps.repos.bind_default(deps.db, deps.event_store, deps.graph_store)
+    await deps.repos.initialize()
+    deps.orchestrator = Orchestrator(
+        deps.db, deps.event_store, deps.graph_store, repos=deps.repos
+    )
+    deps.orchestrator.start()
+    deps.compensator = Compensator(
+        deps.event_store, deps.graph_store, deps.orchestrator.enqueue, repos=deps.repos
+    )
+    deps.compensator.start()
+    # 存储卫生周期任务（P4 + v1.39）：保留策略（graph_ops 压实 / 回收站清理）+ WAL 检查点
+    wal_task = asyncio.create_task(_storage_housekeeping_loop())
+    try:
+        yield
+    finally:
+        wal_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await wal_task
+        if deps.compensator:
+            await deps.compensator.stop()
+        if deps.orchestrator:
+            await deps.orchestrator.stop()
+        if deps.repos:
+            await deps.repos.close()
+        if deps.graph_store and deps.graph_store.dirty:
+            await deps.graph_store.save()
+        if deps.db:
+            await deps.db.close()
 
 
-app = FastAPI(title="DPIM", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="DPIM", version="0.4.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -144,1101 +207,86 @@ async def auth_guard(request, call_next):
     return await call_next(request)
 
 
-def _resolve_repo(repo_id: str | None = None):
-    """解析册条目（v1.29）：repo_id 空 = 活动库；未初始化/未加载返回 None。"""
-    if repos is None:
-        return None
-    return repos.resolve(repo_id or None)
-
-
-def _stores(repo_id: str | None = None):
-    """解析册三件套：repo_id 空 = 活动库；未知/未加载 → 404。"""
-    entry = _resolve_repo(repo_id)
-    if entry is not None:
-        return entry.event_store, entry.graph_store
-    if repos is not None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Repo not found or not loaded: {repo_id or '(active)'}",
-        )
-    if not event_store or not graph_store:
-        raise HTTPException(status_code=503, detail="Storage not initialized")
-    return event_store, graph_store
-
-
-def _command_response(message: str) -> IngestResponse:
-    """指令响应：未创建事件，message 携带面向用户的执行结果。"""
-    return IngestResponse(
-        event_id="",
-        status=EventStatus.skipped,
-        message=message,
-        command_triggered=True,
-    )
-
-
-@app.post("/ingest", response_model=IngestResponse)
-async def ingest(body: IngestRequest):
-    es, gs = _stores(body.repo_id or None)
-    entry = _resolve_repo(body.repo_id or None)
-    repo_id = entry.repo_id if entry else ""
-    # 对话指令（^compress、^merge、^data 等）：确定层同步执行；语义层入队；
-    # 均不落库为事件（存储类指令除外——它本身就是写事件）。
-    cmd = parse_command(body.content)
-    if cmd is not None:
-        return await _dispatch_command(cmd)
-    eid, status = await es.insert_event(body.content, body.event_type.value)
-    refresh_key()
-    # Agent 管线启用时，入队让管线即时处理（异步，不阻塞写入返回）
-    if settings.agent_mode == "pipeline" and ai_state.available and orchestrator:
-        ingest_payload = {"event_id": eid}
-        if repo_id:
-            ingest_payload["repo_id"] = repo_id
-        await orchestrator.enqueue(
-            QueueMessage(
-                type="ingest",
-                payload=ingest_payload,
-                timestamp=datetime.now(timezone.utc).timestamp(),
-            )
-        )
-    return IngestResponse(event_id=eid, status=status, message="Event ingested")
-
-
-async def _dispatch_command(cmd: Any) -> IngestResponse:
-    es, gs = _stores()
-    # 指令作用域 = 当前活动库：入队消息须携带 repo_id，orchestrator 才能路由到同册
-    entry = _resolve_repo()
-    repo_id = entry.repo_id if entry else ""
-
-    def _payload(extra: dict) -> dict:
-        return {"repo_id": repo_id, **extra} if repo_id else extra
-
-    # ── ^help：只返回用法说明，不动数据 ──
-    if cmd.kind == "help":
-        return _command_response(usage_text())
-    # ── 用法错误：只提示，不动数据 ──
-    if cmd.hints:
-        return _command_response(f"未执行：{cmd.hints[0]}")
-
-    # ── 存储类：显式类型写事件（纯存储，AI 不可用也可用）──
-    if cmd.kind == "store":
-        eid, status = await es.insert_event(cmd.content, cmd.event_type)
-        refresh_key()
-        if settings.agent_mode == "pipeline" and ai_state.available and orchestrator:
-            await orchestrator.enqueue(
-                QueueMessage(
-                    type="ingest",
-                    payload=_payload({"event_id": eid}),
-                    timestamp=datetime.now(timezone.utc).timestamp(),
-                )
-            )
-        logger.info("Command store type=%s event=%s", cmd.event_type, eid)
-        return IngestResponse(
-            event_id=eid,
-            status=status,
-            message=f"已按指令存入（{cmd.event_type}）",
-        )
-
-    # ── 压缩（语义层）：需 AI 可用 + 管线启用，否则明示拒绝 ──
-    if cmd.kind == "compress":
-        if settings.agent_mode != "pipeline" or not ai_state.available:
-            return _command_response(
-                "压缩指令未执行：AI 不可用或 Agent 管线未启用"
-                "（^data 等纯存储指令不受影响）"
-            )
-        if orchestrator is None:
-            raise HTTPException(status_code=503, detail="Orchestrator not initialized")
-        if cmd.scope and gs.get_node(cmd.scope) is None:
-            return _command_response(f"压缩指令未执行：限定节点不存在 {cmd.scope}")
-        # 候选扫描前移到响应前（纯本地、毫秒级、无 LLM）：无候选立即明示
-        # 「无需压缩」而非入队后静默空转——保守全图压缩的正确结果也要可感知
-        from controller.tools.sys_tools import scan_maintenance_candidates
-
-        candidates = scan_maintenance_candidates(gs)
-        scope = cmd.scope
-        if scope:
-            candidates = {
-                "merge_candidates": [
-                    c for c in candidates["merge_candidates"]
-                    if scope in (c["target_id"], c["source_id"])
-                ],
-                "zombie_nodes": [
-                    c for c in candidates["zombie_nodes"] if c["node_id"] == scope
-                ],
-                "low_conf_isolated": [
-                    c for c in candidates["low_conf_isolated"] if c["node_id"] == scope
-                ],
-                "compress_candidates": [
-                    c for c in candidates["compress_candidates"] if c["node_id"] == scope
-                ],
-                "oversplit_events": [
-                    c for c in candidates["oversplit_events"]
-                    if scope in {n["node_id"] for n in c["nodes"]}
-                ],
-                "isolated_nodes": [
-                    c for c in candidates["isolated_nodes"] if c["node_id"] == scope
-                ],
-                "link_candidates": [
-                    c for c in candidates.get("link_candidates", [])
-                    if scope in (c["node_a"], c["node_b"])
-                ],
-            }
-        n_merge = len(candidates["merge_candidates"])
-        n_zombie = len(candidates["zombie_nodes"])
-        n_lowconf = len(candidates["low_conf_isolated"])
-        n_compress = len(candidates["compress_candidates"])
-        n_oversplit = len(candidates["oversplit_events"])
-        n_isolated = len(candidates["isolated_nodes"])
-        n_link = len(candidates.get("link_candidates", []))
-        if not any([n_merge, n_zombie, n_lowconf, n_compress, n_oversplit, n_isolated, n_link]):
-            scope_note = f"节点 {scope}" if scope else "全图"
-            return _command_response(
-                f"无需压缩：{scope_note}扫描未发现候选"
-                "（无重合节点对 / 僵尸节点 / 冗长内容 / 过碎事件 / 待连线对）——已足够简练"
-            )
-        await orchestrator.enqueue(
-            QueueMessage(
-                type="maintain_graph",
-                payload=_payload({"scope": scope} if scope else {}),
-                timestamp=datetime.now(timezone.utc).timestamp(),
-            )
-        )
-        refresh_key()
-        logger.info(
-            "Command compress (scope=%s) -> maintain_graph "
-            "(merge=%d zombie=%d lowconf=%d compress=%d oversplit=%d isolated=%d link=%d)",
-            scope or "*", n_merge, n_zombie, n_lowconf, n_compress, n_oversplit,
-            n_isolated, n_link,
-        )
-        scope_note = f"（限定节点 {scope}）" if scope else ""
-        return _command_response(
-            f"压缩指令已入队{scope_note}：发现候选（重合对 {n_merge} / "
-            f"僵尸 {n_zombie} / 孤立低置信 {n_lowconf} / 冗长可压缩 {n_compress} / "
-            f"同源过碎 {n_oversplit} / 孤立待连线 {n_isolated} / 待连线对 {n_link}），"
-            "Gr 计划 → Meta 审核 → 执行稍后完成，结果见图页与日志"
-        )
-
-    # ── 优化（语义层，v1.24）：图结构优化两阶段——减碎+补缺 → 连线 ──
-    if cmd.kind == "update":
-        if settings.agent_mode != "pipeline" or not ai_state.available:
-            return _command_response(
-                "优化指令未执行：AI 不可用或 Agent 管线未启用"
-                "（^data 等纯存储指令不受影响）"
-            )
-        if orchestrator is None:
-            raise HTTPException(status_code=503, detail="Orchestrator not initialized")
-        if cmd.scope and gs.get_node(cmd.scope) is None:
-            return _command_response(f"优化指令未执行：限定节点不存在 {cmd.scope}")
-        # 候选预扫描（update 口径：结构相关候选，与 compress 口径不同）
-        from controller.tools.sys_tools import scan_maintenance_candidates
-
-        candidates = scan_maintenance_candidates(gs)
-        if cmd.scope:
-            candidates = {
-                "merge_candidates": [
-                    c for c in candidates["merge_candidates"]
-                    if cmd.scope in (c["target_id"], c["source_id"])
-                ],
-                "zombie_nodes": [
-                    c for c in candidates["zombie_nodes"] if c["node_id"] == cmd.scope
-                ],
-                "low_conf_isolated": [
-                    c for c in candidates["low_conf_isolated"] if c["node_id"] == cmd.scope
-                ],
-                "oversplit_events": [
-                    c for c in candidates["oversplit_events"]
-                    if cmd.scope in {n["node_id"] for n in c["nodes"]}
-                ],
-                "isolated_nodes": [
-                    c for c in candidates["isolated_nodes"] if c["node_id"] == cmd.scope
-                ],
-                "link_candidates": [
-                    c for c in candidates.get("link_candidates", [])
-                    if cmd.scope in (c["node_a"], c["node_b"])
-                ],
-            }
-        n_merge = len(candidates["merge_candidates"])
-        n_zombie = len(candidates["zombie_nodes"])
-        n_lowconf = len(candidates["low_conf_isolated"])
-        n_oversplit = len(candidates["oversplit_events"])
-        n_isolated = len(candidates["isolated_nodes"])
-        n_link = len(candidates.get("link_candidates", []))
-        if not any([n_merge, n_zombie, n_lowconf, n_oversplit, n_isolated, n_link]):
-            scope_note = f"节点 {cmd.scope}" if cmd.scope else "全图"
-            return _command_response(
-                f"无需优化：{scope_note}扫描未发现结构优化候选"
-                "（无冗余对 / 过碎事件 / 僵尸 / 孤立节点 / 待连线对）——图结构已良好"
-            )
-        await orchestrator.enqueue(
-            QueueMessage(
-                type="maintain_graph",
-                payload=_payload({"mode": "update", "scope": cmd.scope} if cmd.scope
-                                 else {"mode": "update"}),
-                timestamp=datetime.now(timezone.utc).timestamp(),
-            )
-        )
-        refresh_key()
-        logger.info(
-            "Command update (scope=%s) -> maintain_graph update "
-            "(merge=%d zombie=%d lowconf=%d oversplit=%d isolated=%d link=%d)",
-            cmd.scope or "*", n_merge, n_zombie, n_lowconf, n_oversplit, n_isolated,
-            n_link,
-        )
-        scope_note = f"（限定节点 {cmd.scope}）" if cmd.scope else ""
-        return _command_response(
-            f"优化指令已入队{scope_note}（两阶段）："
-            f"减碎（重合对 {n_merge} / 同源过碎 {n_oversplit} / 僵尸 {n_zombie} / "
-            f"低置信 {n_lowconf}，可补缺失要点）→ 连线（孤立待连 {n_isolated} / "
-            f"待连线对 {n_link}）；执行稍后完成，结果见图页与日志"
-        )
-
-    # ── 指令消息（语义层，v1.27）：笼统自然语言意图 → Agent 管线 ──
-    if cmd.kind == "cmdmsg":
-        if settings.agent_mode != "pipeline" or not ai_state.available:
-            return _command_response(
-                "指令消息未执行：AI 不可用或 Agent 管线未启用"
-                "（^data 等纯存储指令不受影响）"
-            )
-        if orchestrator is None:
-            raise HTTPException(status_code=503, detail="Orchestrator not initialized")
-        if len(cmd.content) > 2000:
-            return _command_response(
-                f"指令消息未执行：指令 {len(cmd.content)} 字符超过上限 2000"
-                "（请精炼意图描述，具体数据交给管线自己查）"
-            )
-        # 预扫描（纯本地毫秒级）：无可动对象（无候选且无可挖掘事件）即时明示
-        from controller.tools.sys_tools import scan_maintenance_candidates
-
-        candidates = scan_maintenance_candidates(gs)
-        n_merge = len(candidates["merge_candidates"])
-        n_zombie = len(candidates["zombie_nodes"])
-        n_lowconf = len(candidates["low_conf_isolated"])
-        n_compress = len(candidates["compress_candidates"])
-        n_oversplit = len(candidates["oversplit_events"])
-        n_isolated = len(candidates["isolated_nodes"])
-        n_link = len(candidates.get("link_candidates", []))
-        n_mineable = len(await es.list_by_status("linked"))
-        if not any([
-            n_merge, n_zombie, n_lowconf, n_compress, n_oversplit,
-            n_isolated, n_link, n_mineable,
-        ]):
-            return _command_response(
-                "指令消息未执行：当前图无候选且无已构图事件，无可动对象"
-            )
-        await orchestrator.enqueue(
-            QueueMessage(
-                type="maintain_graph",
-                payload=_payload({"instruction": cmd.content}),
-                timestamp=datetime.now(timezone.utc).timestamp(),
-            )
-        )
-        refresh_key()
-        logger.info(
-            "Command cmdmsg -> maintain_graph (instruction=%r, merge=%d "
-            "zombie=%d lowconf=%d compress=%d oversplit=%d isolated=%d "
-            "link=%d mineable=%d)",
-            cmd.content, n_merge, n_zombie, n_lowconf, n_compress,
-            n_oversplit, n_isolated, n_link, n_mineable,
-        )
-        return _command_response(
-            f"指令消息已入队：「{cmd.content}」——Gr 将读取指令在候选内决策"
-            f"（重合对 {n_merge} / 僵尸 {n_zombie} / 孤立低置信 {n_lowconf} / "
-            f"冗长可压缩 {n_compress} / 同源过碎 {n_oversplit} / 孤立待连线 "
-            f"{n_isolated} / 待连线对 {n_link} / 可挖掘事件 {n_mineable}），"
-            "Meta 审核后执行，多轮封顶，结果见图页与日志"
-        )
-
-    # ── 确定层：合并 / 删除 / 建系统节点（无 LLM，同步执行）──
-    if cmd.kind == "merge":
-        target = gs.get_node(cmd.target_id)
-        source = gs.get_node(cmd.source_id)
-        if target is None or source is None:
-            missing = cmd.target_id if target is None else cmd.source_id
-            return _command_response(f"合并未执行：节点不存在 {missing}")
-        if target.node_id == source.node_id:
-            return _command_response("合并未执行：目标与源是同一节点")
-        if target.node_type != source.node_type:
-            return _command_response(
-                f"合并未执行：仅同类型可合并"
-                f"（{target.title}={target.node_type.value}，"
-                f"{source.title}={source.node_type.value}）"
-            )
-        if target.node_type.value == "system" or source.node_type.value == "system":
-            return _command_response("合并未执行：system 节点禁止参与合并")
-        removed = gs.merge_nodes(cmd.target_id, [cmd.source_id])
-        if not removed:
-            return _command_response("合并未执行：节点不存在或不可合并")
-        await gs.upsert_node_fts(target.node_id, target.title, target.content)
-        await gs.delete_node_fts(cmd.source_id)
-        await gs.flush()
-        refresh_key()
-        logger.info("Command merge %s <- %s", cmd.target_id, removed)
-        return _command_response(
-            f"已合并 {removed[0]} → {cmd.target_id}"
-            "（源证并集 + 内容合并，无丢失；源节点已删除）"
-        )
-
-    if cmd.kind == "delete":
-        node = gs.get_node(cmd.node_id)
-        if node is None:
-            return _command_response(f"删除未执行：节点不存在 {cmd.node_id}")
-        if node.node_type.value == "system":
-            return _command_response(
-                f"删除未执行：{node.title} 是 system 节点（手工创建、无事件来源，"
-                "删除后不可恢复；如确需删除请用图页或 DELETE /nodes 接口）"
-            )
-        valid_refs = [sr for sr in node.source_refs if sr.valid]
-        if valid_refs:
-            return _command_response(
-                f"删除未执行：{node.title} 有 {len(valid_refs)} 条有效源证，"
-                "受删除保护（请在图页确认后处理）"
-            )
-        gs.remove_node(cmd.node_id)
-        await gs.delete_node_fts(cmd.node_id)
-        await gs.flush()
-        refresh_key()
-        logger.info("Command delete node %s", cmd.node_id)
-        return _command_response(f"已删除节点 {cmd.node_id}（{node.title}）")
-
-    if cmd.kind == "node":
-        from core.models import GraphNode, NodeMetadata, NodeType
-
-        if len(cmd.title) > 60:
-            return _command_response(
-                f"建节点未执行：标题 {len(cmd.title)} 字符超过上限 60"
-                "（请精炼标题，正文放内容区）"
-            )
-        node_id = uuid.uuid4().hex[:16]
-        node = GraphNode(
-            node_id=node_id,
-            title=cmd.title,
-            content=cmd.content,
-            node_type=NodeType.system,
-            source_refs=[],
-            confidence=0.7,
-            metadata=NodeMetadata(evidence_quote=cmd.content, tags=[]),
-        )
-        gs.add_node(node)
-        await gs.upsert_node_fts(node_id, node.title, node.content)
-        await gs.flush()
-        refresh_key()
-        logger.info("Command node system created %s", node_id)
-        return _command_response(f"系统节点已创建：{node_id}（{cmd.title}）")
-
-    # 防御：未覆盖的指令类型
-    return _command_response(f"未支持的指令类型：{cmd.kind}")
-
-
-@app.delete("/events/{event_id}")
-async def delete_event(event_id: str):
-    es, gs = _stores()
-    result = await es.delete_with_protection(event_id, gs)
-    if result["status"] == "not_found":
-        raise HTTPException(status_code=404, detail="Event not found")
-    if result["status"] == "protected":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot delete event: node {result['node_id']} ({result['node_type']})"
-                   " would lose all source references",
-        )
-    refresh_key()
-    return _ok(message="Event deleted")
-
-
-@app.delete("/nodes/{node_id}")
-async def delete_node(node_id: str, body: DeleteNodeRequest = DeleteNodeRequest()):
-    es, gs = _stores()
-    node = gs.get_node(node_id)
-    if node is None:
-        raise HTTPException(status_code=404, detail="Node not found")
-    valid_refs = [sr for sr in node.source_refs if sr.valid]
-    if valid_refs and not body.force:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Node has {len(valid_refs)} valid source refs. Use force=true to override",
-        )
-    gs.remove_node(node_id)
-    await gs.delete_node_fts(node_id)
-    if gs.dirty:
-        await gs.save()
-    refresh_key()
-    return _ok(message="Node deleted")
-
-
-@app.put("/nodes/{node_id}")
-async def modify_node(node_id: str, body: ModifyNodeRequest):
-    es, gs = _stores()
-    node = gs.get_node(node_id)
-    if node is None:
-        raise HTTPException(status_code=404, detail="Node not found")
-    has_content = bool(body.content.strip())
-    has_source_op = bool(body.add_source_event_id or body.remove_source_event_id)
-    if not has_content and not has_source_op:
-        raise HTTPException(status_code=400, detail="No changes requested")
-    # system 节点仅允许源事件管理（内容仍禁改——人工维护语义）
-    if has_content and node.node_type.value == "system":
-        raise HTTPException(status_code=403, detail="System nodes cannot be modified")
-    if has_content:
-        # update_node 统一标记脏位：修改必须落盘，杜绝静默丢失
-        updated = gs.update_node(node_id, content=body.content, confidence=0.7)
-        await gs.upsert_node_fts(node_id, updated.title, updated.content)
-    if body.add_source_event_id:
-        ev = await es.get(body.add_source_event_id)
-        if ev is None:
-            raise HTTPException(status_code=404, detail="Event not found")
-        # 幂等追加：hash 与事件 content_hash 一致（「hash 供核对」不变式）
-        gs.add_source_ref(node_id, body.add_source_event_id, ev["content_hash"])
-    if body.remove_source_event_id:
-        # 最少源证守卫：移除后必须仍保留 ≥1 条有效源证（溯源锚定不断线）
-        remaining = [
-            sr for sr in node.source_refs
-            if sr.valid and sr.event_id != body.remove_source_event_id
-        ]
-        if not remaining:
-            raise HTTPException(
-                status_code=409,
-                detail="Node must keep at least one valid source reference",
-            )
-        if not gs.remove_source_ref(node_id, body.remove_source_event_id):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Source reference {body.remove_source_event_id} not found on node",
-            )
-    await gs.flush()
-    refresh_key()
-    return _ok(node_id=node_id, message="Node updated")
-
-
-@app.put("/events/{event_id}/status")
-async def modify_event_status(event_id: str, body: ModifyEventStatusRequest):
-    es, gs = _stores()
-    event = await es.get(event_id)
-    if event is None:
-        raise HTTPException(status_code=404, detail="Event not found")
-    current = event["status"]
-    new = body.status.value
-    if (current, new) not in ALLOWED_EVENT_TRANSITIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Status transition {current} -> {new} not allowed",
-        )
-    await es.update_status(event_id, new)
-    # 目标为 indexed 且管线可用时入队，让「重试」真正重新走 Agent 管线
-    # （对已 indexed 事件 _handle_ingest 会跳过基础索引直接进入管线，幂等安全）
-    if (
-        new == "indexed"
-        and settings.agent_mode == "pipeline"
-        and ai_state.available
-        and orchestrator
-    ):
-        entry = _resolve_repo()
-        retry_payload = {"event_id": event_id}
-        if entry:
-            retry_payload["repo_id"] = entry.repo_id
-        await orchestrator.enqueue(
-            QueueMessage(
-                type="ingest",
-                payload=retry_payload,
-                timestamp=datetime.now(timezone.utc).timestamp(),
-            )
-        )
-    refresh_key()
-    return _ok(event_id=event_id, new_status=new, message="Status updated")
-
-
-@app.put("/events/{event_id}")
-async def modify_event(event_id: str, body: ModifyEventRequest):
-    es, gs = _stores()
-    ok = await es.update_content(event_id, body.content, gs)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Event not found")
-    # 可选类型修订：仅改线层，不联动已生成图节点
-    if body.event_type is not None:
-        await es.update_type(event_id, body.event_type.value)
-    await gs.flush()
-    refresh_key()
-    return _ok(event_id=event_id, message="Event content updated")
-
-
-@app.post("/edges")
-async def create_edge(body: CreateEdgeRequest):
-    es, gs = _stores()
-    # 检查两端节点存在
-    src = gs.get_node(body.source)
-    if src is None:
-        raise HTTPException(status_code=404, detail="Source node not found")
-    tgt = gs.get_node(body.target)
-    if tgt is None:
-        raise HTTPException(status_code=404, detail="Target node not found")
-    gs.add_edge(GraphEdge(
-        source=body.source,
-        target=body.target,
-        relation=body.relation,
-        evidence_event_id=body.evidence_event_id or "",
-    ))
-    await gs.flush()
-    refresh_key()
-    return _ok(message="Edge created")
-
-
-@app.delete("/edges")
-async def delete_edge(source: str, target: str):
-    es, gs = _stores()
-    ok = gs.remove_edge(source, target)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Edge not found")
-    await gs.flush()
-    refresh_key()
-    return _ok(message="Edge deleted")
-
-
-@app.post("/nodes")
-async def create_node(body: CreateNodeRequest):
-    from core.models import GraphNode, NodeMetadata, SourceRef
-    es, gs = _stores()
-    node_id = uuid.uuid4().hex[:16]
-
-    source_refs = []
-    if body.source_event_id:
-        # SourceRef.hash 与事件 content_hash 一致，保证「hash 供核对」成立
-        c_hash = ""
-        ev = await es.get(body.source_event_id)
-        if ev:
-            c_hash = ev["content_hash"]
-        source_refs.append(SourceRef(
-            event_id=body.source_event_id,
-            valid=True,
-            hash=c_hash,
-        ))
-
-    node = GraphNode(
-        node_id=node_id,
-        title=body.title,
-        content=body.content or body.title,
-        node_type=body.node_type,
-        source_refs=source_refs,
-        confidence=0.7,
-        metadata=NodeMetadata(evidence_quote=body.content or body.title, tags=[]),
-    )
-    gs.add_node(node)
-    await gs.flush()
-    refresh_key()
-    return _ok(node_id=node_id, message="Node created")
-
-
-@app.delete("/graph")
-async def clear_graph():
-    es, gs = _stores()
-    gs.clear_all()
-    # 清空 node_fts：避免旧节点留在全文索引导致检索召回残留
-    await gs.rebuild_node_fts()
-    await gs.flush()
-    refresh_key()
-    return _ok(message="Graph cleared")
-
-
-@app.post("/query", response_model=SearchResponse)
-async def query(body: SearchRequest):
-    # 联合检索（v1.29）：显式多册，或未指定且存在多个受管库时，逐册检索后融合；
-    # 单册（显式单册或仅默认库）走原有路径（管线可用时含 Agent 检索管线）
-    use_joint = False
-    if repos is not None:
-        if body.repo_ids is not None:
-            use_joint = len(body.repo_ids) != 1
-        else:
-            use_joint = len(repos.managed_entries()) > 1
-    if use_joint:
-        return await _joint_search(body)
-    target = body.repo_ids[0] if body.repo_ids else None
-    es, gs = _stores(target)
-    resp: SearchResponse
-    if settings.agent_mode == "pipeline" and ai_state.available and orchestrator:
-        try:
-            resp = await orchestrator.run_query(body, es, gs)
-        except Exception:
-            logger.exception("Query agent pipeline failed, fallback to hybrid search")
-            resp = await hybrid_search(body, es, gs, degraded=not ai_state.available)
-    else:
-        resp = await hybrid_search(body, es, gs, degraded=not ai_state.available)
-    # 来源册锚定（v1.29）：单册结果同样携带所属册
-    entry = _resolve_repo(target)
-    if entry is not None:
-        for r in resp.results:
-            r.repo_id, r.repo_name = entry.repo_id, entry.name
-    return resp
-
-
-async def _joint_search(body: SearchRequest) -> SearchResponse:
-    """册间联合检索：单册 RRF → 等权 RRF 融合 + 去重 + 来源册锚定（纯本地，降级可用）。"""
-    if body.repo_ids is None:
-        entries = repos.managed_entries()  # 缺省 = 全部受管库
-    else:
-        entries = []
-        for bid in body.repo_ids:
-            record = repos.records.get(bid)
-            if record is None or not record.managed or bid not in repos.entries:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Unknown or unmanaged repo: {bid}",
-                )
-            entries.append(repos.entries[bid])
-    degraded = not ai_state.available
-    per_repo = [
-        (entry, await hybrid_search(body, entry.event_store, entry.graph_store, degraded=degraded))
-        for entry in entries
-    ]
-    results = fuse_joint_results(per_repo)
-    results.sort(key=lambda r: (-r.score, r.repo_id, r.node_id))
-    total = len(results)
-    paged = results[body.offset : body.offset + body.limit]
-    return SearchResponse(results=paged, total=total, degraded=degraded)
-
-
-@app.post("/feedback")
-async def feedback(body: FeedbackRequest):
-    es, gs = _stores()
-    # result_id is a node_id or event_id
-    node = gs.get_node(body.result_id)
-    if node:
-        if node.node_type.value in ("system", "data"):
-            return _ok(message="System/data nodes not affected by feedback")
-        delta = 0.01 if body.accepted else -0.02
-        new_conf = max(0.1, min(1.0, node.confidence + delta))
-        # update_node 标记脏位 + flush 落盘：反馈调整必须持久化
-        gs.update_node(body.result_id, confidence=new_conf)
-        await gs.flush()
-        return _ok(node_id=body.result_id, confidence=new_conf, message="Feedback recorded")
-    # 事件结果无置信度字段，反馈对事件不生效（保持兼容，不报错）
-    return _ok(message="Feedback recorded (event results have no confidence field)")
-
-
-# ── dpim-webui 新增端点 ────────────────────
-
-@app.get("/state-hash", response_model=StateHashResponse)
-async def state_hash():
-    es, gs = _stores()
-    changed_at = await es.last_event_at()
-    return StateHashResponse(hash=get_key(), changed_at=changed_at or "")
-
-
-@app.get("/events", response_model=EventListResponse)
-async def list_events(
-    status: str | None = None,
-    type: str | None = None,
-    query: str | None = None,
-    limit: int = 20,
-    offset: int = 0,
-    repo_id: str | None = None,
-):
-    es, gs = _stores(repo_id)
-    if query and query.strip():
-        # 关键词检索（v1.19）：直接走事件 FTS（含中文降级），再叠加 status/type 过滤与分页。
-        # 供检索页「事件原文」模式使用——不再经由 /query 的 source_filter 过滤（那会滤成图节点而非事件）
-        rows = await es.search_fts(query.strip(), limit=2000)
-        filtered = [
-            e for e in rows
-            if (status is None or e["status"] == status)
-            and (type is None or e["event_type"] == type)
-        ]
-        total = len(filtered)
-        sliced = filtered[offset : offset + min(limit, 100)]
-        items = [
-            EventListItem(
-                event_id=e["event_id"],
-                created_at=e["created_at"],
-                raw_content=e["raw_content"],
-                event_type=e["event_type"],
-                status=e["status"],
-                error=e.get("error", ""),
-            )
-            for e in sliced
-        ]
-        return EventListResponse(items=items, total=total, limit=limit, offset=offset)
-    items, total = await es.list_events(
-        status=status, event_type=type, limit=min(limit, 100), offset=offset,
-    )
-    return EventListResponse(
-        items=[EventListItem(**e) for e in items],
-        total=total, limit=limit, offset=offset,
-    )
-
-
-@app.get("/events/{event_id}")
-async def get_event(event_id: str):
-    es, gs = _stores()
-    event = await es.get(event_id)
-    if event is None:
-        raise HTTPException(status_code=404, detail="Event not found")
-    # 实时关联节点（v1.26）：行上的 graph_refs 是构图写入时的一次性快照，
-    # 此后的合并/删除/聚合均不回写——图层反向索引才是当前权威。
-    # 读路径实时派生（仅保留有效源证），前端「处理历史/图关联」随之变准。
-    live_refs: list[str] = []
-    for nid in gs.get_nodes_for_event(event_id):
-        node = gs.get_node(nid)
-        if node is None:
-            continue
-        if any(sr.event_id == event_id and sr.valid for sr in node.source_refs):
-            live_refs.append(nid)
-    event["graph_refs"] = live_refs
-    return event
-
-
-@app.get("/nodes", response_model=NodeListResponse)
-async def list_nodes(
-    type: str | None = None,
-    query: str | None = None,
-    limit: int = 20,
-    offset: int = 0,
-    repo_id: str | None = None,
-):
-    es, gs = _stores(repo_id)
-    if query and query.strip():
-        # 关键词检索（v1.19）：直接走节点 FTS（含中文降级），再叠加 type 过滤与分页。
-        # 供检索页「知识节点」模式使用——不再经由 /query 的 source_filter 过滤
-        rows = await gs.search_node_fts(query.strip(), limit=2000)
-        filtered: list[dict[str, Any]] = []
-        for row in rows:
-            node = gs.get_node(row["node_id"])
-            if node is None:
-                continue
-            if type is not None and node.node_type.value != type:
-                continue
-            filtered.append({
-                "node_id": node.node_id,
-                "title": node.title,
-                "node_type": node.node_type.value,
-                "confidence": node.confidence,
-            })
-        total = len(filtered)
-        sliced = filtered[offset:offset + min(limit, 100)]
-        return NodeListResponse(
-            items=[NodeListItem(**n) for n in sliced],
-            total=total, limit=limit, offset=offset,
-        )
-    all_nodes = gs.list_nodes(node_type=type)
-    total = len(all_nodes)
-    sliced = all_nodes[offset:offset + limit]
-    return NodeListResponse(
-        items=[NodeListItem(**n) for n in sliced],
-        total=total, limit=limit, offset=offset,
-    )
-
-
-@app.get("/nodes/{node_id}", response_model=NodeDetailResponse)
-async def get_node(node_id: str):
-    es, gs = _stores()
-    node = gs.get_node(node_id)
-    if node is None:
-        raise HTTPException(status_code=404, detail="Node not found")
-    edges = gs.list_edges(node_id=node_id)
-    return NodeDetailResponse(
-        node_id=node.node_id,
-        title=node.title,
-        content=node.content,
-        node_type=node.node_type.value,
-        source_refs=[
-            {"event_id": sr.event_id, "valid": sr.valid, "hash": sr.hash}
-            for sr in node.source_refs
-        ],
-        confidence=node.confidence,
-        metadata=(
-            node.metadata.model_dump()
-            if hasattr(node.metadata, "model_dump")
-            else dict(node.metadata)
-        ),
-        edges=[EdgeInfo(**e) for e in edges],
-    )
-
-
-@app.get("/settings", response_model=SettingsResponse)
-async def get_settings():
-    """下发配置 — API Key 一律掩码（`xxx****xxxx`），绝不明文出网。"""
-    return SettingsResponse(
-        memory_db_path=settings.memory_db_path,
-        graph_json_path=settings.graph_json_path,
-        llm_base_url=settings.llm_base_url,
-        llm_api_key=mask_secret(settings.llm_api_key),
-        llm_model_name=settings.llm_model_name,
-        llm_timeout=settings.llm_timeout,
-        llm_max_tokens=settings.llm_max_tokens,
-        llm_enable_thinking=settings.llm_enable_thinking,
-        llm_thinking_budget=settings.llm_thinking_budget,
-        available_providers=["primary", *settings.providers.keys()],
-        providers={
-            name: mask_provider_secret(entry)
-            for name, entry in settings.providers.items()
-        },
-        active_provider=settings.active_provider,
-        available_models=settings.available_models(),
-        active_model=settings.active_model,
-        agent_mode=settings.agent_mode,
-        agent_max_retries=settings.agent_max_retries,
-        agent_cr_model=settings.agent_cr_model,
-        agent_in_model=settings.agent_in_model,
-        agent_gr_model=settings.agent_gr_model,
-        agent_meta_model=settings.agent_meta_model,
-        max_graph_hops=settings.max_graph_hops,
-        rrf_k=settings.rrf_k,
-        jaccard_threshold=settings.jaccard_threshold,
-        health_check_interval=settings.health_check_interval,
-        health_check_timeout=settings.health_check_timeout,
-        compensate_batch_size=settings.compensate_batch_size,
-        log_level=settings.log_level,
-    )
-
-
-@app.put("/settings")
-async def update_settings(body: SettingsUpdateRequest):
-    data = body.model_dump(exclude_none=True)
-    # 密钥幂等保留：掩码/空值 = 保留现值（前端把 GET 下发的掩码原样回传时不清钥）
-    if "llm_api_key" in data:
-        data["llm_api_key"] = resolve_secret(data["llm_api_key"], settings.llm_api_key)
-    if "providers" in data:
-        data["providers"] = {
-            name: resolve_provider_secret(entry, settings.providers.get(name))
-            for name, entry in data["providers"].items()
-        }
-    for field, value in data.items():
-        if hasattr(settings, field):
-            setattr(settings, field, value)
-    settings.save_dpim_config()  # 持久化 BYOK/Agent 配置到 dpim.json，重启保留
-    refresh_key()
-    # 配置变更后立即健康检查一次：切换 provider/模型即刻生效，无需重启
-    if compensator is not None:
-        await compensator._check_llm()
-    msg = "Settings updated and persisted to dpim.json; storage paths apply after restart"
-    return _ok(message=msg)
-
-
-@app.get("/health", response_model=HealthResponse)
-async def health():
-    es, gs = _stores()  # 活动库
-    total_events = await es.total_events()
-    status_counts = await es.count_by_status()
-    total_nodes = gs.total_nodes()
-    node_counts = gs.node_counts_by_type()
-    last = await es.last_event_at()
-    return HealthResponse(
-        status="ok" if ai_state.available else "degraded",
-        ai_available=ai_state.available,
-        layers={
-            "event_line": {
-                "total_events": total_events,
-                **status_counts,
-            },
-            "knowledge_graph": {
-                "total_nodes": total_nodes,
-                **node_counts,
-            },
-        },
-        last_event_at=last or "",
-        # 队列与册可见性（v1.29）
-        queue_depth=orchestrator.queue.qsize() if orchestrator else 0,
-        worker_running=bool(orchestrator and orchestrator._running),
-        active_repo_id=repos.active_id if repos else "",
-    )
-
-
-# ── 库管理端点（v1.29：一库 = 一 memory.db + 一 graph.json）────────────────
-
-
-def _repo_info(repo_id: str) -> RepoInfo:
-    record = repos.records[repo_id]
-    entry = repos.entries.get(repo_id)
-    return RepoInfo(
-        repo_id=record.repo_id,
-        name=record.name,
-        note=record.note,
-        group=record.group,
-        root_kind=record.root_kind,
-        managed=record.managed,
-        active=repo_id == repos.active_id,
-        loaded=entry is not None,
-        total_events=None, total_nodes=None,
-        db_path=record.db_path, json_path=record.json_path,
-        created_at=record.created_at, updated_at=record.updated_at,
-    )
-
-
-@app.get("/repos", response_model=RepoListResponse)
-async def list_repos() -> RepoListResponse:
-    """库登记列表：休眠库不打开文件，计数留空。"""
-    if repos is None:
-        raise HTTPException(status_code=503, detail="Repos not initialized")
-    infos = []
-    for repo_id in repos.records:
-        info = _repo_info(repo_id)
-        entry = repos.entries.get(repo_id)
-        if entry is not None:
-            info.total_events = await entry.event_store.total_events()
-            info.total_nodes = entry.graph_store.total_nodes()
-        infos.append(info)
-    return RepoListResponse(repos=infos, active_repo_id=repos.active_id)
-
-
-@app.get("/repos/{repo_id}")
-async def get_repo(repo_id: str) -> dict[str, Any]:
-    if repos is None:
-        raise HTTPException(status_code=503, detail="Repos not initialized")
-    if repo_id not in repos.records:
-        raise HTTPException(status_code=404, detail="Repo not found")
-    info = _repo_info(repo_id)
-    entry = repos.entries.get(repo_id)
-    extra: dict[str, Any] = {}
-    if entry is not None:
-        info.total_events = await entry.event_store.total_events()
-        info.total_nodes = entry.graph_store.total_nodes()
-        extra["status_counts"] = await entry.event_store.count_by_status()
-    return {**info.model_dump(), **extra}
-
-
-@app.post("/repos")
-async def create_repo(body: RepoCreateRequest) -> dict[str, Any]:
-    """建库：managed 落书库根（<group_key>/<repo_id>/）；external 登记既有目录。"""
-    if repos is None:
-        raise HTTPException(status_code=503, detail="Repos not initialized")
-    try:
-        record = await repos.create_repo(
-            name=body.name, note=body.note, group=body.group,
-            root_kind=body.root_kind, root=body.root,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    refresh_key()
-    logger.info("Repo created: %s(%s, %s)", record.name, record.repo_id, record.root_kind)
-    return _ok(repo_id=record.repo_id, message=f"库已创建：{record.name}")
-
-
-@app.put("/repos/{repo_id}")
-async def update_repo(repo_id: str, body: RepoUpdateRequest) -> dict[str, Any]:
-    """改库信息 / 受管开关（false = 休眠：不加载不检索不构图，文件不动）。"""
-    if repos is None:
-        raise HTTPException(status_code=503, detail="Repos not initialized")
-    try:
-        record = await repos.update_repo(
-            repo_id, name=body.name, note=body.note,
-            group=body.group, managed=body.managed,
-        )
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Repo not found")
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    refresh_key()
-    return _ok(message=f"库已更新：{record.name}")
-
-
-@app.delete("/repos/{repo_id}")
-async def delete_repo(repo_id: str) -> dict[str, Any]:
-    """摘除登记（不删任何磁盘文件）；默认库与活动库不可摘。"""
-    if repos is None:
-        raise HTTPException(status_code=503, detail="Repos not initialized")
-    try:
-        await repos.delete_repo(repo_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Repo not found")
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    refresh_key()
-    return _ok(message="库登记已摘除（磁盘文件保留）")
-
-
-@app.post("/repos/{repo_id}/activate")
-async def activate_repo(repo_id: str) -> dict[str, Any]:
-    """切换活动库：未显式指定 repo_id 的写入目标。"""
-    if repos is None:
-        raise HTTPException(status_code=503, detail="Repos not initialized")
-    try:
-        await repos.activate(repo_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Repo not found")
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    refresh_key()
-    return _ok(active_repo_id=repo_id, message="活动库已切换")
-
-
-@app.post("/repos/{repo_id}/generate")
-async def generate_repo(repo_id: str) -> dict[str, Any]:
-    """库级联合生成知识：把该册全部待构图事件（raw/indexed）批量入队。
-
-    「一库多文件联合管理」的落点——库内容整体（重新）生成知识图谱。
+async def _flush_loaded_repos() -> int:
+    """写路径统一收口：把已加载库的脏图落盘，返回落盘库数。
+
+    一处收口替代散落在各端点的 `gs.flush()`，并覆盖「改了图却忘记落盘」的路径。
+    脏位为假时是空操作，因此反复调用无代价。
     """
-    if repos is None:
-        raise HTTPException(status_code=503, detail="Repos not initialized")
-    if repo_id not in repos.records:
-        raise HTTPException(status_code=404, detail="Repo not found")
-    entry = repos.resolve(repo_id)
-    if entry is None:
-        raise HTTPException(status_code=409, detail="Repo not loaded（未受管或加载失败）")
-    if settings.agent_mode != "pipeline" or not ai_state.available or orchestrator is None:
-        raise HTTPException(
-            status_code=409,
-            detail="AI 不可用或 Agent 管线未启用，无法生成知识（纯存储不受影响）",
-        )
-    pending = [
-        *await entry.event_store.list_by_status("raw"),
-        *await entry.event_store.list_by_status("indexed"),
-    ]
-    for ev in pending:
-        await orchestrator.enqueue(
-            QueueMessage(
-                type="ingest",
-                payload={"event_id": ev["event_id"], "repo_id": repo_id},
-                timestamp=datetime.now(timezone.utc).timestamp(),
-            )
-        )
-    refresh_key()
-    logger.info("Repo generate: %s queued %d events", repo_id, len(pending))
-    return _ok(
-        repo_id=repo_id,
-        queued=len(pending),
-        message=f"已入队 {len(pending)} 条待构图事件（Gr → Meta 稍后完成，结果见图页与日志）",
-    )
+    if deps.repos is None:
+        if deps.graph_store is not None and deps.graph_store.dirty:
+            await deps.graph_store.flush()
+            return 1
+        return 0
+    flushed = 0
+    for entry in list(deps.repos.entries.values()):
+        store = entry.graph_store
+        if store is not None and store.dirty:
+            await store.flush()
+            flushed += 1
+    return flushed
 
 
-@app.get("/agent/logs")
-async def agent_logs(limit: int = 30, full: bool = False) -> dict[str, Any]:
-    """返回最近 AI 调用日志（环形缓冲，新→旧），供前端观测 LLM 输入/输出。
+# 状态校验密钥免刷白名单（**路径 + 方法精确匹配**，不用前缀——防误豁免一片端点）：
+# `POST /logs/client` 是前端日志上报，属**旁路**而非数据写入。若它也刷新密钥，
+# 前端只要有一次请求失败就上报一条日志 → 密钥随之变化 → 变成噪声，
+# 让「写前比对密钥」的护栏无谓地要求用户刷新页面。读侧同理（`GET /logs` 只读）。
+_NO_REFRESH_WRITES = {("POST", "/logs/client")}
 
-    full=true 时返回完整 input/output/error（不做 2000 字符截断），供前端折叠查看。
-    DPIM_AGENT_LOGS_FULL=false 时忽略 full 参数（日志含事件原文，部署环境可关闭全文防泄露）。
+
+def _skips_key_refresh(request) -> bool:
+    return (request.method, request.url.path) in _NO_REFRESH_WRITES
+
+
+@app.middleware("http")
+async def write_commit(request, call_next):
+    """写请求统一收口：落盘脏图 + 刷新状态校验密钥 + 记录写操作流水。
+
+    非 GET/HEAD/OPTIONS 请求在 handler 之后依次做三件事：
+
+    1. **落盘**：`_flush_loaded_repos()`；失败返回 500——写已生效但没落盘必须可见，
+       绝不静默丢修改（与原子写的 fail-closed 语义一致）。
+    2. **刷新状态密钥**：`StateKey.refresh()` 生成的是**随机 UUID**（非状态派生），
+       故只在成功（<400）时刷新，避免失败请求让前端做无谓重取；
+       `_NO_REFRESH_WRITES`（当前仅 `POST /logs/client`）是显式豁免——
+       日志上报不改数据，刷密钥只会制造噪声。
+    3. **写操作流水**：方法/路径/状态/耗时/落盘库数，落 `logs/backend-*.log`
+       （前端日志另落 `frontend-*.log`），供本地翻看。豁免项**照常记流水**。
     """
-    allow_full = full and settings.agent_logs_full
-    return {"logs": get_llm_logs(limit=min(limit, 100), full=allow_full)}
-
-
-@app.post("/agent/compensate")
-async def agent_compensate() -> dict[str, Any]:
-    """手动触发补偿：把 raw/indexed 事件重新入队走 Agent 管线（处理积压事件）。
-
-    force=true：补偿退避暂停中也可强制执行并重置失败计数。
-    """
-    if orchestrator is None:
-        raise HTTPException(status_code=503, detail="Orchestrator not initialized")
-    await orchestrator.enqueue(
-        QueueMessage(
-            type="compensate",
-            payload={"force": True},
-            timestamp=datetime.now(timezone.utc).timestamp(),
+    started = time.perf_counter()
+    response = await call_next(request)
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return response
+    try:
+        flushed = await _flush_loaded_repos()
+    except Exception as exc:
+        logger.exception("写请求落盘失败: %s %s", request.method, request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Write applied but persistence failed: {exc}"},
         )
+    if response.status_code < 400 and not _skips_key_refresh(request):
+        refresh_key()
+    repo_hint = request.query_params.get("repo_id") or ""
+    logger.info(
+        "写操作 %s %s → %s (%.0fms) flush=%d%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        (time.perf_counter() - started) * 1000,
+        flushed,
+        f" repo={repo_hint}" if repo_hint else "",
     )
-    return _ok(message="Compensation triggered")
+    return response
 
 
-@app.post("/agent/maintain")
-async def agent_maintain() -> dict[str, Any]:
-    """手动触发图维护：扫描候选 → Gr 维护计划 → Meta 审核 → 执行。
-
-    支持图结构调整/合并/删改（调整合并已有节点、删除僵尸节点、修正内容、删错误边）；
-    写操作完成后刷新状态校验密钥（前端数据一致性）。
-    """
-    if orchestrator is None:
-        raise HTTPException(status_code=503, detail="Orchestrator not initialized")
-    await orchestrator.enqueue(
-        QueueMessage(
-            type="maintain_graph",
-            payload={},
-            timestamp=datetime.now(timezone.utc).timestamp(),
-        )
-    )
-    refresh_key()
-    return _ok(message="Graph maintenance triggered")
+# ── 端点挂载（拆分后统一入口；路径与拆分前完全一致）──────────────
+app.include_router(events_router)
+app.include_router(nodes_router)
+app.include_router(query_router)
+app.include_router(repos_router)
+app.include_router(agent_router)
+app.include_router(maintenance_router)
+app.include_router(settings_router)
+app.include_router(logs_router)
+app.include_router(trash_router)

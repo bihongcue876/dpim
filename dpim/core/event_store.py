@@ -2,12 +2,16 @@
 
 import hashlib
 import json
+import logging
 import os
 import time
 from datetime import datetime, timezone
 from typing import Any
 
 from core.database import Database
+from core.trash import archive_event
+
+logger = logging.getLogger(__name__)
 
 
 def _make_event_id() -> str:
@@ -52,6 +56,10 @@ class EventStore:
             (event_id, created_at, raw_content, c_hash, event_type),
         )
         await self.db.conn.commit()
+        logger.info(
+            "事件写入 %s type=%s hash=%s len=%d",
+            event_id, event_type, c_hash[:12], len(raw_content),
+        )
         return event_id, "raw"
 
     async def get(self, event_id: str) -> dict | None:
@@ -107,6 +115,43 @@ class EventStore:
         )
         await self.db.conn.commit()
 
+    async def unlink_graph_refs(self) -> dict[str, int]:
+        """撤销「事件 → 图节点」派生链接（v1.42），返回 `{cleared, relinked}`。
+
+        整图清空后线层不能继续声称「已入图」：那些 `graph_refs` 指向的节点已经不存在，
+        而 `status=linked` 又让补偿队列永远不会再碰它们（`linked` 不在补偿的
+        `raw/indexed` 队列里）——图从此长不回来，且概览台一直显示「已入图 N」。
+
+        故：清空 `graph_refs`，并把 `linked` 回退为 `indexed`
+        （= 已索引、待入图：AI 可用时补偿会重新入图，不可用时如实显示「待处理」）。
+        `cleared` = 清掉引用的条数，`relinked` = 状态回退的条数。
+        """
+        cursor = await self.db.conn.execute(
+            "SELECT event_id, status, graph_refs FROM events"
+        )
+        rows = await cursor.fetchall()
+        cleared = relinked = 0
+        for row in rows:
+            refs = str(row["graph_refs"] or "").strip()
+            has_refs = bool(refs) and refs != "[]"
+            if not has_refs and row["status"] != "linked":
+                continue
+            if has_refs:
+                cleared += 1
+            await self.db.conn.execute(
+                "UPDATE events SET graph_refs = '[]' WHERE event_id = ?",
+                (row["event_id"],),
+            )
+            if row["status"] == "linked":
+                await self.update_status(row["event_id"], "indexed")
+                relinked += 1
+        await self.db.conn.commit()
+        if cleared or relinked:
+            logger.info(
+                "撤销派生链接：清 graph_refs %d 条 / linked→indexed %d 条", cleared, relinked
+            )
+        return {"cleared": cleared, "relinked": relinked}
+
     async def update_type(self, event_id: str, event_type: str) -> bool:
         """修订事件类型（interaction / data / source）。
 
@@ -129,10 +174,49 @@ class EventStore:
         event = await self.get(event_id)
         if event is None:
             return None
+        # 删除前留档到回收站：物理删语义不变（软删要给所有读路径加过滤），
+        # 恢复 = 从留档重新入库
+        archive_event(self.db.db_path, event)
         await self.db.conn.execute("DELETE FROM events WHERE event_id = ?", (event_id,))
         await self.db.conn.execute("DELETE FROM events_fts WHERE event_id = ?", (event_id,))
         await self.db.conn.commit()
+        logger.info("事件删除 %s type=%s", event_id, event.get("event_type", ""))
         return event
+
+    async def restore(self, event: dict) -> bool:
+        """把回收站留档的事件按**原 event_id / created_at** 重新入库。
+
+        保留原 id 才能让既有的图节点源证重新对上（源证按 event_id 锚定）；
+        FTS 索引同步重建。返回是否写入。
+        """
+        event_id = str(event.get("event_id") or "")
+        if not event_id:
+            return False
+        raw = str(event.get("raw_content") or "")
+        refs = event.get("graph_refs") or []
+        refs_json = refs if isinstance(refs, str) else json.dumps(refs, ensure_ascii=False)
+        await self.db.conn.execute(
+            "INSERT OR REPLACE INTO events"
+            " (event_id, created_at, raw_content, content_hash, event_type, status,"
+            "  graph_refs, error) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                event_id,
+                str(event.get("created_at") or datetime.now(timezone.utc).isoformat()),
+                raw,
+                str(event.get("content_hash") or _content_hash(raw)),
+                str(event.get("event_type") or "interaction"),
+                str(event.get("status") or "indexed"),
+                refs_json,
+                str(event.get("error") or ""),
+            ),
+        )
+        await self.db.conn.execute("DELETE FROM events_fts WHERE event_id = ?", (event_id,))
+        await self.db.conn.execute(
+            "INSERT INTO events_fts (event_id, raw_content) VALUES (?, ?)", (event_id, raw)
+        )
+        await self.db.conn.commit()
+        logger.info("事件从回收站恢复 %s type=%s", event_id, event.get("event_type", ""))
+        return True
 
     async def list_by_status(self, status: str) -> list[dict]:
         cursor = await self.db.conn.execute(
@@ -296,6 +380,7 @@ class EventStore:
         if graph_store is not None:
             graph_store.sync_source_ref_hash(event_id, c_hash)
         await self.db.conn.commit()
+        logger.info("事件内容修订 %s 新hash=%s len=%d", event_id, c_hash[:12], len(new_content))
         return True
 
     async def delete_with_protection(
@@ -319,6 +404,10 @@ class EventStore:
                 sr.valid for sr in node.source_refs if sr.event_id != event_id
             )
             if not has_other and node.node_type.value in ("system", "data"):
+                logger.warning(
+                    "事件删除被拒（受保护节点 %s/%s）: %s",
+                    nid, node.node_type.value, event_id,
+                )
                 return {
                     "status": "protected",
                     "node_id": nid,

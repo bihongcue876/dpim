@@ -2,13 +2,13 @@
 
 > Double-Place Intelligence Memory
 >
-> 版本：v0.3.0
+> 版本：v0.4.0
 
 ## 系统简介
 
 - 双区智能存储系统，即DPIM，是一个信息存储系统，采用AI功能可选且作为辅助的模式，使用信息图谱与信息资源相互映射而分离管理的存储特色。
 
-- 主要功能定位为数据资源库与对话资源存储，近似于本地维基或小图书馆。
+- 主要功能定位为数据资源库与对话资源存储，近似于本地维基或本地资料库。
 
 - 暂时不推荐多存（SQLite），支持异步读取，技术栈中配套资源较为初级，后续会升级。
 
@@ -34,6 +34,31 @@ cd dpimWebUI
 pnpm install
 pnpm dev      # 默认地址：http://localhost:5173
 ```
+
+- 面板按**四种活动**分区（观测 / 查阅 / 写入 / 维护）+ 帮助，共 12 页；地址是 hash 模式（如 `#/events`），可深链、刷新不丢位置。
+- 顶栏的**全局书目选择器**决定全站作用域：选单本书目 = 只看那一本；选「全部书目」= 联查（只读聚合，结果会标明来自哪本书目）。
+- 明暗双主题，右上角一键切换并记住偏好。
+- 界面**看得见地区分「原文」与「衍生知识」**：原文（线层事件）标注「仅人类可修订」，衍生（图节点/边）标注「可由 AI 维护」。
+- 若 `pnpm install` 报 `ERR_PNPM_IGNORED_BUILDS`（esbuild）：pnpm 11 起依赖的安装脚本默认拒绝执行，裁决位置是
+  `dpimWebUI/pnpm-workspace.yaml` 的 `allowBuilds`——pnpm 自动写进去的占位串 `set this to true or false` 表示**未裁决**，
+  仍按拒绝处理，须改成 `true`（本项目已裁决 `esbuild: true`），或运行 `pnpm approve-builds` 交互裁决。
+
+### 存储保障与本地日志
+
+```bash
+cd dpim
+python main.py backup                    # 整库备份（SQLite 在线副本 + graph.json + 清单）
+python main.py verify                    # 一致性校验（只读：完整性 / FTS / 操作日志可重放 / 悬空源证）
+python main.py logs --tail 50            # 翻看本地日志（前后端分文件，按天轮转）
+python main.py trash-list                # 删除前留档的回收站
+python main.py restore <时间戳> --yes    # 从备份恢复（须先停服务；自动先做安全备份）
+```
+
+- **图层操作日志**：`graph.json` 丢失/损坏且无备份时，可从操作日志重放恢复图层，不再只能以空图启动。
+- **备份**：多代 `.bak.1..N`（覆盖前留存）+ 整库备份（`VACUUM INTO`），保留最近 5 份。
+- **跨进程互斥**：每库一把 OS 文件锁——本地 CLI 与运行中的服务不会同时写同一个库。
+- **日志**：`dpim/logs/backend-YYYY-MM-DD.log` 与 `frontend-YYYY-MM-DD.log` 分开存放，纯文本直接打开即可。
+- 恢复刻意不做成 REST 接口：恢复必须停服务，走本地 CLI 并强制先做安全备份。
 
 ### 对话指令（WebUI 信息传入 / dpimCLI ingest）
 
@@ -71,15 +96,22 @@ uv run python main.py status                                 # 查看状态
 ```bash
 cd dpimCLI
 pip install -e .
-dpim --help   # 13 命令 / 23 操作（详见 dpimCLI/README.md）
+dpim --help   # 13 命令 / 23 操作（详见 dpimCLI/README.md；后端共 45 端点，协议 v1.37，维护/存储类走本地 CLI）
 dpim shell    # 交互式 Shell
 ```
 
 ## 核心特性
 
-- **双区存储**：不可变事件日志（SQLite + FTS5）+ 知识图谱（NetworkX + JSON），双向溯源
+- **双区存储**：时序事件存储（SQLite + FTS5，按时间追加、大模型不可轻易调整、人类可显式修订）+ 知识图谱（NetworkX + JSON），双向溯源
 
 - **智能可选**：Cr/In/Gr/Meta 四角色 Agent 管线自动衍生结构化知识，无 AI 时降级为基础全文检索
+
+- **可调 BYOK**：AI 的地址/密钥/模型**只存在于提供商（provider）条目**（env `DPIM_PROVIDERS` 或 `dpim.json` 的 `providers` 段），
+  可多提供商切换、按角色路由模型；**没有任何内置默认**（不再默认指向本地 llama）。**未配置 ≠ 降级**：`/health` 为三态
+  `ok` / `unconfigured` / `degraded`，界面看得见「其实没配」，不会静默降级。在 WebUI「维护 → 运行配置」可增改提供商，
+  并用「拉取模型」联网探测该提供商的可选模型（`POST /settings/models`）。
+
+- **WebUI 也能配后端**：除了 BYOK 提供商，后端的运行参数——**检索与护栏、健康检查与补偿、图维护自动化、本地日志与 WAL**——同样在「维护 → 运行配置」里改，落盘 `dpim.json`、重启后仍在；每个字段旁标明它的值来自哪里（**已存 dpim.json / 内置默认 / 被环境变量锁定**，锁定项界面置灰不可改）。
 
 - **降低错觉**：每条图节点锚定来源事件，元认知裁判做子串校验
 
@@ -87,12 +119,14 @@ dpim shell    # 交互式 Shell
 
 - **对话指令**：信息传入框输入 ^compress、^merge、^data 等指令即时执行，压缩/合并带底线规则防过度整理
 
+- **多书目（小图书馆）**：一库 = 一本书（一 `memory.db` + 一 `graph.json`），完全隔离；分组 = 书架。可新建/编辑/重指向/收养/摘除/删除书目文件，坏登记表可重建。书目之间允许**联查统调**，但不允许擅改彼此原文。
+
 ## 项目结构
 
 ```
 DPIM/
 ├── dpim/         # 存储系统本体（core / controller / interface / prompts / tests）
-├── dpimWebUI/    # Vue 3 控制面板（推荐使用）
+├── dpimWebUI/    # Vue 3 控制面板（推荐使用）：四区 12 页 + 全局书目选择器
 ├── dpimCLI/      # 独立 CLI 控制端
 └── 其他文件
 
@@ -116,7 +150,7 @@ DPIM/
 
 以下给出一些简单的使用案例说明，以便更好了解其可用特性。
 
-### 不动的小图书馆
+### 作为本地资料库
 
 - 作为可用的维基或知识网，管理知识信息。
 

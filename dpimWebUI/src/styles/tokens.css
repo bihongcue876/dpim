@@ -1,0 +1,157 @@
+/* ── DPIM 设计令牌（样式侧唯一色源）─────────────────────────────────────────
+   重设计（链 X）：令牌是**唯一**允许出现颜色字面量与尺寸字面量的地方。
+   组件里一律 var(--dpim-*)，禁止内联 style、禁止 `var(--x, #hex)` 兜底。
+
+   主题切换：documentElement[data-dpim-mode='dark'|'light']，由 stores/theme.ts 维护。
+   刻度（间距/字号/圆角/动效）与主题无关，定义在 :root。 */
+
+:root {
+  /* 间距刻度（4 的倍数，唯一合法间距来源） */
+  --dpim-space-1: 4px;
+  --dpim-space-2: 8px;
+  --dpim-space-3: 12px;
+  --dpim-space-4: 16px;
+  --dpim-space-5: 24px;
+  --dpim-space-6: 32px;
+  --dpim-space-7: 48px;
+
+  /* 字号刻度 */
+  --dpim-fs-xs: 11px;
+  --dpim-fs-sm: 12px;
+  --dpim-fs-md: 13px;
+  --dpim-fs-base: 14px;
+  --dpim-fs-lg: 16px;
+  --dpim-fs-xl: 20px;
+  --dpim-fs-2xl: 26px;
+
+  /* 圆角刻度 */
+  --dpim-radius-xs: 5px;
+  --dpim-radius-sm: 8px;
+  --dpim-radius: 12px;
+  --dpim-radius-lg: 16px;
+  --dpim-radius-pill: 999px;
+
+  /* 结构刻度 */
+  --dpim-topbar-h: 54px;
+  --dpim-nav-w: 214px;
+  --dpim-hairline: 1px;
+
+  /* 字体与动效 */
+  --dpim-font-sans: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system,
+    'Segoe UI', Roboto, sans-serif;
+  --dpim-font-mono: 'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  --dpim-dur: 0.18s;
+  --dpim-dur-slow: 0.28s;
+
+  /* 兼容别名（旧组件使用 --dpim-gap，保留以免遗漏） */
+  --dpim-gap: var(--dpim-space-4);
+}
+
+/* ── 暗色（默认）────────────────────────────────────────────────────────────
+   中性偏冷石墨底 + 石青主色（不用紫调靛蓝：久看发闷）。 */
+:root,
+:root[data-dpim-mode='dark'] {
+  --dpim-bg: #131519;
+  --dpim-surface: #1a1d22;
+  --dpim-surface-2: #22262c;
+  --dpim-surface-3: #2a2f36;
+  --dpim-surface-hover: rgba(255, 255, 255, 0.05);
+  --dpim-border: rgba(255, 255, 255, 0.09);
+  --dpim-border-strong: rgba(255, 255, 255, 0.17);
+
+  --dpim-text: #e7e9ec;
+  --dpim-text-2: #a8adb6;
+  --dpim-text-3: #767c86;
+  --dpim-text-inverse: #12141a;
+
+  --dpim-primary: #5b9fe0;
+  --dpim-primary-hover: #74b1ea;
+  --dpim-primary-pressed: #4a8bca;
+  --dpim-primary-soft: rgba(91, 159, 224, 0.15);
+  --dpim-primary-border: rgba(91, 159, 224, 0.38);
+
+  --dpim-success: #5fb894;
+  --dpim-success-soft: rgba(95, 184, 148, 0.15);
+  --dpim-warning: #d8b25c;
+  --dpim-warning-soft: rgba(216, 178, 92, 0.15);
+  --dpim-danger: #dd8b8b;
+  --dpim-danger-soft: rgba(221, 139, 139, 0.15);
+  --dpim-info: #68b6c8;
+  --dpim-info-soft: rgba(104, 182, 200, 0.15);
+
+  /* 原文（线层）与衍生（图层）的视觉区分：
+     原文 = 中性墨色（确定、不可擅改）；衍生 = 主色（可维护、AI 派生） */
+  --dpim-origin-fg: #cfd3d8;
+  --dpim-origin-bg: rgba(255, 255, 255, 0.07);
+  --dpim-origin-border: rgba(255, 255, 255, 0.16);
+  --dpim-derived-fg: var(--dpim-primary);
+  --dpim-derived-bg: var(--dpim-primary-soft);
+  --dpim-derived-border: var(--dpim-primary-border);
+
+  --dpim-inset: #101216;
+  --dpim-inset-shadow: none;
+  --dpim-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
+  --dpim-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.32);
+  --dpim-overlay: rgba(6, 8, 11, 0.6);
+
+  --dpim-scroll-thumb: rgba(255, 255, 255, 0.13);
+  --dpim-scroll-thumb-hover: rgba(255, 255, 255, 0.24);
+  --dpim-selection-bg: rgba(91, 159, 224, 0.34);
+  --dpim-selection-text: #fff;
+  --dpim-grid-dot: rgba(255, 255, 255, 0.05);
+  --dpim-log-bg: rgba(0, 0, 0, 0.28);
+  color-scheme: dark;
+}
+
+/* ── 亮色 ───────────────────────────────────────────────────────────────────
+   层级策略：白卡 + 轻阴影浮起（不做「灰板压白卡」）；灰只留给页面底与头部带。 */
+:root[data-dpim-mode='light'] {
+  --dpim-bg: #f5f7f9;
+  --dpim-surface: #ffffff;
+  --dpim-surface-2: #eef1f5;
+  --dpim-surface-3: #e5e9ef;
+  --dpim-surface-hover: rgba(16, 18, 22, 0.045);
+  --dpim-border: rgba(16, 18, 22, 0.1);
+  --dpim-border-strong: rgba(16, 18, 22, 0.18);
+
+  --dpim-text: #191c22;
+  --dpim-text-2: #4a5058;
+  --dpim-text-3: #767d87;
+  --dpim-text-inverse: #ffffff;
+
+  --dpim-primary: #2f6fb5;
+  --dpim-primary-hover: #3a80c9;
+  --dpim-primary-pressed: #275f9d;
+  --dpim-primary-soft: rgba(47, 111, 181, 0.11);
+  --dpim-primary-border: rgba(47, 111, 181, 0.32);
+
+  --dpim-success: #2f8f6d;
+  --dpim-success-soft: rgba(47, 143, 109, 0.12);
+  --dpim-warning: #9c7a17;
+  --dpim-warning-soft: rgba(156, 122, 23, 0.13);
+  --dpim-danger: #c25b5b;
+  --dpim-danger-soft: rgba(194, 91, 91, 0.12);
+  --dpim-info: #2f86a8;
+  --dpim-info-soft: rgba(47, 134, 168, 0.12);
+
+  --dpim-origin-fg: #2c3138;
+  --dpim-origin-bg: rgba(16, 18, 22, 0.055);
+  --dpim-origin-border: rgba(16, 18, 22, 0.14);
+  --dpim-derived-fg: var(--dpim-primary);
+  --dpim-derived-bg: var(--dpim-primary-soft);
+  --dpim-derived-border: var(--dpim-primary-border);
+
+  --dpim-inset: #ffffff;
+  --dpim-inset-shadow: 0 1px 3px rgba(16, 18, 22, 0.05), 0 1px 2px rgba(16, 18, 22, 0.04);
+  --dpim-shadow: 0 10px 26px rgba(16, 18, 22, 0.09);
+  --dpim-shadow-sm: 0 1px 2px rgba(16, 18, 22, 0.06);
+  --dpim-overlay: rgba(24, 28, 34, 0.34);
+
+  --dpim-scroll-thumb: rgba(16, 18, 22, 0.18);
+  --dpim-scroll-thumb-hover: rgba(16, 18, 22, 0.3);
+  --dpim-selection-bg: rgba(47, 111, 181, 0.2);
+  --dpim-selection-text: inherit;
+  --dpim-grid-dot: rgba(16, 18, 22, 0.07);
+  --dpim-log-bg: rgba(16, 18, 22, 0.04);
+  color-scheme: light;
+}

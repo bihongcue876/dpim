@@ -6,11 +6,19 @@
 chat_structured 封装「一次有效调用」：调用方把该阶段所需的全部上下文
 一次性打包进单次 messages，由 LLM 返回 Pydantic 结构化结果。
 
-结构化输出模式（DPIM_LLM_STRUCTURED_MODE）：
+**接口格式（v1.43）**：provider 条目的 `format` 决定走哪套协议——
+`openai`（默认，chat completions）/ `responses`（OpenAI Responses）走本模块的
+instructor 路径；`anthropic`（Messages）/ `custom`（自定路径的 OpenAI 兼容端点）
+走 `core.llm_formats` 的 httpx 适配（零新依赖）。详见 `core/config.py` 的
+`PROVIDER_FORMATS`。
+
+结构化输出模式（DPIM_LLM_STRUCTURED_MODE，**仅 openai 格式**）：
 - md_json（默认）：instructor 解析 content 中的 JSON，兼容 llama.cpp/Qwen3.5
   （这些服务不返回 tool_calls，而是把 JSON 直接放在 content 里）。
 - json：instructor 使用 response_format=json_object（需服务支持）。
 - tools：instructor 使用函数调用（tool_calls），适合原生工具调用服务。
+responses 格式固定用 instructor 的 RESPONSES_TOOLS（上面三种都是 chat completions
+的玩法）；anthropic / custom 用「要求 JSON → 校验 → 回喂重问」。
 """
 
 from collections import deque
@@ -28,6 +36,8 @@ from openai import (
 from pydantic import BaseModel
 
 from core.config import ProviderConfig, settings
+from core.llm_formats import http_chat_structured, probe_models_anthropic
+from core.security import sanitize_secret
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -39,9 +49,21 @@ _STRUCTURED_MODES: dict[str, instructor.Mode] = {
 
 
 def _client_for(conf: ProviderConfig) -> AsyncOpenAI:
-    key = conf.api_key or "not-set"
+    # v1.46：密钥与额外头的值先清控制字符——否则 SDK 组装 Authorization 头时报错会回显真钥
+    key = sanitize_secret(conf.api_key) or "not-set"
+    extra = (
+        {str(k): sanitize_secret(str(v)) for k, v in conf.extra_headers.items()}
+        if conf.extra_headers
+        else None
+    )
     # timeout 应用 provider 配置（默认 DPIM_LLM_TIMEOUT，本地模型放宽）
-    return AsyncOpenAI(base_url=conf.base_url, api_key=key, timeout=conf.timeout)
+    # default_headers（v1.43）：provider 的额外请求头透传给 SDK（自建网关的鉴权头）
+    return AsyncOpenAI(
+        base_url=conf.base_url,
+        api_key=key,
+        timeout=conf.timeout,
+        default_headers=extra,
+    )
 
 
 def is_transient_error(e: Exception) -> bool:
@@ -65,6 +87,10 @@ def is_transient_error(e: Exception) -> bool:
         # httpx 底层传输错误：ReadTimeout / ConnectError / ReadError 等
         if isinstance(e, httpx.TransportError):
             return True
+        # v1.43：httpx 适配（anthropic / custom）的 HTTP 状态错误同样按状态码判定
+        if isinstance(e, httpx.HTTPStatusError):
+            code = e.response.status_code if e.response is not None else 0
+            return 500 <= code <= 599 or code in (408, 429)
         e = e.__cause__ or e.__context__
     return False
 
@@ -86,18 +112,23 @@ def _request_extra(conf: ProviderConfig) -> dict[str, Any]:
       auto 模式下本地地址自动选 chat_template_kwargs。
     - thinking_budget：顶层字段（SiliconFlow 等支持）。
     - extra_body：provider 声明的任意厂商参数透传（如 reasoning_effort），最后合并、优先级最高。
+
+    v1.43：`responses` 格式**不套用**上面两个思考字段——Responses 里对应的是
+    `reasoning.effort`（low/medium/high），与「token 预算」不是一个语义，硬塞会 400。
+    该格式只透传 `extra_body`，需要时用户自己写 `{"reasoning": {"effort": "high"}}`。
     """
     body: dict[str, Any] = {}
-    if conf.enable_thinking is not None:
-        use_template = conf.thinking_style == "chat_template_kwargs" or (
-            conf.thinking_style == "auto" and _is_local_host(conf.base_url)
-        )
-        if use_template:
-            body["chat_template_kwargs"] = {"enable_thinking": conf.enable_thinking}
-        else:
-            body["enable_thinking"] = conf.enable_thinking
-    if conf.thinking_budget:
-        body["thinking_budget"] = conf.thinking_budget
+    if conf.format != "responses":
+        if conf.enable_thinking is not None:
+            use_template = conf.thinking_style == "chat_template_kwargs" or (
+                conf.thinking_style == "auto" and _is_local_host(conf.base_url)
+            )
+            if use_template:
+                body["chat_template_kwargs"] = {"enable_thinking": conf.enable_thinking}
+            else:
+                body["enable_thinking"] = conf.enable_thinking
+        if conf.thinking_budget:
+            body["thinking_budget"] = conf.thinking_budget
     if conf.extra_body:
         body.update(conf.extra_body)
     return body
@@ -178,15 +209,25 @@ class LLMGateway:
             self._client_cache[key] = _client_for(conf)
         return self._client_cache[key]
 
+    def _mode_for(self, conf: ProviderConfig) -> instructor.Mode:
+        """结构化输出模式（v1.43）。
+
+        `responses` 格式**固定** RESPONSES_TOOLS：md_json/json/tools 三种都是
+        chat completions 的玩法，套到 `/v1/responses` 上必然对不上。
+        """
+        if conf.format == "responses":
+            return instructor.Mode.RESPONSES_TOOLS
+        return _STRUCTURED_MODES.get(
+            conf.structured_mode or settings.llm_structured_mode, instructor.Mode.MD_JSON
+        )
+
     def instructed(self, role: str = "cr") -> Any:
         """按角色返回 instructor 包装客户端（支持 response_model 结构化输出）。
 
         缓存键含结构化模式：不同 provider 可声明不同 structured_mode。
         """
         conf = settings.role_provider(role)
-        mode = _STRUCTURED_MODES.get(
-            conf.structured_mode or settings.llm_structured_mode, instructor.Mode.MD_JSON
-        )
+        mode = self._mode_for(conf)
         # 缓存键含 timeout 与 mode：改超时或结构化模式均需重建包装客户端
         key = (conf.base_url, conf.api_key, conf.timeout, mode)
         if key not in self._instructed_cache:
@@ -211,11 +252,19 @@ class LLMGateway:
         厂商适配：按 provider 组装 max_tokens 与 extra_body（思考开关/预算/任意透传）。
         """
         conf = settings.role_provider(role)
+        if conf.format in ("anthropic", "custom"):
+            # 非 chat completions 协议：走 httpx 适配（零新依赖，见 core/llm_formats）
+            return await http_chat_structured(
+                conf, response_model, system, user,
+                temperature=temperature, max_retries=max_retries,
+            )
         client = self.instructed(role)
         model = conf.model
         request_kwargs = dict(kwargs)
         if conf.max_tokens:
-            request_kwargs.setdefault("max_tokens", conf.max_tokens)
+            # responses 格式的参数名不同：max_output_tokens（传 max_tokens 会被 SDK 拒）
+            limit_key = "max_output_tokens" if conf.format == "responses" else "max_tokens"
+            request_kwargs.setdefault(limit_key, conf.max_tokens)
         extra = _request_extra(conf)
         if extra:
             merged = dict(request_kwargs.get("extra_body") or {})
@@ -241,6 +290,22 @@ class LLMGateway:
 
 
 gateway = LLMGateway()
+
+
+async def probe_models(conf: ProviderConfig) -> list[str]:
+    """按接口格式探测可用模型列表（v1.43），失败原样抛出。
+
+    - `anthropic`：`GET {base}/models` + `x-api-key` / `anthropic-version` 头
+    - `openai` / `responses` / `custom`：OpenAI 兼容 `GET {base}/models`（Bearer + 额外头）
+
+    调用方（`POST /settings/models`）负责把异常原文放进 `error` 字段——探测失败
+    不该报 4xx，但**必须**让用户看见原因。
+    """
+    if conf.format == "anthropic":
+        return await probe_models_anthropic(conf)
+    client = _client_for(conf)
+    listed = await client.models.list()
+    return [str(m.id) for m in listed.data if getattr(m, "id", "")]
 
 
 def create_client() -> AsyncOpenAI:

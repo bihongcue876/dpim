@@ -29,45 +29,45 @@ defineEmits<{ (e: 'select', c: CommandCandidate): void }>()
 <style scoped>
 .cmd-hints {
   position: absolute;
-  bottom: calc(100% - 6px);
+  bottom: calc(100% - var(--dpim-space-1));
   left: 0;
   right: 0;
   z-index: 20;
   margin: 0;
-  padding: 4px;
+  padding: var(--dpim-space-1);
   list-style: none;
-  background: var(--dpim-surface-raised, var(--dpim-surface, #1c2129));
-  border: 1px solid var(--dpim-border, rgba(255, 255, 255, 0.12));
-  border-radius: 8px;
-  box-shadow: var(--dpim-shadow, 0 8px 24px rgba(0, 0, 0, 0.45));
+  background: var(--dpim-surface-2);
+  border: 1px solid var(--dpim-border);
+  border-radius: var(--dpim-radius-sm);
+  box-shadow: var(--dpim-shadow);
   max-height: 260px;
   overflow-y: auto;
 }
 .cmd-hints li {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: 5px;
+  gap: var(--dpim-space-2);
+  padding: var(--dpim-space-1) var(--dpim-space-2);
+  border-radius: var(--dpim-radius-xs);
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: var(--dpim-fs-sm);
   line-height: 1.5;
 }
 .cmd-hints li.active {
-  background: var(--dpim-primary-soft, rgba(88, 166, 255, 0.12));
+  background: var(--dpim-primary-soft);
 }
 .cmd-name {
-  color: var(--dpim-primary, #5b8cff);
+  color: var(--dpim-primary);
   font-family: 'Cascadia Code', Consolas, monospace;
   font-weight: 600;
   flex-shrink: 0;
 }
 .cmd-args {
-  color: var(--dpim-text-3, #7c8694);
+  color: var(--dpim-text-3);
   flex-shrink: 0;
 }
 .cmd-desc {
-  color: var(--dpim-text-2, #9aa4b2);
+  color: var(--dpim-text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

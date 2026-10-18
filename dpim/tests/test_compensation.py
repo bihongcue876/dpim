@@ -1,6 +1,7 @@
-﻿"""控制变量测试：补偿机制、降级状态切换、健康检查隔离"""
+"""控制变量测试：补偿机制、降级状态切换、健康检查隔离"""
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -267,6 +268,75 @@ class TestCompensationControlledVariables:
         assert "maintain_graph" not in enqueued
 
     @pytest.mark.asyncio
+    async def test_recovery_maintain_covers_every_loaded_repo(
+        self, event_store, graph_store, monkeypatch
+    ):
+        """v1.38：AI 恢复后的自动维护**逐库各入队一次**。
+
+        此前只发一条**不带 repo_id** 的消息，而 `Orchestrator._resolve_stores` 对缺省
+        repo_id 回退**默认库** → 其余库（含活动库若不是默认库时）一次都拿不到这次整理。
+        """
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "agent_maintain_auto", True)
+        repos = _StubRepos([
+            _StubEntry("rp_a", graph_store),
+            _StubEntry("rp_b", graph_store),
+        ])
+        msgs = []
+
+        async def rec(msg):
+            msgs.append(msg)
+
+        compensator = Compensator(event_store, graph_store, rec, repos=repos)
+        await compensator._trigger_compensate()
+
+        assert msgs[0].type == "compensate"  # 补偿试探始终第一优先
+        maint = [m for m in msgs if m.type == "maintain_graph"]
+        assert [m.payload["repo_id"] for m in maint] == ["rp_a", "rp_b"]
+        assert all(m.payload["auto"] is True for m in maint)
+
+    @pytest.mark.asyncio
+    async def test_recovery_maintain_without_repos_omits_repo_id(
+        self, event_store, graph_store, monkeypatch
+    ):
+        """单库部署（无库管理器）：仍是一条不带 repo_id 的消息（回退默认库三件套）。"""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "agent_maintain_auto", True)
+        msgs = []
+
+        async def rec(msg):
+            msgs.append(msg)
+
+        compensator = Compensator(event_store, graph_store, rec)
+        await compensator._trigger_compensate()
+
+        maint = [m for m in msgs if m.type == "maintain_graph"]
+        assert len(maint) == 1
+        assert maint[0].payload == {"auto": True}
+
+    @pytest.mark.asyncio
+    async def test_recovery_maintain_empty_registry_falls_back(
+        self, event_store, graph_store, monkeypatch
+    ):
+        """库管理器在场但一个库都没加载 → 回退默认库一条（不静默什么都不做）。"""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "agent_maintain_auto", True)
+        msgs = []
+
+        async def rec(msg):
+            msgs.append(msg)
+
+        compensator = Compensator(event_store, graph_store, rec, repos=_StubRepos([]))
+        await compensator._trigger_compensate()
+
+        maint = [m for m in msgs if m.type == "maintain_graph"]
+        assert len(maint) == 1
+        assert maint[0].payload == {"auto": True}
+
+    @pytest.mark.asyncio
     async def test_no_pending_resets_state(
         self, db, event_store, graph_store, monkeypatch
     ):
@@ -362,7 +432,127 @@ class TestHighWatermarkMaintain:
         await compensator._maybe_trigger_maintain()
         assert enqueued == []
 
+    @pytest.mark.asyncio
+    async def test_high_watermark_covers_repos_one_per_cycle(
+        self, event_store, graph_store, monkeypatch
+    ):
+        """高水位逐册检查：带 repo_id 触发**第一个达标**的库，每冷却周期至多一册。"""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "agent_maintain_auto", True)
+        monkeypatch.setattr(settings, "agent_maintain_max_nodes", 100)
+        monkeypatch.setattr(settings, "agent_maintain_cooldown", 300)
+        repos = _StubRepos([
+            _StubEntry("rp_small", SimpleNamespace(total_nodes=lambda: 10)),
+            _StubEntry("rp_big", SimpleNamespace(total_nodes=lambda: 150)),
+            _StubEntry("rp_big2", SimpleNamespace(total_nodes=lambda: 200)),
+        ])
+        msgs = []
+
+        async def rec(msg):
+            msgs.append(msg)
+
+        compensator = Compensator(event_store, graph_store, rec, repos=repos)
+        await compensator._maybe_trigger_maintain()
+
+        assert [m.payload["repo_id"] for m in msgs] == ["rp_big"]  # 小库跳过、只发一册
+
 
 async def _null_enqueue(msg):
     """no-op enqueue（测试辅助）"""
     pass
+
+
+class TestHealthCheckHonoursFormat:
+    """v1.45：LLM 健康检查必须**按接口格式分流**（端到端实测抓出的真缺陷）。
+
+    旧实现走 OpenAI SDK 的 `client.models.list()` → 对 `format=anthropic` 的 provider
+    **永远发 `Authorization: Bearer`**：真 Anthropic / OpenCode Zen 这类网关回 401
+    （"Zen Anthropic endpoint requires x-api-key"），于是 AI 被误判「连不上」——
+    降级、补偿、自动维护**永远不会启动**，而密钥其实完全正确。
+    """
+
+    @pytest.mark.asyncio
+    async def test_probe_uses_provider_format(
+        self, db, event_store, graph_store, monkeypatch
+    ):
+        from controller import compensator as comp_mod
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "providers", {
+            "zen": {
+                "base_url": "https://opencode.ai/zen/v1",
+                "api_key": "sk-zen",
+                "models": ["claude-sonnet-4"],
+                "format": "anthropic",
+            },
+        })
+        monkeypatch.setattr(settings, "active_provider", "zen")
+        monkeypatch.setattr(settings, "agent_maintain_auto", False)
+        seen: list[tuple[str, str, str]] = []
+
+        async def _fake_probe(conf):
+            seen.append((conf.format, conf.base_url, conf.api_key))
+            return ["claude-sonnet-4"]
+
+        monkeypatch.setattr(comp_mod, "probe_models", _fake_probe)
+        ai_state.set_state(False, "先置为降级")
+
+        compensator = Compensator(event_store, graph_store, _null_enqueue)
+        await compensator._check_llm()
+
+        # 关键：探测拿到的是该 provider 的完整配置（含 format），不是硬走 Bearer 的 SDK 客户端
+        assert seen == [("anthropic", "https://opencode.ai/zen/v1", "sk-zen")]
+        assert ai_state.available is True          # 探测成功 → 恢复可用
+        assert compensator._failure_count == 0
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_still_degrades_after_three(
+        self, db, event_store, graph_store, monkeypatch
+    ):
+        """分流之后失败路径不变：连续 3 次才判降级，且原因里带得上原文。"""
+        from controller import compensator as comp_mod
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "providers", {
+            "zen": {
+                "base_url": "https://opencode.ai/zen/v1",
+                "api_key": "sk-bad",
+                "models": ["claude-sonnet-4"],
+                "format": "anthropic",
+            },
+        })
+        monkeypatch.setattr(settings, "active_provider", "zen")
+
+        async def _boom(conf):
+            raise ValueError("HTTP 401: Invalid credential")
+
+        monkeypatch.setattr(comp_mod, "probe_models", _boom)
+        ai_state.set_state(True)
+
+        compensator = Compensator(event_store, graph_store, _null_enqueue)
+        await compensator._check_llm()
+        await compensator._check_llm()
+        assert ai_state.available is True           # 未满 3 次不判死
+        await compensator._check_llm()
+        assert ai_state.available is False
+        assert "Invalid credential" in ai_state.reason
+        assert "3 次" in ai_state.reason
+
+
+class _StubEntry:
+    """伪库条目：只给 Compensator 用到的两个字段。"""
+
+    def __init__(self, repo_id: str, graph_store) -> None:
+        self.repo_id = repo_id
+        self.graph_store = graph_store
+
+
+class _StubRepos:
+    """伪库管理器：只实现 `managed_entries()`（Compensator 的唯一调用点）。"""
+
+    def __init__(self, entries: list[_StubEntry]) -> None:
+        self._entries = entries
+
+    def managed_entries(self) -> list[_StubEntry]:
+        return self._entries

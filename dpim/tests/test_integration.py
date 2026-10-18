@@ -9,15 +9,15 @@ from core.models import (
     NodeType,
     SourceRef,
 )
-from interface import api
+from interface import api, deps
 
 
 @pytest.fixture
 def test_app(db, event_store, graph_store):
     """Override api module globals with test instances, return TestClient."""
-    api.db = db
-    api.event_store = event_store
-    api.graph_store = graph_store
+    deps.db = db
+    deps.event_store = event_store
+    deps.graph_store = graph_store
     client = TestClient(api.app)
     return client
 
@@ -82,7 +82,7 @@ class TestDeleteEventEndpoint:
     async def test_delete_protected_event(self, test_app):
         create = test_app.post("/ingest", json={"event_type": "interaction", "content": "protected source"})
         eid = create.json()["event_id"]
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="protected_node",
             title="Protected",
             content="data",
@@ -92,11 +92,11 @@ class TestDeleteEventEndpoint:
             metadata=NodeMetadata(evidence_quote="test"),
         ))
         import json as _json
-        await api.event_store.db.conn.execute(
+        await deps.event_store.db.conn.execute(
             "UPDATE events SET graph_refs = ? WHERE event_id = ?",
             (_json.dumps(["protected_node"]), eid),
         )
-        await api.event_store.db.conn.commit()
+        await deps.event_store.db.conn.commit()
         resp = test_app.delete(f"/events/{eid}")
         assert resp.status_code == 409
 
@@ -107,7 +107,7 @@ class TestDeleteNodeEndpoint:
         assert resp.status_code == 404
 
     def test_delete_node_no_refs(self, test_app):
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="orphan", title="Orphan", content="alone",
             node_type=NodeType.interaction,
             source_refs=[],
@@ -121,7 +121,7 @@ class TestDeleteNodeEndpoint:
         """手动 DELETE /nodes 不限制节点类型：system 节点（手动创建、无有效源证）
         可自由删除。「system 不参与合并/删除」仅约束 Agent 自动维护任务
         （run_maintenance_local_checks），而非手动 REST 端点。"""
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="sys_del", title="System", content="manual",
             node_type=NodeType.system,
             source_refs=[],
@@ -130,12 +130,12 @@ class TestDeleteNodeEndpoint:
         ))
         resp = test_app.delete("/nodes/sys_del")
         assert resp.status_code == 200
-        assert api.graph_store.get_node("sys_del") is None
+        assert deps.graph_store.get_node("sys_del") is None
 
 
 class TestModifyNodeEndpoint:
     def test_modify_node(self, test_app):
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="mod_me", title="Original", content="old content",
             node_type=NodeType.interaction,
             source_refs=[SourceRef(event_id="e1", valid=True, hash="h")],
@@ -144,12 +144,12 @@ class TestModifyNodeEndpoint:
         ))
         resp = test_app.put("/nodes/mod_me", json={"content": "new content"})
         assert resp.status_code == 200
-        node = api.graph_store.get_node("mod_me")
+        node = deps.graph_store.get_node("mod_me")
         assert node.content == "new content"
         assert node.confidence == 0.7
 
     def test_modify_system_node_forbidden(self, test_app):
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="sys_node", title="System", content="protected",
             node_type=NodeType.system,
             source_refs=[SourceRef(event_id="e1", valid=True, hash="h")],
@@ -168,7 +168,7 @@ class TestModifyNodeEndpoint:
         resp = test_app.post("/nodes", json={"title": "持久化节点", "content": "旧内容"})
         node_id = resp.json()["node_id"]
         test_app.put(f"/nodes/{node_id}", json={"content": "新内容"})
-        gs2 = GraphStore(api.db, json_path=api.graph_store.json_path)
+        gs2 = GraphStore(deps.db, json_path=deps.graph_store.json_path)
         asyncio.run(gs2.load())
         node = gs2.get_node(node_id)
         assert node is not None
@@ -185,7 +185,7 @@ class TestNodeSourceRefEndpoint:
             "/ingest", json={"content": "八段锦的呼吸要领", "event_type": "data"}
         )
         eid = create.json()["event_id"]
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="multi_ref", title="八段锦", content="健身气功",
             node_type=NodeType.data,
             source_refs=[SourceRef(event_id="e1", valid=True, hash="h")],
@@ -194,18 +194,18 @@ class TestNodeSourceRefEndpoint:
         ))
         resp = test_app.put("/nodes/multi_ref", json={"add_source_event_id": eid})
         assert resp.status_code == 200
-        node = api.graph_store.get_node("multi_ref")
+        node = deps.graph_store.get_node("multi_ref")
         assert {sr.event_id for sr in node.source_refs} == {"e1", eid}
         added = next(sr for sr in node.source_refs if sr.event_id == eid)
         ev = test_app.get(f"/events/{eid}").json()
         assert added.hash == ev["content_hash"]  # hash 供核对不变式
         # 幂等：重复添加不产生重复源证
         test_app.put("/nodes/multi_ref", json={"add_source_event_id": eid})
-        node = api.graph_store.get_node("multi_ref")
+        node = deps.graph_store.get_node("multi_ref")
         assert sum(1 for sr in node.source_refs if sr.event_id == eid) == 1
 
     def test_add_source_ref_missing_event(self, test_app):
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="n_add404", title="X", content="x", node_type=NodeType.data,
             source_refs=[SourceRef(event_id="e1", valid=True, hash="h")],
             confidence=0.8, metadata=NodeMetadata(evidence_quote="x"),
@@ -219,7 +219,7 @@ class TestNodeSourceRefEndpoint:
             "/ingest", json={"content": "第二事件内容", "event_type": "data"}
         )
         eid = create.json()["event_id"]
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="n_rm", title="多源节点", content="内容",
             node_type=NodeType.data,
             source_refs=[
@@ -230,12 +230,12 @@ class TestNodeSourceRefEndpoint:
         ))
         resp = test_app.put("/nodes/n_rm", json={"remove_source_event_id": eid})
         assert resp.status_code == 200
-        node = api.graph_store.get_node("n_rm")
+        node = deps.graph_store.get_node("n_rm")
         assert [sr.event_id for sr in node.source_refs] == ["e1"]
 
     def test_remove_last_valid_source_ref_refused(self, test_app):
         """最少源证守卫：仅剩一条有效源证时移除 → 409。"""
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="n_last", title="单源节点", content="内容",
             node_type=NodeType.data,
             source_refs=[SourceRef(event_id="e1", valid=True, hash="h")],
@@ -243,11 +243,11 @@ class TestNodeSourceRefEndpoint:
         ))
         resp = test_app.put("/nodes/n_last", json={"remove_source_event_id": "e1"})
         assert resp.status_code == 409
-        node = api.graph_store.get_node("n_last")
+        node = deps.graph_store.get_node("n_last")
         assert [sr.event_id for sr in node.source_refs] == ["e1"]
 
     def test_no_change_refused(self, test_app):
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="n_noop", title="X", content="x", node_type=NodeType.data,
             source_refs=[], confidence=0.8, metadata=NodeMetadata(evidence_quote="x"),
         ))
@@ -260,13 +260,13 @@ class TestNodeSourceRefEndpoint:
             "/ingest", json={"content": "给系统节点挂源证", "event_type": "data"}
         )
         eid = create.json()["event_id"]
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="sys_src", title="系统", content="系统内容", node_type=NodeType.system,
             source_refs=[], confidence=1.0, metadata=NodeMetadata(evidence_quote="系统内容"),
         ))
         resp = test_app.put("/nodes/sys_src", json={"add_source_event_id": eid})
         assert resp.status_code == 200
-        node = api.graph_store.get_node("sys_src")
+        node = deps.graph_store.get_node("sys_src")
         assert [sr.event_id for sr in node.source_refs] == [eid]
         # 内容仍禁改
         resp = test_app.put("/nodes/sys_src", json={"content": "hack"})
@@ -304,6 +304,81 @@ class TestCreateNodeEndpoint:
     def test_create_node_title_too_long(self, test_app):
         resp = test_app.post("/nodes", json={"title": "x" * 61})
         assert resp.status_code == 422  # Pydantic Field(max_length=60)
+
+
+class TestListEdgesEndpoint:
+    """GET /edges 边列表（v1.37）：图谱页一次取全，替代「逐节点详情汇总边」。"""
+
+    def _node(self, test_app, title: str) -> str:
+        return test_app.post("/nodes", json={"title": title}).json()["node_id"]
+
+    def _edge(self, test_app, source: str, target: str, relation: str = "关联") -> None:
+        resp = test_app.post(
+            "/edges",
+            json={"source": source, "target": target, "relation": relation},
+        )
+        assert resp.status_code == 200
+
+    def test_lists_all_edges_in_stable_order(self, test_app):
+        a = self._node(test_app, "甲")
+        b = self._node(test_app, "乙")
+        c = self._node(test_app, "丙")
+        self._edge(test_app, c, a, "丙→甲")
+        self._edge(test_app, a, b, "甲→乙")
+
+        data = test_app.get("/edges").json()
+        assert data["total"] == 2
+        assert data["limit"] == 200 and data["offset"] == 0
+        # (source, target) 稳定序：分页可复现
+        assert [e["source"] for e in data["items"]] == sorted([a, c])
+        assert {e["relation"] for e in data["items"]} == {"丙→甲", "甲→乙"}
+        # 库登记未初始化 → 来源库归属为空串（与 GET /nodes 同口径）
+        assert all(e["repo_id"] == "" and e["repo_name"] == "" for e in data["items"])
+
+    def test_node_id_filter_hits_both_directions(self, test_app):
+        a = self._node(test_app, "甲")
+        b = self._node(test_app, "乙")
+        c = self._node(test_app, "丙")
+        self._edge(test_app, a, b, "出边")
+        self._edge(test_app, c, b, "入边")
+
+        data = test_app.get("/edges", params={"node_id": b}).json()
+        assert data["total"] == 2
+        assert {e["relation"] for e in data["items"]} == {"出边", "入边"}
+
+    def test_source_target_relation_filters(self, test_app):
+        a = self._node(test_app, "甲")
+        b = self._node(test_app, "乙")
+        c = self._node(test_app, "丙")
+        self._edge(test_app, a, b, "甲→乙")
+        self._edge(test_app, a, c, "甲→丙")
+
+        assert test_app.get("/edges", params={"source": a}).json()["total"] == 2
+        assert test_app.get("/edges", params={"target": c}).json()["total"] == 1
+        assert test_app.get("/edges", params={"relation": "甲→丙"}).json()["total"] == 1
+        assert test_app.get("/edges", params={"source": b}).json()["total"] == 0
+
+    def test_pagination_pages_are_disjoint(self, test_app):
+        a = self._node(test_app, "甲")
+        b = self._node(test_app, "乙")
+        c = self._node(test_app, "丙")
+        self._edge(test_app, a, b)
+        self._edge(test_app, b, c)
+
+        page1 = test_app.get("/edges", params={"limit": 1, "offset": 0}).json()
+        page2 = test_app.get("/edges", params={"limit": 1, "offset": 1}).json()
+        assert page1["total"] == page2["total"] == 2
+        keys = {
+            (e["source"], e["target"]) for e in page1["items"] + page2["items"]
+        }
+        assert len(keys) == 2
+
+    def test_limit_out_of_range_rejected(self, test_app):
+        # 越界显式 400，不静默截断（与 GET /logs 的 tail 同一风格）
+        assert test_app.get("/edges", params={"limit": 5001}).status_code == 400
+        assert test_app.get("/edges", params={"limit": -1}).status_code == 400
+        assert test_app.get("/edges", params={"offset": -1}).status_code == 400
+        assert test_app.get("/edges", params={"limit": 5000}).status_code == 200
 
 
 class TestListSearchEndpoint:
@@ -400,6 +475,8 @@ class TestModifyEventStatusEndpoint:
         ("indexed", "linked", 200),
         ("indexed", "failed", 200),
         ("indexed", "skipped", 200),
+        # 撤销入图（v1.42）：整图清空时后端把 linked 回退为 indexed；人类也可显式重试入队
+        ("linked", "indexed", 200),
         ("failed", "indexed", 200),
         ("failed", "skipped", 200),
         ("skipped", "indexed", 200),
@@ -414,12 +491,11 @@ class TestModifyEventStatusEndpoint:
         ("skipped", "raw", 400),
         ("skipped", "linked", 400),
         ("linked", "raw", 400),
-        ("linked", "indexed", 400),
         ("linked", "failed", 400),
         ("linked", "skipped", 400),
     ])
     def test_status_transition_matrix(self, test_app, event_store, start, target, expected):
-        """白名单全矩阵：8 种合法转换放行，13 种非法转换拒绝（400）"""
+        """白名单全矩阵：9 种合法转换放行，12 种非法转换拒绝（400）"""
         import asyncio
 
         from tests.factories import make_event
@@ -441,18 +517,18 @@ class TestEventLiveRefs:
             "/ingest", json={"content": "内容A的事件", "event_type": "data"}
         )
         eid = create.json()["event_id"]
-        await api.event_store.update_status(eid, "linked", graph_refs=["n1", "n2"])
-        api.graph_store.add_node(GraphNode(
+        await deps.event_store.update_status(eid, "linked", graph_refs=["n1", "n2"])
+        deps.graph_store.add_node(GraphNode(
             node_id="n1", title="主题A", content="内容A", node_type=NodeType.data,
             source_refs=[SourceRef(event_id=eid, valid=True, hash="h")],
             confidence=0.8, metadata=NodeMetadata(evidence_quote="内容A"),
         ))
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="n2", title="主题A旧", content="内容A旧", node_type=NodeType.data,
             source_refs=[SourceRef(event_id=eid, valid=True, hash="h")],
             confidence=0.8, metadata=NodeMetadata(evidence_quote="内容A旧"),
         ))
-        api.graph_store.merge_nodes("n1", ["n2"])  # 维护合并：n2 被删
+        deps.graph_store.merge_nodes("n1", ["n2"])  # 维护合并：n2 被删
         refs = test_app.get(f"/events/{eid}").json()["graph_refs"]
         assert refs == ["n1"]  # 快照里的 n2 已消失，实时反映合并结果
 
@@ -464,7 +540,7 @@ class TestEventLiveRefs:
         e2 = test_app.post(
             "/ingest", json={"content": "八段锦事件二", "event_type": "data"}
         ).json()["event_id"]
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="bdj", title="八段锦", content="健身气功", node_type=NodeType.data,
             source_refs=[
                 SourceRef(event_id=e1, valid=True, hash="h1"),
@@ -554,7 +630,7 @@ class TestModifyEventEndpoint:
 
 class TestFeedbackEndpoint:
     def test_feedback_accepted(self, test_app):
-        api.graph_store.add_node(GraphNode(
+        deps.graph_store.add_node(GraphNode(
             node_id="fb_node", title="Feedback", content="test",
             node_type=NodeType.interaction,
             source_refs=[SourceRef(event_id="e1", valid=True, hash="h")],
@@ -565,7 +641,7 @@ class TestFeedbackEndpoint:
             "result_id": "fb_node", "accepted": True,
         })
         assert resp.status_code == 200
-        node = api.graph_store.get_node("fb_node")
+        node = deps.graph_store.get_node("fb_node")
         assert node.confidence == 0.51  # 0.5 + 0.01
 
     def test_feedback_persists_to_disk(self, test_app):
@@ -580,7 +656,7 @@ class TestFeedbackEndpoint:
         })
         node_id = resp.json()["node_id"]
         test_app.post("/feedback", json={"result_id": node_id, "accepted": True})
-        gs2 = GraphStore(api.db, json_path=api.graph_store.json_path)
+        gs2 = GraphStore(deps.db, json_path=deps.graph_store.json_path)
         asyncio.run(gs2.load())
         node = gs2.get_node(node_id)
         assert node is not None
@@ -606,6 +682,10 @@ class TestSettingsEndpoint:
     BYOK_FIELDS = [
         "available_providers",
         "active_provider",
+        "available_models",
+        "active_model",
+        "llm_configured",
+        "llm_unavailable_reason",
         "agent_mode",
         "agent_max_retries",
         "agent_cr_model",
@@ -622,19 +702,23 @@ class TestSettingsEndpoint:
             assert field in data, f"缺少配置项 {field}"
 
     def test_get_settings_available_providers_default(self, test_app, monkeypatch):
+        """v1.34：没有 primary 兜底——一个提供商都没登记就是空列表 + 未配置态。"""
         from core.config import settings as s
 
         monkeypatch.setattr(s, "providers", {})
+        monkeypatch.setattr(s, "active_provider", "")
         resp = test_app.get("/settings")
         data = resp.json()
-        assert data["available_providers"] == ["primary"]
+        assert data["available_providers"] == []
+        assert data["llm_configured"] is False
+        assert data["llm_unavailable_reason"]
 
     def test_put_providers_registers_and_active(self, test_app, monkeypatch):
         """PUT /settings 注册 provider + 设为活动 → 即时生效，无需重启。"""
         from core.config import settings as s
 
         monkeypatch.setattr(s, "providers", {})
-        monkeypatch.setattr(s, "active_provider", "primary")
+        monkeypatch.setattr(s, "active_provider", "")
         r = test_app.put("/settings", json={
             "providers": {
                 "qwen": {
@@ -647,8 +731,9 @@ class TestSettingsEndpoint:
         })
         assert r.status_code == 200
         data = test_app.get("/settings").json()
-        assert "qwen" in data["available_providers"]
+        assert data["available_providers"] == ["qwen"]
         assert data["active_provider"] == "qwen"
+        assert data["llm_configured"] is True  # 地址 + 模型齐备
         assert s.role_provider("cr").base_url == "http://localhost:5091/v1"
 
     def test_get_settings_active_model_fields(self, test_app):
@@ -707,26 +792,27 @@ class TestSettingsEndpoint:
             s.agent_max_retries = old
 
     def test_get_settings_masks_secrets(self, test_app, monkeypatch):
-        """GET /settings 绝不明文下发 llm_api_key / providers[*].api_key。"""
+        """GET /settings 绝不明文下发 providers[*].api_key（v1.34：身份只剩这一处）。"""
         from core.config import settings as s
 
-        monkeypatch.setattr(s, "llm_api_key", "sk-1234567890abcd")
         monkeypatch.setattr(s, "providers", {
             "qwen": {"base_url": "https://x/v1", "api_key": "sk-deadbeef123456"},
         })
         data = test_app.get("/settings").json()
-        assert data["llm_api_key"] == "sk-****abcd"
         assert data["providers"]["qwen"]["api_key"] == "sk-****3456"
+        assert "sk-deadbeef123456" not in test_app.get("/settings").text
 
     def test_put_settings_masked_key_preserves_secret(self, test_app, monkeypatch):
         """前端把 GET 下发的掩码原样回传 → 不应清掉真钥（幂等）。"""
         from core.config import settings as s
 
-        monkeypatch.setattr(s, "llm_api_key", "sk-1234567890abcd")
-        monkeypatch.setattr(s, "providers", {})
-        r = test_app.put("/settings", json={"llm_api_key": "sk-****abcd"})
+        monkeypatch.setattr(s, "providers", {
+            "qwen": {"base_url": "https://x/v1", "api_key": "sk-1234567890abcd"},
+        })
+        masked = test_app.get("/settings").json()["providers"]["qwen"]
+        r = test_app.put("/settings", json={"providers": {"qwen": masked}})
         assert r.status_code == 200
-        assert s.llm_api_key == "sk-1234567890abcd"
+        assert s.providers["qwen"]["api_key"] == "sk-1234567890abcd"
 
 
 class TestAuthGuard:

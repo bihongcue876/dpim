@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- DPIM：双区智能记忆图标 — 上层知识图谱（节点连线），下层事件线（不可变日志） -->
+  <!-- DPIM：双区智能记忆图标 — 上层知识图谱（节点连线），下层事件线（时序事件存储） -->
   <rect width="64" height="64" rx="14" fill="#10151f"/>
   <!-- 图谱层：三个节点 + 连线 -->
   <line x1="18" y1="20" x2="32" y2="13" stroke="#3ddbb0" stroke-width="2.5" stroke-linecap="round"/>
